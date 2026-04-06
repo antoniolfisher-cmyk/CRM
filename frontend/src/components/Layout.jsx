@@ -1,4 +1,5 @@
-import { NavLink, useLocation } from 'react-router-dom'
+import { NavLink } from 'react-router-dom'
+import { useAuth } from '../context/AuthContext'
 
 const nav = [
   { to: '/', label: 'Dashboard', icon: DashIcon },
@@ -8,6 +9,7 @@ const nav = [
 ]
 
 export default function Layout({ children }) {
+  const { user, logout } = useAuth()
   return (
     <div className="min-h-screen flex">
       {/* Sidebar */}
@@ -42,8 +44,15 @@ export default function Layout({ children }) {
             </NavLink>
           ))}
         </nav>
-        <div className="px-4 py-4 border-t border-slate-700">
-          <p className="text-slate-500 text-xs">v1.0 · Wholesale CRM</p>
+        <div className="px-4 py-4 border-t border-slate-700 space-y-2">
+          {user && <p className="text-slate-400 text-xs px-1">Signed in as <span className="font-medium text-slate-300">{user}</span></p>}
+          <button
+            onClick={logout}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
+          >
+            <LogoutIcon className="w-4 h-4 shrink-0" />
+            Sign out
+          </button>
         </div>
       </aside>
 
@@ -80,6 +89,13 @@ function BoxIcon({ className }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 10V7" />
+    </svg>
+  )
+}
+function LogoutIcon({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
     </svg>
   )
 }

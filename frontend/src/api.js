@@ -1,12 +1,23 @@
 const BASE = '/api'
+const TOKEN_KEY = 'crm_token'
 
 async function req(method, path, body) {
+  const token = localStorage.getItem(TOKEN_KEY)
   const opts = {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
   }
   if (body !== undefined) opts.body = JSON.stringify(body)
   const res = await fetch(`${BASE}${path}`, opts)
+
+  if (res.status === 401) {
+    localStorage.removeItem(TOKEN_KEY)
+    window.location.href = '/login'
+    return
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(err.detail || 'Request failed')
@@ -37,7 +48,9 @@ export const api = {
 
   // Follow-ups
   getFollowUps: (params = {}) => {
-    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== '' && v !== false)).toString()
+    const qs = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v !== undefined && v !== '' && v !== false)
+    ).toString()
     return req('GET', `/follow-ups${qs ? '?' + qs : ''}`)
   },
   getFollowUp: (id) => req('GET', `/follow-ups/${id}`),

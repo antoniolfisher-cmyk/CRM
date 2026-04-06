@@ -252,16 +252,13 @@ const EMPTY_ITEM = { product_name: '', sku: '', quantity: 1, unit: 'case', unit_
 
 function OrderForm({ initial, accounts, onSave, onClose }) {
   const [form, setForm] = useState({
-    account_id: '',
-    order_number: '',
-    status: 'pending',
-    order_date: new Date().toISOString().slice(0, 16),
-    ship_date: '',
-    discount: 0,
-    notes: '',
-    ...initial,
+    account_id: initial?.account_id ?? '',
+    order_number: initial?.order_number ?? '',
+    status: initial?.status ?? 'pending',
     order_date: initial?.order_date ? initial.order_date.slice(0, 16) : new Date().toISOString().slice(0, 16),
     ship_date: initial?.ship_date ? initial.ship_date.slice(0, 16) : '',
+    discount: initial?.discount ?? 0,
+    notes: initial?.notes ?? '',
   })
   const [items, setItems] = useState(initial?.items?.length ? initial.items : [{ ...EMPTY_ITEM }])
   const [saving, setSaving] = useState(false)
