@@ -1,0 +1,8 @@
+backend/venv/
+backend/__pycache__/
+backend/*.pyc
+backend/crm.db
+frontend/node_modules/
+frontend/dist/
+.git/
+*.md
