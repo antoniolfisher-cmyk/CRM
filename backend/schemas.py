@@ -3,6 +3,32 @@ from typing import Optional, List
 from datetime import datetime
 
 
+# User schemas
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    role: str = "user"
+    is_active: bool = True
+
+
+class UserUpdate(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class UserOut(BaseModel):
+    id: int
+    username: str
+    role: str
+    is_active: bool
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
 # Contact schemas
 class ContactBase(BaseModel):
     first_name: str

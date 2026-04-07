@@ -6,6 +6,7 @@ import Dashboard from './pages/Dashboard'
 import Accounts from './pages/Accounts'
 import FollowUps from './pages/FollowUps'
 import Orders from './pages/Orders'
+import Admin from './pages/Admin'
 
 export default function App() {
   return (
@@ -19,7 +20,7 @@ export default function App() {
 }
 
 function PrivateRoute() {
-  const { isAuthenticated, checking } = useAuth()
+  const { isAuthenticated, isAdmin, checking } = useAuth()
   const location = useLocation()
 
   if (checking) {
@@ -41,6 +42,10 @@ function PrivateRoute() {
         <Route path="/accounts" element={<Accounts />} />
         <Route path="/follow-ups" element={<FollowUps />} />
         <Route path="/orders" element={<Orders />} />
+        <Route
+          path="/admin"
+          element={isAdmin ? <Admin /> : <Navigate to="/" replace />}
+        />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>

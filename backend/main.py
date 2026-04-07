@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -10,9 +10,19 @@ from datetime import datetime, timedelta
 import models
 import schemas
 from database import engine, get_db
-from auth import LoginRequest, create_token, require_auth, CRM_USERNAME, CRM_PASSWORD
+from auth import (
+    LoginRequest, create_token, require_auth, require_admin,
+    hash_password, verify_password, ensure_bootstrap_admin,
+)
 
 models.Base.metadata.create_all(bind=engine)
+
+# Create default admin on startup if no users exist
+_startup_db = next(get_db())
+try:
+    ensure_bootstrap_admin(_startup_db)
+finally:
+    _startup_db.close()
 
 app = FastAPI(title="Wholesale CRM API", version="1.0.0")
 
@@ -28,21 +38,100 @@ app.add_middleware(
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 
 @app.post("/api/auth/login")
-def login(data: LoginRequest):
-    if data.username != CRM_USERNAME or data.password != CRM_PASSWORD:
+def login(data: LoginRequest, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.username == data.username).first()
+    if not user or not verify_password(data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid username or password")
-    return {"access_token": create_token(data.username), "token_type": "bearer"}
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account is disabled")
+    return {"access_token": create_token(user.username, user.role), "token_type": "bearer"}
 
 
 @app.get("/api/auth/me")
-def me(user: str = Depends(require_auth)):
-    return {"username": user}
+def me(payload: dict = Depends(require_auth)):
+    return {"username": payload["sub"], "role": payload["role"]}
+
+
+# ─── User Management (admin only) ─────────────────────────────────────────────
+
+@app.get("/api/users", response_model=List[schemas.UserOut])
+def list_users(db: Session = Depends(get_db), _=Depends(require_admin)):
+    return db.query(models.User).order_by(models.User.created_at).all()
+
+
+@app.post("/api/users", response_model=schemas.UserOut, status_code=201)
+def create_user(data: schemas.UserCreate, db: Session = Depends(get_db), _=Depends(require_admin)):
+    if db.query(models.User).filter(models.User.username == data.username).first():
+        raise HTTPException(status_code=409, detail="Username already exists")
+    if data.role not in ("admin", "user"):
+        raise HTTPException(status_code=400, detail="Role must be 'admin' or 'user'")
+    user = models.User(
+        username=data.username,
+        password_hash=hash_password(data.password),
+        role=data.role,
+        is_active=data.is_active,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@app.put("/api/users/{user_id}", response_model=schemas.UserOut)
+def update_user(
+    user_id: int,
+    data: schemas.UserUpdate,
+    db: Session = Depends(get_db),
+    payload: dict = Depends(require_admin),
+):
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if data.username is not None:
+        existing = db.query(models.User).filter(
+            models.User.username == data.username, models.User.id != user_id
+        ).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="Username already exists")
+        user.username = data.username
+    if data.password is not None:
+        user.password_hash = hash_password(data.password)
+    if data.role is not None:
+        if data.role not in ("admin", "user"):
+            raise HTTPException(status_code=400, detail="Role must be 'admin' or 'user'")
+        # Prevent demoting yourself
+        if user.username == payload["sub"] and data.role != "admin":
+            raise HTTPException(status_code=400, detail="Cannot remove your own admin role")
+        user.role = data.role
+    if data.is_active is not None:
+        if user.username == payload["sub"] and not data.is_active:
+            raise HTTPException(status_code=400, detail="Cannot disable your own account")
+        user.is_active = data.is_active
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@app.delete("/api/users/{user_id}", status_code=204)
+def delete_user(user_id: int, db: Session = Depends(get_db), payload: dict = Depends(require_admin)):
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.username == payload["sub"]:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    db.delete(user)
+    db.commit()
+
+
+@app.get("/api/auth/me")
+def me(payload: dict = Depends(require_auth)):
+    return {"username": payload["sub"], "role": payload["role"]}
 
 
 # ─── Dashboard ────────────────────────────────────────────────────────────────
 
 @app.get("/api/dashboard", response_model=schemas.DashboardStats)
-def get_dashboard(db: Session = Depends(get_db), _: str = Depends(require_auth)):
+def get_dashboard(db: Session = Depends(get_db), _ = Depends(require_auth)):
     now = datetime.utcnow()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
@@ -121,7 +210,7 @@ def list_accounts(
     account_type: Optional[str] = None,
     territory: Optional[str] = None,
     db: Session = Depends(get_db),
-    _: str = Depends(require_auth),
+    _ = Depends(require_auth),
 ):
     q = db.query(models.Account)
     if search:
@@ -142,7 +231,7 @@ def list_accounts(
 
 
 @app.get("/api/accounts/{account_id}", response_model=schemas.AccountOut)
-def get_account(account_id: int, db: Session = Depends(get_db), _: str = Depends(require_auth)):
+def get_account(account_id: int, db: Session = Depends(get_db), _ = Depends(require_auth)):
     acc = db.query(models.Account).options(joinedload(models.Account.contacts)).filter(models.Account.id == account_id).first()
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -150,7 +239,7 @@ def get_account(account_id: int, db: Session = Depends(get_db), _: str = Depends
 
 
 @app.post("/api/accounts", response_model=schemas.AccountOut, status_code=201)
-def create_account(data: schemas.AccountCreate, db: Session = Depends(get_db), _: str = Depends(require_auth)):
+def create_account(data: schemas.AccountCreate, db: Session = Depends(get_db), _ = Depends(require_auth)):
     acc = models.Account(**data.model_dump())
     db.add(acc)
     db.commit()
@@ -159,7 +248,7 @@ def create_account(data: schemas.AccountCreate, db: Session = Depends(get_db), _
 
 
 @app.put("/api/accounts/{account_id}", response_model=schemas.AccountOut)
-def update_account(account_id: int, data: schemas.AccountUpdate, db: Session = Depends(get_db), _: str = Depends(require_auth)):
+def update_account(account_id: int, data: schemas.AccountUpdate, db: Session = Depends(get_db), _ = Depends(require_auth)):
     acc = db.query(models.Account).filter(models.Account.id == account_id).first()
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -171,7 +260,7 @@ def update_account(account_id: int, data: schemas.AccountUpdate, db: Session = D
 
 
 @app.delete("/api/accounts/{account_id}", status_code=204)
-def delete_account(account_id: int, db: Session = Depends(get_db), _: str = Depends(require_auth)):
+def delete_account(account_id: int, db: Session = Depends(get_db), _ = Depends(require_auth)):
     acc = db.query(models.Account).filter(models.Account.id == account_id).first()
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -182,7 +271,7 @@ def delete_account(account_id: int, db: Session = Depends(get_db), _: str = Depe
 # ─── Contacts ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/contacts", response_model=List[schemas.ContactOut])
-def list_contacts(account_id: Optional[int] = None, db: Session = Depends(get_db), _: str = Depends(require_auth)):
+def list_contacts(account_id: Optional[int] = None, db: Session = Depends(get_db), _ = Depends(require_auth)):
     q = db.query(models.Contact)
     if account_id:
         q = q.filter(models.Contact.account_id == account_id)
@@ -190,7 +279,7 @@ def list_contacts(account_id: Optional[int] = None, db: Session = Depends(get_db
 
 
 @app.post("/api/contacts", response_model=schemas.ContactOut, status_code=201)
-def create_contact(data: schemas.ContactCreate, db: Session = Depends(get_db), _: str = Depends(require_auth)):
+def create_contact(data: schemas.ContactCreate, db: Session = Depends(get_db), _ = Depends(require_auth)):
     acc = db.query(models.Account).filter(models.Account.id == data.account_id).first()
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -204,7 +293,7 @@ def create_contact(data: schemas.ContactCreate, db: Session = Depends(get_db), _
 
 
 @app.put("/api/contacts/{contact_id}", response_model=schemas.ContactOut)
-def update_contact(contact_id: int, data: schemas.ContactUpdate, db: Session = Depends(get_db), _: str = Depends(require_auth)):
+def update_contact(contact_id: int, data: schemas.ContactUpdate, db: Session = Depends(get_db), _ = Depends(require_auth)):
     contact = db.query(models.Contact).filter(models.Contact.id == contact_id).first()
     if not contact:
         raise HTTPException(status_code=404, detail="Contact not found")
@@ -216,7 +305,7 @@ def update_contact(contact_id: int, data: schemas.ContactUpdate, db: Session = D
 
 
 @app.delete("/api/contacts/{contact_id}", status_code=204)
-def delete_contact(contact_id: int, db: Session = Depends(get_db), _: str = Depends(require_auth)):
+def delete_contact(contact_id: int, db: Session = Depends(get_db), _ = Depends(require_auth)):
     contact = db.query(models.Contact).filter(models.Contact.id == contact_id).first()
     if not contact:
         raise HTTPException(status_code=404, detail="Contact not found")
@@ -234,7 +323,7 @@ def list_follow_ups(
     follow_up_type: Optional[str] = None,
     overdue_only: bool = False,
     db: Session = Depends(get_db),
-    _: str = Depends(require_auth),
+    _ = Depends(require_auth),
 ):
     q = db.query(models.FollowUp).options(joinedload(models.FollowUp.account), joinedload(models.FollowUp.contact))
     if account_id:
@@ -251,7 +340,7 @@ def list_follow_ups(
 
 
 @app.get("/api/follow-ups/{follow_up_id}", response_model=schemas.FollowUpOut)
-def get_follow_up(follow_up_id: int, db: Session = Depends(get_db), _: str = Depends(require_auth)):
+def get_follow_up(follow_up_id: int, db: Session = Depends(get_db), _ = Depends(require_auth)):
     fu = db.query(models.FollowUp).options(joinedload(models.FollowUp.account), joinedload(models.FollowUp.contact)).filter(models.FollowUp.id == follow_up_id).first()
     if not fu:
         raise HTTPException(status_code=404, detail="Follow-up not found")
@@ -259,7 +348,7 @@ def get_follow_up(follow_up_id: int, db: Session = Depends(get_db), _: str = Dep
 
 
 @app.post("/api/follow-ups", response_model=schemas.FollowUpOut, status_code=201)
-def create_follow_up(data: schemas.FollowUpCreate, db: Session = Depends(get_db), _: str = Depends(require_auth)):
+def create_follow_up(data: schemas.FollowUpCreate, db: Session = Depends(get_db), _ = Depends(require_auth)):
     fu = models.FollowUp(**data.model_dump())
     db.add(fu)
     db.commit()
@@ -268,7 +357,7 @@ def create_follow_up(data: schemas.FollowUpCreate, db: Session = Depends(get_db)
 
 
 @app.put("/api/follow-ups/{follow_up_id}", response_model=schemas.FollowUpOut)
-def update_follow_up(follow_up_id: int, data: schemas.FollowUpUpdate, db: Session = Depends(get_db), _: str = Depends(require_auth)):
+def update_follow_up(follow_up_id: int, data: schemas.FollowUpUpdate, db: Session = Depends(get_db), _ = Depends(require_auth)):
     fu = db.query(models.FollowUp).filter(models.FollowUp.id == follow_up_id).first()
     if not fu:
         raise HTTPException(status_code=404, detail="Follow-up not found")
@@ -282,7 +371,7 @@ def update_follow_up(follow_up_id: int, data: schemas.FollowUpUpdate, db: Sessio
 
 
 @app.delete("/api/follow-ups/{follow_up_id}", status_code=204)
-def delete_follow_up(follow_up_id: int, db: Session = Depends(get_db), _: str = Depends(require_auth)):
+def delete_follow_up(follow_up_id: int, db: Session = Depends(get_db), _ = Depends(require_auth)):
     fu = db.query(models.FollowUp).filter(models.FollowUp.id == follow_up_id).first()
     if not fu:
         raise HTTPException(status_code=404, detail="Follow-up not found")
@@ -297,7 +386,7 @@ def list_orders(
     account_id: Optional[int] = None,
     status: Optional[str] = None,
     db: Session = Depends(get_db),
-    _: str = Depends(require_auth),
+    _ = Depends(require_auth),
 ):
     q = db.query(models.Order).options(joinedload(models.Order.account), joinedload(models.Order.items))
     if account_id:
@@ -308,7 +397,7 @@ def list_orders(
 
 
 @app.get("/api/orders/{order_id}", response_model=schemas.OrderOut)
-def get_order(order_id: int, db: Session = Depends(get_db), _: str = Depends(require_auth)):
+def get_order(order_id: int, db: Session = Depends(get_db), _ = Depends(require_auth)):
     order = db.query(models.Order).options(joinedload(models.Order.account), joinedload(models.Order.items)).filter(models.Order.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -316,7 +405,7 @@ def get_order(order_id: int, db: Session = Depends(get_db), _: str = Depends(req
 
 
 @app.post("/api/orders", response_model=schemas.OrderOut, status_code=201)
-def create_order(data: schemas.OrderCreate, db: Session = Depends(get_db), _: str = Depends(require_auth)):
+def create_order(data: schemas.OrderCreate, db: Session = Depends(get_db), _ = Depends(require_auth)):
     order_data = data.model_dump(exclude={"items"})
     if not order_data.get("order_number"):
         count = db.query(func.count(models.Order.id)).scalar() + 1
@@ -338,7 +427,7 @@ def create_order(data: schemas.OrderCreate, db: Session = Depends(get_db), _: st
 
 
 @app.put("/api/orders/{order_id}", response_model=schemas.OrderOut)
-def update_order(order_id: int, data: schemas.OrderUpdate, db: Session = Depends(get_db), _: str = Depends(require_auth)):
+def update_order(order_id: int, data: schemas.OrderUpdate, db: Session = Depends(get_db), _ = Depends(require_auth)):
     order = db.query(models.Order).filter(models.Order.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -360,7 +449,7 @@ def update_order(order_id: int, data: schemas.OrderUpdate, db: Session = Depends
 
 
 @app.delete("/api/orders/{order_id}", status_code=204)
-def delete_order(order_id: int, db: Session = Depends(get_db), _: str = Depends(require_auth)):
+def delete_order(order_id: int, db: Session = Depends(get_db), _ = Depends(require_auth)):
     order = db.query(models.Order).filter(models.Order.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")

@@ -1,23 +1,18 @@
 import { createContext, useContext, useState, useEffect } from 'react'
 
 const AuthContext = createContext(null)
-
 const TOKEN_KEY = 'crm_token'
 
 export function AuthProvider({ children }) {
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY))
-  const [user, setUser] = useState(null)
+  const [user, setUser] = useState(null)     // { username, role }
   const [checking, setChecking] = useState(true)
 
   useEffect(() => {
-    if (!token) {
-      setChecking(false)
-      return
-    }
-    // Verify token is still valid
+    if (!token) { setChecking(false); return }
     fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } })
       .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((data) => setUser(data.username))
+      .then((data) => setUser({ username: data.username, role: data.role }))
       .catch(() => { localStorage.removeItem(TOKEN_KEY); setToken(null) })
       .finally(() => setChecking(false))
   }, [token])
@@ -35,7 +30,11 @@ export function AuthProvider({ children }) {
     const data = await res.json()
     localStorage.setItem(TOKEN_KEY, data.access_token)
     setToken(data.access_token)
-    setUser(username)
+    // Fetch user info to get role
+    const me = await fetch('/api/auth/me', {
+      headers: { Authorization: `Bearer ${data.access_token}` },
+    }).then((r) => r.json())
+    setUser({ username: me.username, role: me.role })
   }
 
   const logout = () => {
@@ -44,8 +43,10 @@ export function AuthProvider({ children }) {
     setUser(null)
   }
 
+  const isAdmin = user?.role === 'admin'
+
   return (
-    <AuthContext.Provider value={{ token, user, checking, login, logout, isAuthenticated: !!token && !!user }}>
+    <AuthContext.Provider value={{ token, user, checking, login, logout, isAdmin, isAuthenticated: !!token && !!user }}>
       {children}
     </AuthContext.Provider>
   )
