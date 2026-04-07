@@ -14,6 +14,7 @@ from auth import (
     LoginRequest, create_token, require_auth, require_admin,
     hash_password, verify_password, ensure_bootstrap_admin,
 )
+from notifications import start_scheduler, stop_scheduler, send_daily_digests, send_email, build_digest_html, _smtp_configured
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -35,6 +36,16 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+def startup():
+    start_scheduler()
+
+
+@app.on_event("shutdown")
+def shutdown():
+    stop_scheduler()
+
+
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 
 @app.post("/api/auth/login")
@@ -50,6 +61,38 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
 @app.get("/api/auth/me")
 def me(payload: dict = Depends(require_auth)):
     return {"username": payload["sub"], "role": payload["role"]}
+
+
+# ─── Notification endpoints ───────────────────────────────────────────────────
+
+@app.post("/api/notifications/send-now")
+def trigger_digest_now(_=Depends(require_admin)):
+    """Manually trigger the digest for all users right now."""
+    send_daily_digests()
+    return {"detail": "Digest sent"}
+
+
+@app.post("/api/notifications/test")
+def send_test_email(payload: dict, db: Session = Depends(get_db), current=Depends(require_admin)):
+    """Send a test email to the requesting admin."""
+    user = db.query(models.User).filter(models.User.username == current["sub"]).first()
+    if not user or not user.email:
+        raise HTTPException(status_code=400, detail="Set your email address first")
+    if not _smtp_configured():
+        raise HTTPException(status_code=400, detail="SMTP not configured — add SMTP_HOST, SMTP_USER, SMTP_PASSWORD to Railway env vars")
+    html = build_digest_html(user.username, [], [], [])
+    send_email(user.email, "Delight Shoppe · Test Email", html)
+    return {"detail": f"Test email sent to {user.email}"}
+
+
+@app.get("/api/notifications/status")
+def notification_status(_=Depends(require_admin)):
+    return {
+        "smtp_configured": _smtp_configured(),
+        "smtp_host": os.getenv("SMTP_HOST", ""),
+        "smtp_user": os.getenv("SMTP_USER", ""),
+        "notify_hour_utc": int(os.getenv("NOTIFY_HOUR", "8")),
+    }
 
 
 # ─── User Management (admin only) ─────────────────────────────────────────────

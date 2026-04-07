@@ -68,6 +68,11 @@ export const api = {
   updateProduct: (id, data) => req('PUT', `/products/${id}`, data),
   deleteProduct: (id) => req('DELETE', `/products/${id}`),
 
+  // Notifications (admin only)
+  getNotificationStatus: () => req('GET', '/notifications/status'),
+  sendTestEmail: () => req('POST', '/notifications/test', {}),
+  sendDigestNow: () => req('POST', '/notifications/send-now', {}),
+
   // Users (admin only)
   getUsers: () => req('GET', '/users'),
   createUser: (data) => req('POST', '/users', data),

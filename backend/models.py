@@ -13,6 +13,8 @@ class User(Base):
     password_hash = Column(String, nullable=False)
     role = Column(String, default="user")   # "admin" or "user"
     is_active = Column(Boolean, default=True)
+    email = Column(String, nullable=True)
+    notify_email = Column(Boolean, default=True)   # receive follow-up digests
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

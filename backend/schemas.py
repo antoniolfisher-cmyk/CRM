@@ -9,6 +9,8 @@ class UserCreate(BaseModel):
     password: str
     role: str = "user"
     is_active: bool = True
+    email: Optional[str] = None
+    notify_email: bool = True
 
 
 class UserUpdate(BaseModel):
@@ -16,6 +18,8 @@ class UserUpdate(BaseModel):
     password: Optional[str] = None
     role: Optional[str] = None
     is_active: Optional[bool] = None
+    email: Optional[str] = None
+    notify_email: Optional[bool] = None
 
 
 class UserOut(BaseModel):
@@ -23,6 +27,8 @@ class UserOut(BaseModel):
     username: str
     role: str
     is_active: bool
+    email: Optional[str] = None
+    notify_email: bool = True
     created_at: Optional[datetime] = None
 
     class Config:
