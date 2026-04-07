@@ -82,7 +82,10 @@ def send_test_email(db: Session = Depends(get_db), current: dict = Depends(requi
     if not _smtp_configured():
         raise HTTPException(status_code=400, detail="SMTP not configured — add SMTP_HOST, SMTP_USER, SMTP_PASSWORD to Railway env vars")
     html = build_digest_html(user.username, [], [], [])
-    send_email(user.email, "Delight Shoppe · Test Email", html)
+    try:
+        send_email(user.email, "Delight Shoppe · Test Email", html)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"SMTP error: {e}")
     return {"detail": f"Test email sent to {user.email}"}
 
 
