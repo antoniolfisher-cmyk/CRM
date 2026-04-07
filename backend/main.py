@@ -117,7 +117,7 @@ def notification_status(db: Session = Depends(get_db), current: dict = Depends(r
     return {
         "smtp_configured": _smtp_configured(),
         "smtp_host": os.getenv("SMTP_HOST", ""),
-        "smtp_user": os.getenv("RESEND_API_KEY") and "Resend API" or os.getenv("SMTP_USER", ""),
+        "smtp_user": (os.getenv("SENDGRID_API_KEY") and "SendGrid API") or (os.getenv("RESEND_API_KEY") and "Resend API") or os.getenv("SMTP_USER", ""),
         "notify_hour_utc": int(os.getenv("NOTIFY_HOUR", "8")),
         "admin_email": user.email if user else None,
     }

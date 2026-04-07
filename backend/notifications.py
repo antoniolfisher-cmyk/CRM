@@ -29,13 +29,14 @@ import models
 
 log = logging.getLogger(__name__)
 
-SMTP_HOST     = os.getenv("SMTP_HOST", "")
-SMTP_PORT     = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER     = os.getenv("SMTP_USER", "")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
-SMTP_FROM     = os.getenv("SMTP_FROM", SMTP_USER)
-RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
-NOTIFY_HOUR   = int(os.getenv("NOTIFY_HOUR", "8"))
+SMTP_HOST        = os.getenv("SMTP_HOST", "")
+SMTP_PORT        = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER        = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD    = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM        = os.getenv("SMTP_FROM", SMTP_USER)
+RESEND_API_KEY   = os.getenv("RESEND_API_KEY", "")
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
+NOTIFY_HOUR      = int(os.getenv("NOTIFY_HOUR", "8"))
 APP_URL       = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
 if APP_URL and not APP_URL.startswith("http"):
     APP_URL = f"https://{APP_URL}"
@@ -44,7 +45,39 @@ if APP_URL and not APP_URL.startswith("http"):
 # ─── email sending ────────────────────────────────────────────────────────────
 
 def _smtp_configured() -> bool:
-    return bool(RESEND_API_KEY or (SMTP_HOST and SMTP_USER and SMTP_PASSWORD))
+    return bool(SENDGRID_API_KEY or RESEND_API_KEY or (SMTP_HOST and SMTP_USER and SMTP_PASSWORD))
+
+
+def _send_via_sendgrid(to: str, subject: str, html: str):
+    from_raw = SMTP_FROM or "Delight Shoppe <noreply@delightshoppe.org>"
+    if '<' in from_raw:
+        name_part = from_raw[:from_raw.index('<')].strip().strip('"')
+        email_part = from_raw[from_raw.index('<')+1:from_raw.index('>')].strip().lower()
+    else:
+        name_part = "Delight Shoppe"
+        email_part = from_raw.strip().lower()
+
+    payload = json.dumps({
+        "personalizations": [{"to": [{"email": to}]}],
+        "from": {"email": email_part, "name": name_part},
+        "subject": subject,
+        "content": [{"type": "text/html", "value": html}],
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.sendgrid.com/v3/mail/send",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {SENDGRID_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(req, timeout=15)
+        log.info("Email sent via SendGrid to %s: %s", to, subject)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        raise Exception(f"SendGrid {e.code}: {body}")
 
 
 def _send_via_resend(to: str, subject: str, html: str):
@@ -84,6 +117,10 @@ def _send_via_resend(to: str, subject: str, html: str):
 def send_email(to: str, subject: str, html: str):
     if not _smtp_configured():
         log.warning("No email provider configured — skipping email to %s", to)
+        return
+
+    if SENDGRID_API_KEY:
+        _send_via_sendgrid(to, subject, html)
         return
 
     if RESEND_API_KEY:
