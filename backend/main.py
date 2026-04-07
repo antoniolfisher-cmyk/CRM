@@ -24,7 +24,7 @@ try:
 finally:
     _startup_db.close()
 
-app = FastAPI(title="Wholesale CRM API", version="1.0.0")
+app = FastAPI(title="Delight Shoppe API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,

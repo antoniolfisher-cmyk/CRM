@@ -21,7 +21,7 @@ export default function Layout({ children }) {
               <TruckIcon className="w-5 h-5 text-white" />
             </div>
             <div>
-              <p className="text-white font-semibold text-sm leading-tight">WholesaleCRM</p>
+              <p className="text-white font-semibold text-sm leading-tight">Delight Shoppe</p>
               <p className="text-slate-400 text-xs">Distribution Suite</p>
             </div>
           </div>

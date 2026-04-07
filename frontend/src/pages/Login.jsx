@@ -35,7 +35,7 @@ export default function Login() {
             <TruckIcon className="w-6 h-6 text-white" />
           </div>
           <div>
-            <p className="text-white font-bold text-xl leading-tight">WholesaleCRM</p>
+            <p className="text-white font-bold text-xl leading-tight">Delight Shoppe</p>
             <p className="text-slate-400 text-sm">Distribution Suite</p>
           </div>
         </div>
@@ -86,7 +86,7 @@ export default function Login() {
         </div>
 
         <p className="text-center text-slate-500 text-xs mt-6">
-          Wholesale CRM · Follow-Up & Distribution Tracker
+          Delight Shoppe · Follow-Up & Distribution Tracker
         </p>
       </div>
     </div>
