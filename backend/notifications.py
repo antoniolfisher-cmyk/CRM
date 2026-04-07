@@ -48,7 +48,7 @@ def _smtp_configured() -> bool:
     return bool(SENDGRID_API_KEY or RESEND_API_KEY or (SMTP_HOST and SMTP_USER and SMTP_PASSWORD))
 
 
-def _send_via_sendgrid(to: str, subject: str, html: str):
+def _send_via_sendgrid(to: str, subject: str, html: str, api_key: str):
     from_raw = SMTP_FROM or "Delight Shoppe <noreply@delightshoppe.org>"
     if '<' in from_raw:
         name_part = from_raw[:from_raw.index('<')].strip().strip('"')
@@ -67,7 +67,7 @@ def _send_via_sendgrid(to: str, subject: str, html: str):
         "https://api.sendgrid.com/v3/mail/send",
         data=payload,
         headers={
-            "Authorization": f"Bearer {SENDGRID_API_KEY}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
         method="POST",
@@ -80,7 +80,7 @@ def _send_via_sendgrid(to: str, subject: str, html: str):
         raise Exception(f"SendGrid {e.code}: {body}")
 
 
-def _send_via_resend(to: str, subject: str, html: str):
+def _send_via_resend(to: str, subject: str, html: str, api_key: str):
     # Build a clean lowercase from address
     from_addr = SMTP_FROM or f"Delight Shoppe <noreply@delightshoppe.org>"
     # Resend requires lowercase email addresses
@@ -101,7 +101,7 @@ def _send_via_resend(to: str, subject: str, html: str):
         "https://api.resend.com/emails",
         data=payload,
         headers={
-            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
         method="POST",
@@ -115,16 +115,20 @@ def _send_via_resend(to: str, subject: str, html: str):
 
 
 def send_email(to: str, subject: str, html: str):
-    if not _smtp_configured():
+    # Read env vars at call time so Railway env changes take effect without restart
+    sendgrid_key = os.getenv("SENDGRID_API_KEY", "")
+    resend_key   = os.getenv("RESEND_API_KEY", "")
+
+    if not (sendgrid_key or resend_key or _smtp_configured()):
         log.warning("No email provider configured — skipping email to %s", to)
         return
 
-    if SENDGRID_API_KEY:
-        _send_via_sendgrid(to, subject, html)
+    if sendgrid_key:
+        _send_via_sendgrid(to, subject, html, sendgrid_key)
         return
 
-    if RESEND_API_KEY:
-        _send_via_resend(to, subject, html)
+    if resend_key:
+        _send_via_resend(to, subject, html, resend_key)
         return
 
     msg = MIMEMultipart("alternative")
