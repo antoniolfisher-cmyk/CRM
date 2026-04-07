@@ -48,8 +48,18 @@ def _smtp_configured() -> bool:
 
 
 def _send_via_resend(to: str, subject: str, html: str):
+    # Build a clean lowercase from address
+    from_addr = SMTP_FROM or f"Delight Shoppe <noreply@delightshoppe.org>"
+    # Resend requires lowercase email addresses
+    if '<' in from_addr and '>' in from_addr:
+        name_part = from_addr[:from_addr.index('<')].strip()
+        email_part = from_addr[from_addr.index('<')+1:from_addr.index('>')].strip().lower()
+        from_addr = f"{name_part} <{email_part}>"
+    else:
+        from_addr = from_addr.lower().strip()
+
     payload = json.dumps({
-        "from": SMTP_FROM or f"Delight Shoppe <noreply@{SMTP_USER.split('@')[-1] if SMTP_USER else 'delightshoppe.org'}>",
+        "from": from_addr,
         "to": [to],
         "subject": subject,
         "html": html,
@@ -63,10 +73,12 @@ def _send_via_resend(to: str, subject: str, html: str):
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        if resp.status >= 400:
-            raise Exception(f"Resend API error {resp.status}")
-    log.info("Email sent via Resend to %s: %s", to, subject)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            log.info("Email sent via Resend to %s: %s", to, subject)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        raise Exception(f"Resend {e.code}: {body}")
 
 
 def send_email(to: str, subject: str, html: str):

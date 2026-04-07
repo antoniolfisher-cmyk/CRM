@@ -92,10 +92,18 @@ def send_test_email(db: Session = Depends(get_db), current: dict = Depends(requi
 @app.post("/api/users/me/email")
 def set_my_email(body: dict, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     """Let any authenticated user save their own email address."""
-    email = body.get("email", "").strip()
-    user = db.query(models.User).filter(models.User.username == current["sub"]).first()
+    email = body.get("email", "").strip().lower()
+    username = current["sub"]
+    user = db.query(models.User).filter(
+        models.User.username == username
+    ).first()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        # Try case-insensitive match in case username case differs
+        user = db.query(models.User).filter(
+            func.lower(models.User.username) == username.lower()
+        ).first()
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User '{username}' not found — please log out and log back in")
     user.email = email or None
     user.notify_email = body.get("notify_email", user.notify_email)
     db.commit()
