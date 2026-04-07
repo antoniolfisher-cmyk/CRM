@@ -74,7 +74,7 @@ def trigger_digest_now(_=Depends(require_admin)):
 
 
 @app.post("/api/notifications/test")
-def send_test_email(payload: dict, db: Session = Depends(get_db), current=Depends(require_admin)):
+def send_test_email(db: Session = Depends(get_db), current: dict = Depends(require_admin)):
     """Send a test email to the requesting admin."""
     user = db.query(models.User).filter(models.User.username == current["sub"]).first()
     if not user or not user.email:
@@ -87,12 +87,14 @@ def send_test_email(payload: dict, db: Session = Depends(get_db), current=Depend
 
 
 @app.get("/api/notifications/status")
-def notification_status(_=Depends(require_admin)):
+def notification_status(db: Session = Depends(get_db), current: dict = Depends(require_admin)):
+    user = db.query(models.User).filter(models.User.username == current["sub"]).first()
     return {
         "smtp_configured": _smtp_configured(),
         "smtp_host": os.getenv("SMTP_HOST", ""),
         "smtp_user": os.getenv("SMTP_USER", ""),
         "notify_hour_utc": int(os.getenv("NOTIFY_HOUR", "8")),
+        "admin_email": user.email if user else None,
     }
 
 
@@ -114,6 +116,8 @@ def create_user(data: schemas.UserCreate, db: Session = Depends(get_db), _=Depen
         password_hash=hash_password(data.password),
         role=data.role,
         is_active=data.is_active,
+        email=data.email,
+        notify_email=data.notify_email,
     )
     db.add(user)
     db.commit()

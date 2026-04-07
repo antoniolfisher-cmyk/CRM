@@ -118,6 +118,12 @@ export default function Admin() {
           </div>
         )}
 
+        {notifStatus && notifStatus.smtp_configured && !notifStatus.admin_email && (
+          <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-800">
+            <strong>Your account has no email address saved.</strong> Edit your user in the table below and add your email, then try again.
+          </div>
+        )}
+
         {notifMsg && (
           <p className={`text-sm font-medium ${notifMsg.startsWith('✓') ? 'text-green-700' : 'text-red-600'}`}>
             {notifMsg}
