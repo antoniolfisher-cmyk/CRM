@@ -90,6 +90,10 @@ export default function Products() {
   const [filterReplenish, setFilterReplenish] = useState('')
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState(null)
+  const [auraConfigured, setAuraConfigured] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [syncingId, setSyncingId] = useState(null)
+  const [syncResult, setSyncResult] = useState(null)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -99,7 +103,10 @@ export default function Products() {
     api.getProducts(params).then(setProducts).finally(() => setLoading(false))
   }, [search, filterReplenish])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    load()
+    api.getAuraStatus().then(r => setAuraConfigured(r.configured)).catch(() => {})
+  }, [load])
 
   const handleDelete = async (id) => {
     if (!confirm('Delete this product?')) return
@@ -118,6 +125,27 @@ export default function Products() {
     load()
   }
 
+  const handleSyncAll = async () => {
+    setSyncing(true); setSyncResult(null)
+    try {
+      const result = await api.syncAllToAura()
+      setSyncResult(result)
+    } catch (e) {
+      setSyncResult({ error: e.message })
+    } finally { setSyncing(false) }
+  }
+
+  const handleSyncOne = async (productId, e) => {
+    e.stopPropagation()
+    setSyncingId(productId); setSyncResult(null)
+    try {
+      const result = await api.syncOneToAura(productId)
+      setSyncResult(result)
+    } catch (e) {
+      setSyncResult({ error: e.message })
+    } finally { setSyncingId(null) }
+  }
+
   const totalSpent = products.reduce((s, p) => s + (p.money_spent || 0), 0)
   const totalProfit = products.reduce((s, p) => s + ((p.profit || 0) * (p.quantity || 0)), 0)
   const replenishCount = products.filter((p) => p.replenish).length
@@ -129,10 +157,48 @@ export default function Products() {
           <h1 className="text-2xl font-bold text-gray-900">Products</h1>
           <p className="text-gray-500 text-sm mt-1">{products.length} products tracked</p>
         </div>
-        <button className="btn-primary" onClick={() => { setEditing(null); setShowForm(true) }}>
-          <PlusIcon /> Add Product
-        </button>
+        <div className="flex gap-2">
+          {auraConfigured && (
+            <button className="btn-secondary flex items-center gap-2" onClick={handleSyncAll} disabled={syncing}>
+              <AuraIcon />
+              {syncing ? 'Syncing...' : 'Sync All to Aura'}
+            </button>
+          )}
+          <button className="btn-primary" onClick={() => { setEditing(null); setShowForm(true) }}>
+            <PlusIcon /> Add Product
+          </button>
+        </div>
       </div>
+
+      {/* Aura not configured banner */}
+      {!auraConfigured && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-sm text-amber-800 flex items-center gap-2">
+          <AuraIcon className="text-amber-600 shrink-0" />
+          <span>Add <code className="bg-amber-100 px-1 rounded">AURA_API_KEY</code> to your Railway environment variables to enable Aura sync.</span>
+        </div>
+      )}
+
+      {/* Sync result */}
+      {syncResult && (
+        <div className={`rounded-lg p-4 text-sm ${syncResult.error ? 'bg-red-50 border border-red-200' : 'bg-green-50 border border-green-200'}`}>
+          {syncResult.error ? (
+            <p className="text-red-700">✗ {syncResult.error}</p>
+          ) : (
+            <div className="space-y-1">
+              <p className="font-medium text-green-800">
+                ✓ Synced {syncResult.synced?.length || 0} · Skipped {syncResult.skipped?.length || 0} · Errors {syncResult.errors?.length || 0}
+              </p>
+              {syncResult.skipped?.length > 0 && (
+                <p className="text-amber-700 text-xs">{syncResult.skipped.map(s => `${s.product}: ${s.reason}`).join(' · ')}</p>
+              )}
+              {syncResult.errors?.length > 0 && (
+                <p className="text-red-700 text-xs">{syncResult.errors.map(e => `${e.product}: ${e.error}`).join(' · ')}</p>
+              )}
+            </div>
+          )}
+          <button className="text-xs underline mt-1 opacity-60" onClick={() => setSyncResult(null)}>dismiss</button>
+        </div>
+      )}
 
       {/* KPI strip */}
       <div className="grid grid-cols-3 gap-4">
@@ -200,6 +266,16 @@ export default function Products() {
                   ))}
                   <td className="px-3 py-2.5 sticky right-0 bg-white group-hover:bg-gray-50">
                     <div className="flex gap-1">
+                      {auraConfigured && p.asin && (
+                        <button
+                          className="btn-ghost py-1 px-2 text-xs text-purple-600 hover:bg-purple-50"
+                          onClick={(e) => handleSyncOne(p.id, e)}
+                          disabled={syncingId === p.id}
+                          title="Sync to Aura Repricer"
+                        >
+                          {syncingId === p.id ? '...' : <AuraIcon />}
+                        </button>
+                      )}
                       <button className="btn-ghost py-1 px-2 text-xs" onClick={() => { setEditing(p); setShowForm(true) }}>Edit</button>
                       <button className="btn-ghost py-1 px-2 text-xs text-red-500 hover:bg-red-50" onClick={() => handleDelete(p.id)}>Del</button>
                     </div>
@@ -386,4 +462,14 @@ function ProductForm({ initial, onSave, onClose }) {
 
 function PlusIcon() {
   return <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
+}
+
+function AuraIcon({ className = '' }) {
+  return (
+    <svg className={`w-4 h-4 ${className}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 2L2 7l10 5 10-5-10-5z" />
+      <path d="M2 17l10 5 10-5" />
+      <path d="M2 12l10 5 10-5" />
+    </svg>
+  )
 }

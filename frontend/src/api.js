@@ -58,6 +58,11 @@ export const api = {
   updateFollowUp: (id, data) => req('PUT', `/follow-ups/${id}`, data),
   deleteFollowUp: (id) => req('DELETE', `/follow-ups/${id}`),
 
+  // Aura Repricer
+  getAuraStatus: () => req('GET', '/aura/status'),
+  syncAllToAura: () => req('POST', '/aura/sync'),
+  syncOneToAura: (productId) => req('POST', `/aura/sync/${productId}`),
+
   // Products
   getProducts: (params = {}) => {
     const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== '')).toString()

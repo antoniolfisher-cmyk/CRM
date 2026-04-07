@@ -15,6 +15,7 @@ from auth import (
     hash_password, verify_password, ensure_bootstrap_admin,
 )
 from notifications import start_scheduler, stop_scheduler, send_daily_digests, send_email, build_digest_html, _smtp_configured
+import aura as aura_client
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -498,6 +499,60 @@ def delete_order(order_id: int, db: Session = Depends(get_db), _ = Depends(requi
         raise HTTPException(status_code=404, detail="Order not found")
     db.delete(order)
     db.commit()
+
+
+# ─── Aura Repricer ────────────────────────────────────────────────────────────
+
+@app.get("/api/aura/status")
+def aura_status(_ = Depends(require_auth)):
+    return {"configured": bool(aura_client.AURA_API_KEY)}
+
+
+@app.get("/api/aura/listings")
+def aura_listings(_ = Depends(require_auth)):
+    """Fetch all listings from Aura (for preview/debugging)."""
+    if not aura_client.AURA_API_KEY:
+        raise HTTPException(status_code=400, detail="AURA_API_KEY not set")
+    try:
+        listings = aura_client.fetch_all_listings()
+        return {"count": len(listings), "listings": listings}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/api/aura/sync")
+def aura_sync_all(db: Session = Depends(get_db), _ = Depends(require_auth)):
+    """Sync all products that have an ASIN to Aura."""
+    if not aura_client.AURA_API_KEY:
+        raise HTTPException(status_code=400, detail="AURA_API_KEY not set — add it to Railway environment variables")
+    products = db.query(models.Product).filter(
+        models.Product.asin != None,
+        models.Product.asin != "",
+    ).all()
+    if not products:
+        raise HTTPException(status_code=400, detail="No products with ASINs found")
+    try:
+        result = aura_client.sync_products_to_aura(products)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/api/aura/sync/{product_id}")
+def aura_sync_one(product_id: int, db: Session = Depends(get_db), _ = Depends(require_auth)):
+    """Sync a single product to Aura."""
+    if not aura_client.AURA_API_KEY:
+        raise HTTPException(status_code=400, detail="AURA_API_KEY not set")
+    p = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Product not found")
+    if not p.asin:
+        raise HTTPException(status_code=400, detail="Product has no ASIN — add an ASIN first")
+    try:
+        result = aura_client.sync_products_to_aura([p])
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 # ─── Products ─────────────────────────────────────────────────────────────────
