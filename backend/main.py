@@ -64,6 +64,18 @@ def me(payload: dict = Depends(require_auth)):
     return {"username": payload["sub"], "role": payload["role"]}
 
 
+# ─── Debug (admin only) ───────────────────────────────────────────────────────
+
+@app.get("/api/debug/env")
+def debug_env(_=Depends(require_admin)):
+    return {
+        "SENDGRID_API_KEY": bool(os.getenv("SENDGRID_API_KEY")),
+        "RESEND_API_KEY":   bool(os.getenv("RESEND_API_KEY")),
+        "SMTP_HOST":        bool(os.getenv("SMTP_HOST")),
+        "SMTP_FROM":        os.getenv("SMTP_FROM", ""),
+    }
+
+
 # ─── Notification endpoints ───────────────────────────────────────────────────
 
 @app.post("/api/notifications/send-now")
