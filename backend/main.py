@@ -151,6 +151,10 @@ def update_user(
         if user.username == payload["sub"] and not data.is_active:
             raise HTTPException(status_code=400, detail="Cannot disable your own account")
         user.is_active = data.is_active
+    if data.email is not None:
+        user.email = data.email
+    if data.notify_email is not None:
+        user.notify_email = data.notify_email
     db.commit()
     db.refresh(user)
     return user
