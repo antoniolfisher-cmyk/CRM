@@ -86,6 +86,20 @@ def send_test_email(db: Session = Depends(get_db), current: dict = Depends(requi
     return {"detail": f"Test email sent to {user.email}"}
 
 
+@app.post("/api/users/me/email")
+def set_my_email(body: dict, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    """Let any authenticated user save their own email address."""
+    email = body.get("email", "").strip()
+    user = db.query(models.User).filter(models.User.username == current["sub"]).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.email = email or None
+    user.notify_email = body.get("notify_email", user.notify_email)
+    db.commit()
+    db.refresh(user)
+    return {"email": user.email, "notify_email": user.notify_email}
+
+
 @app.get("/api/notifications/status")
 def notification_status(db: Session = Depends(get_db), current: dict = Depends(require_admin)):
     user = db.query(models.User).filter(models.User.username == current["sub"]).first()

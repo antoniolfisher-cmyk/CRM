@@ -77,6 +77,7 @@ export const api = {
   getNotificationStatus: () => req('GET', '/notifications/status'),
   sendTestEmail: () => req('POST', '/notifications/test', {}),
   sendDigestNow: () => req('POST', '/notifications/send-now', {}),
+  saveMyEmail: (email) => req('POST', '/users/me/email', { email }),
 
   // Users (admin only)
   getUsers: () => req('GET', '/users'),

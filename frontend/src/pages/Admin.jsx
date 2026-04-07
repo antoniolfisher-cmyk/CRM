@@ -15,16 +15,33 @@ export default function Admin() {
   const [sendingTest, setSendingTest] = useState(false)
   const [sendingNow, setSendingNow] = useState(false)
   const [notifMsg, setNotifMsg] = useState('')
+  const [myEmail, setMyEmail] = useState('')
+  const [savingEmail, setSavingEmail] = useState(false)
 
   const load = () => {
     setLoading(true)
     api.getUsers().then(setUsers).finally(() => setLoading(false))
   }
 
+  const loadStatus = () => api.getNotificationStatus().then(s => {
+    setNotifStatus(s)
+    if (s.admin_email) setMyEmail(s.admin_email)
+  }).catch(() => {})
+
   useEffect(() => {
     load()
-    api.getNotificationStatus().then(setNotifStatus).catch(() => {})
+    loadStatus()
   }, [])
+
+  const handleSaveMyEmail = async () => {
+    setSavingEmail(true); setNotifMsg('')
+    try {
+      await api.saveMyEmail(myEmail)
+      await loadStatus()
+      setNotifMsg('✓ Email address saved.')
+    } catch (e) { setNotifMsg(`✗ ${e.message}`) }
+    finally { setSavingEmail(false) }
+  }
 
   const handleDelete = async (u) => {
     if (!confirm(`Delete user "${u.username}"? This cannot be undone.`)) return
@@ -118,9 +135,18 @@ export default function Admin() {
           </div>
         )}
 
-        {notifStatus && notifStatus.smtp_configured && !notifStatus.admin_email && (
-          <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-800">
-            <strong>Your account has no email address saved.</strong> Edit your user in the table below and add your email, then try again.
+        {notifStatus && notifStatus.smtp_configured && (
+          <div className="flex gap-2 items-center">
+            <input
+              className="input flex-1"
+              type="email"
+              placeholder="your@email.com"
+              value={myEmail}
+              onChange={e => setMyEmail(e.target.value)}
+            />
+            <button className="btn-primary whitespace-nowrap" onClick={handleSaveMyEmail} disabled={savingEmail}>
+              {savingEmail ? 'Saving...' : 'Save My Email'}
+            </button>
           </div>
         )}
 
