@@ -457,6 +457,71 @@ def delete_order(order_id: int, db: Session = Depends(get_db), _ = Depends(requi
     db.commit()
 
 
+# ─── Products ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/products", response_model=List[schemas.ProductOut])
+def list_products(
+    search: Optional[str] = None,
+    replenish: Optional[bool] = None,
+    ungated: Optional[bool] = None,
+    db: Session = Depends(get_db),
+    _ = Depends(require_auth),
+):
+    q = db.query(models.Product)
+    if search:
+        q = q.filter(
+            or_(
+                models.Product.product_name.ilike(f"%{search}%"),
+                models.Product.asin.ilike(f"%{search}%"),
+                models.Product.order_number.ilike(f"%{search}%"),
+                models.Product.va_finder.ilike(f"%{search}%"),
+            )
+        )
+    if replenish is not None:
+        q = q.filter(models.Product.replenish == replenish)
+    if ungated is not None:
+        q = q.filter(models.Product.ungated == ungated)
+    return q.order_by(models.Product.created_at.desc()).all()
+
+
+@app.get("/api/products/{product_id}", response_model=schemas.ProductOut)
+def get_product(product_id: int, db: Session = Depends(get_db), _ = Depends(require_auth)):
+    p = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return p
+
+
+@app.post("/api/products", response_model=schemas.ProductOut, status_code=201)
+def create_product(data: schemas.ProductCreate, db: Session = Depends(get_db), _ = Depends(require_auth)):
+    p = models.Product(**data.model_dump())
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+@app.put("/api/products/{product_id}", response_model=schemas.ProductOut)
+def update_product(product_id: int, data: schemas.ProductUpdate, db: Session = Depends(get_db), _ = Depends(require_auth)):
+    p = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Product not found")
+    for k, v in data.model_dump(exclude_unset=True).items():
+        setattr(p, k, v)
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+@app.delete("/api/products/{product_id}", status_code=204)
+def delete_product(product_id: int, db: Session = Depends(get_db), _ = Depends(require_auth)):
+    p = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Product not found")
+    db.delete(p)
+    db.commit()
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}

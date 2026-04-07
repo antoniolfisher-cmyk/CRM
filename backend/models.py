@@ -161,3 +161,53 @@ class OrderItem(Base):
     total = Column(Float, default=0)
 
     order = relationship("Order", back_populates="items")
+
+
+class Product(Base):
+    __tablename__ = "products"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Identity
+    asin = Column(String, index=True)
+    product_name = Column(String, nullable=False)
+    amazon_url = Column(String)
+    purchase_link = Column(String)
+
+    # Discovery & logistics
+    date_found = Column(DateTime(timezone=True))
+    va_finder = Column(String)           # Virtual Assistant who sourced it
+
+    # Purchase info
+    date_purchased = Column(DateTime(timezone=True))
+    order_number = Column(String)
+    quantity = Column(Float, default=0)
+    buy_cost = Column(Float, default=0)   # cost per unit
+    money_spent = Column(Float, default=0)  # total cash out
+
+    # Amazon pipeline
+    arrived_at_prep = Column(DateTime(timezone=True))
+    date_sent_to_amazon = Column(DateTime(timezone=True))
+    amazon_tracking_number = Column(String)
+
+    # Gating
+    ungated = Column(Boolean, default=False)
+    ungating_quantity = Column(Float, default=0)
+
+    # Inventory management
+    total_bought = Column(Float, default=0)
+    replenish = Column(Boolean, default=False)
+
+    # Financials
+    amazon_fee = Column(Float, default=0)
+    total_cost = Column(Float, default=0)   # buy_cost + amazon_fee per unit
+    buy_box = Column(Float, default=0)      # current Amazon buy box price
+    profit = Column(Float, default=0)       # per unit
+    profit_margin = Column(Float, default=0)  # 0.xx decimal
+    roi = Column(Float, default=0)          # 0.xx decimal
+    estimated_sales = Column(Float, default=0)
+    num_sellers = Column(Integer, default=0)
+
+    notes = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())

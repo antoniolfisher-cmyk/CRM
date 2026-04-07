@@ -206,6 +206,54 @@ class OrderOut(OrderBase):
         from_attributes = True
 
 
+# Product schemas
+class ProductBase(BaseModel):
+    asin: Optional[str] = None
+    product_name: str
+    amazon_url: Optional[str] = None
+    purchase_link: Optional[str] = None
+    date_found: Optional[datetime] = None
+    va_finder: Optional[str] = None
+    date_purchased: Optional[datetime] = None
+    order_number: Optional[str] = None
+    quantity: Optional[float] = 0
+    buy_cost: Optional[float] = 0
+    money_spent: Optional[float] = 0
+    arrived_at_prep: Optional[datetime] = None
+    date_sent_to_amazon: Optional[datetime] = None
+    amazon_tracking_number: Optional[str] = None
+    ungated: Optional[bool] = False
+    ungating_quantity: Optional[float] = 0
+    total_bought: Optional[float] = 0
+    replenish: Optional[bool] = False
+    amazon_fee: Optional[float] = 0
+    total_cost: Optional[float] = 0
+    buy_box: Optional[float] = 0
+    profit: Optional[float] = 0
+    profit_margin: Optional[float] = 0
+    roi: Optional[float] = 0
+    estimated_sales: Optional[float] = 0
+    num_sellers: Optional[int] = 0
+    notes: Optional[str] = None
+
+
+class ProductCreate(ProductBase):
+    pass
+
+
+class ProductUpdate(ProductBase):
+    product_name: Optional[str] = None
+
+
+class ProductOut(ProductBase):
+    id: int
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
 # Dashboard schema
 class DashboardStats(BaseModel):
     total_accounts: int

@@ -58,6 +58,16 @@ export const api = {
   updateFollowUp: (id, data) => req('PUT', `/follow-ups/${id}`, data),
   deleteFollowUp: (id) => req('DELETE', `/follow-ups/${id}`),
 
+  // Products
+  getProducts: (params = {}) => {
+    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== '')).toString()
+    return req('GET', `/products${qs ? '?' + qs : ''}`)
+  },
+  getProduct: (id) => req('GET', `/products/${id}`),
+  createProduct: (data) => req('POST', '/products', data),
+  updateProduct: (id, data) => req('PUT', `/products/${id}`, data),
+  deleteProduct: (id) => req('DELETE', `/products/${id}`),
+
   // Users (admin only)
   getUsers: () => req('GET', '/users'),
   createUser: (data) => req('POST', '/users', data),
