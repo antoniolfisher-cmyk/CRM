@@ -55,14 +55,22 @@ def send_email(to: str, subject: str, html: str):
     msg.attach(MIMEText(html, "html"))
 
     try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.ehlo()
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            server.sendmail(SMTP_USER, to, msg.as_string())
+        port = SMTP_PORT
+        if port == 465:
+            with smtplib.SMTP_SSL(SMTP_HOST, port, timeout=15) as server:
+                server.login(SMTP_USER, SMTP_PASSWORD)
+                server.sendmail(SMTP_USER, to, msg.as_string())
+        else:
+            with smtplib.SMTP(SMTP_HOST, port, timeout=15) as server:
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+                server.login(SMTP_USER, SMTP_PASSWORD)
+                server.sendmail(SMTP_USER, to, msg.as_string())
         log.info("Email sent to %s: %s", to, subject)
     except Exception as e:
         log.error("Failed to send email to %s: %s", to, e)
+        raise
 
 
 # ─── digest builder ───────────────────────────────────────────────────────────
