@@ -45,7 +45,7 @@ if APP_URL and not APP_URL.startswith("http"):
 # ─── email sending ────────────────────────────────────────────────────────────
 
 def _smtp_configured() -> bool:
-    return bool(SENDGRID_API_KEY or RESEND_API_KEY or (SMTP_HOST and SMTP_USER and SMTP_PASSWORD))
+    return bool(os.getenv("SENDGRID_API_KEY"))
 
 
 def _send_via_sendgrid(to: str, subject: str, html: str, api_key: str):
@@ -117,19 +117,11 @@ def _send_via_resend(to: str, subject: str, html: str, api_key: str):
 def send_email(to: str, subject: str, html: str):
     # Read env vars at call time so Railway env changes take effect without restart
     sendgrid_key = os.getenv("SENDGRID_API_KEY", "")
-    resend_key   = os.getenv("RESEND_API_KEY", "")
 
-    if not (sendgrid_key or resend_key or _smtp_configured()):
-        log.warning("No email provider configured — skipping email to %s", to)
-        return
+    if not sendgrid_key:
+        raise Exception("No email provider configured — set SENDGRID_API_KEY in Railway")
 
-    if sendgrid_key:
-        _send_via_sendgrid(to, subject, html, sendgrid_key)
-        return
-
-    if resend_key:
-        _send_via_resend(to, subject, html, resend_key)
-        return
+    _send_via_sendgrid(to, subject, html, sendgrid_key)
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
