@@ -16,6 +16,9 @@ Required env vars:
 import os
 import smtplib
 import logging
+import urllib.request
+import urllib.error
+import json
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
@@ -31,6 +34,7 @@ SMTP_PORT     = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER     = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SMTP_FROM     = os.getenv("SMTP_FROM", SMTP_USER)
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 NOTIFY_HOUR   = int(os.getenv("NOTIFY_HOUR", "8"))
 APP_URL       = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
 if APP_URL and not APP_URL.startswith("http"):
@@ -40,12 +44,38 @@ if APP_URL and not APP_URL.startswith("http"):
 # ─── email sending ────────────────────────────────────────────────────────────
 
 def _smtp_configured() -> bool:
-    return bool(SMTP_HOST and SMTP_USER and SMTP_PASSWORD)
+    return bool(RESEND_API_KEY or (SMTP_HOST and SMTP_USER and SMTP_PASSWORD))
+
+
+def _send_via_resend(to: str, subject: str, html: str):
+    payload = json.dumps({
+        "from": SMTP_FROM or f"Delight Shoppe <noreply@{SMTP_USER.split('@')[-1] if SMTP_USER else 'delightshoppe.org'}>",
+        "to": [to],
+        "subject": subject,
+        "html": html,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        if resp.status >= 400:
+            raise Exception(f"Resend API error {resp.status}")
+    log.info("Email sent via Resend to %s: %s", to, subject)
 
 
 def send_email(to: str, subject: str, html: str):
     if not _smtp_configured():
-        log.warning("SMTP not configured — skipping email to %s", to)
+        log.warning("No email provider configured — skipping email to %s", to)
+        return
+
+    if RESEND_API_KEY:
+        _send_via_resend(to, subject, html)
         return
 
     msg = MIMEMultipart("alternative")
@@ -54,23 +84,19 @@ def send_email(to: str, subject: str, html: str):
     msg["To"]      = to
     msg.attach(MIMEText(html, "html"))
 
-    try:
-        port = SMTP_PORT
-        if port == 465:
-            with smtplib.SMTP_SSL(SMTP_HOST, port, timeout=15) as server:
-                server.login(SMTP_USER, SMTP_PASSWORD)
-                server.sendmail(SMTP_USER, to, msg.as_string())
-        else:
-            with smtplib.SMTP(SMTP_HOST, port, timeout=15) as server:
-                server.ehlo()
-                server.starttls()
-                server.ehlo()
-                server.login(SMTP_USER, SMTP_PASSWORD)
-                server.sendmail(SMTP_USER, to, msg.as_string())
-        log.info("Email sent to %s: %s", to, subject)
-    except Exception as e:
-        log.error("Failed to send email to %s: %s", to, e)
-        raise
+    port = SMTP_PORT
+    if port == 465:
+        with smtplib.SMTP_SSL(SMTP_HOST, port, timeout=15) as server:
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.sendmail(SMTP_USER, to, msg.as_string())
+    else:
+        with smtplib.SMTP(SMTP_HOST, port, timeout=15) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.sendmail(SMTP_USER, to, msg.as_string())
+    log.info("Email sent via SMTP to %s: %s", to, subject)
 
 
 # ─── digest builder ───────────────────────────────────────────────────────────
