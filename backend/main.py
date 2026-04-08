@@ -1201,18 +1201,57 @@ def delete_product(product_id: int, db: Session = Depends(get_db), current: dict
 _KEEPA_DOMAIN = int(os.getenv("KEEPA_DOMAIN", "1"))   # 1 = US marketplace
 
 
+def _keepa_buy_box(kp: dict):
+    """
+    Extract the current buy box price from a Keepa product object.
+
+    Keepa data types used (all prices stored as integer cents, divide by 100):
+      0 = AMAZON (Amazon's own listing)
+      1 = MARKETPLACE_NEW (lowest new — any fulfillment)
+      7 = NEW_FBA (FBA buy box winner)
+
+    Strategy:
+    1. Try stats.current[7] → stats.current[1] → stats.current[0]
+    2. Fall back to csv history arrays (last valid price) for the same order
+    """
+    stats  = kp.get("stats") or {}
+    cur    = stats.get("current") or []
+    csv    = kp.get("csv") or []
+
+    def _from_cur(idx):
+        if idx < len(cur) and cur[idx] is not None and cur[idx] > 0:
+            return round(cur[idx] / 100, 2)
+        return None
+
+    def _from_csv(idx):
+        if idx < len(csv) and csv[idx]:
+            hist = csv[idx]  # [time, price, time, price, …]
+            # walk backwards to find last valid (positive) price
+            i = len(hist) - 1
+            while i >= 1:
+                price = hist[i]
+                if price is not None and price > 0:
+                    return round(price / 100, 2)
+                i -= 2
+        return None
+
+    # Try stats.current first, then csv fallback — both with the same priority order
+    for idx in (7, 1, 0):
+        v = _from_cur(idx)
+        if v is not None:
+            return v
+    for idx in (7, 1, 0):
+        v = _from_csv(idx)
+        if v is not None:
+            return v
+    return None
+
+
 def _parse_keepa_product(kp: dict, product: models.Product) -> None:
     """Write Keepa API data into a Product ORM instance (no commit)."""
     from datetime import timezone as _tz
     stats = kp.get("stats") or {}
     current = stats.get("current") or []
-
-    def _price(idx: int):
-        if idx < len(current):
-            v = current[idx]
-            if v is not None and v > 0:
-                return round(v / 100, 2)
-        return None
 
     def _rank(idx: int):
         if idx < len(current):
@@ -1221,8 +1260,8 @@ def _parse_keepa_product(kp: dict, product: models.Product) -> None:
                 return int(v)
         return None
 
-    # Buy Box = data type 7 (NEW_FBA), BSR = data type 3 (SALES)
-    bb = _price(7)
+    # Buy Box — use robust multi-fallback helper
+    bb = _keepa_buy_box(kp)
     if bb is not None:
         product.buy_box = bb
 
@@ -1287,11 +1326,6 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth)):
     stats = kp.get("stats") or {}
     cur = stats.get("current") or []
 
-    def _price(idx):
-        if idx < len(cur) and cur[idx] is not None and cur[idx] > 0:
-            return round(cur[idx] / 100, 2)
-        return None
-
     def _rank(idx):
         if idx < len(cur) and cur[idx] is not None and cur[idx] > 0:
             return int(cur[idx])
@@ -1305,7 +1339,7 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth)):
     return {
         "asin": asin,
         "title": (kp.get("title") or "").strip(),
-        "buy_box": _price(7),
+        "buy_box": _keepa_buy_box(kp),
         "bsr": _rank(3),
         "category": category,
         "num_sellers": kp.get("newCount"),
