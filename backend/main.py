@@ -1544,6 +1544,37 @@ def amazon_status(current: dict = Depends(require_auth)):
     return {"configured": _amazon_sp_configured()}
 
 
+@app.get("/api/amazon/check-asin/{asin}")
+async def check_asin_ungated(asin: str, current: dict = Depends(require_auth)):
+    """Check gating status for any ASIN directly — no saved product required."""
+    if not _amazon_sp_configured():
+        raise HTTPException(503, "Amazon SP-API credentials are not configured")
+
+    seller_id = os.getenv("AMAZON_SELLER_ID", "").strip()
+    access_token = await _get_amazon_access_token()
+
+    import httpx as _httpx
+    async with _httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(
+            f"{_AMAZON_SP_BASE}/listings/2021-08-01/restrictions",
+            params={
+                "asin":           asin.strip().upper(),
+                "sellerId":       seller_id,
+                "marketplaceIds": _AMAZON_MKT_ID,
+                "conditionType":  "new_new",
+            },
+            headers={"x-amz-access-token": access_token},
+        )
+
+    if resp.status_code == 403:
+        raise HTTPException(403, "Amazon SP-API access denied — check credentials and app permissions")
+    if resp.status_code != 200:
+        raise HTTPException(502, f"Amazon SP-API error {resp.status_code}: {resp.text[:300]}")
+
+    restrictions = resp.json().get("restrictions", [])
+    return {"asin": asin.upper(), "ungated": len(restrictions) == 0, "restrictions": restrictions}
+
+
 @app.post("/api/products/{product_id}/check-ungated")
 async def check_amazon_ungated(
     product_id: int,
@@ -1563,40 +1594,11 @@ async def check_amazon_ungated(
     seller_id = os.getenv("AMAZON_SELLER_ID", "").strip()
     access_token = await _get_amazon_access_token()
 
-    import httpx as _httpx
-    async with _httpx.AsyncClient(timeout=20) as client:
-        resp = await client.get(
-            f"{_AMAZON_SP_BASE}/listings/2021-08-01/restrictions",
-            params={
-                "asin":           product.asin.strip().upper(),
-                "sellerId":       seller_id,
-                "marketplaceIds": _AMAZON_MKT_ID,
-                "conditionType":  "new_new",
-            },
-            headers={
-                "x-amz-access-token": access_token,
-                "Content-Type":       "application/json",
-            },
-        )
-
-    if resp.status_code == 403:
-        raise HTTPException(403, "Amazon SP-API access denied — check your credentials and app permissions")
-    if resp.status_code != 200:
-        raise HTTPException(502, f"Amazon SP-API error {resp.status_code}: {resp.text[:300]}")
-
-    data = resp.json()
-    restrictions = data.get("restrictions", [])
-    is_ungated = len(restrictions) == 0
-
-    # Persist the result
-    product.ungated = is_ungated
+    # Reuse the ASIN-level check
+    result = await check_asin_ungated(product.asin, current)
+    product.ungated = result["ungated"]
     db.commit()
-
-    return {
-        "asin": product.asin,
-        "ungated": is_ungated,
-        "restrictions": restrictions,
-    }
+    return result
 
 
 # ─── Time Clock ───────────────────────────────────────────────────────────────

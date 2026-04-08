@@ -82,6 +82,7 @@ export const api = {
   keepaBulkRefresh: () => req('POST', '/keepa/bulk-refresh'),
   amazonStatus: () => req('GET', '/amazon/status'),
   checkAmazonUngated: (id) => req('POST', `/products/${id}/check-ungated`),
+  checkAmazonUngatedAsin: (asin) => req('GET', `/amazon/check-asin/${asin}`),
 
   // Notifications (admin only)
   getNotificationStatus: () => req('GET', '/notifications/status'),

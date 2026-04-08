@@ -520,16 +520,22 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
                 </p>
               )}
               {amazonConfigured && (
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <button
                     type="button"
                     className="text-xs border border-gray-200 rounded px-2 py-0.5 text-blue-700 hover:bg-blue-50 disabled:opacity-50"
-                    disabled={ungatingStatus === 'loading' || !initial?.id}
+                    disabled={ungatingStatus === 'loading'}
                     onClick={async () => {
-                      if (!initial?.id) return
+                      const asin = (form.asin || '').trim().toUpperCase()
+                      if (!asin || asin.length !== 10) {
+                        alert('Enter a valid 10-character ASIN first')
+                        return
+                      }
                       setUngatingStatus('loading')
                       try {
-                        const r = await api.checkAmazonUngated(initial.id)
+                        const r = initial?.id
+                          ? await api.checkAmazonUngated(initial.id)
+                          : await api.checkAmazonUngatedAsin(asin)
                         setUngatingStatus(r.ungated)
                         setForm(f => ({ ...f, ungated: r.ungated }))
                       } catch (e) {
@@ -540,9 +546,8 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
                   >
                     {ungatingStatus === 'loading' ? '⏳ Checking...' : '🔍 Check Ungating (Seller Central)'}
                   </button>
-                  {ungatingStatus === true && <span className="text-xs text-green-700 font-medium">✓ You are approved to sell this ASIN</span>}
-                  {ungatingStatus === false && <span className="text-xs text-amber-700 font-medium">⚠ You are gated for this ASIN</span>}
-                  {ungatingStatus === null && !initial?.id && <span className="text-xs text-gray-400">Save product first to check ungating</span>}
+                  {ungatingStatus === true && <span className="text-xs text-green-700 font-medium">✓ Approved to sell</span>}
+                  {ungatingStatus === false && <span className="text-xs text-amber-700 font-medium">⚠ Gated — approval required</span>}
                 </div>
               )}
             </div>
