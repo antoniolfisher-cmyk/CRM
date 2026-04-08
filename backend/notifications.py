@@ -48,7 +48,8 @@ def _smtp_configured() -> bool:
     return bool(os.getenv("SENDGRID_API_KEY"))
 
 
-def _send_via_sendgrid(to: str, subject: str, html: str, api_key: str):
+def _send_via_sendgrid(to: str, subject: str, html: str, api_key: str,
+                       reply_to: str = None, custom_headers: dict = None):
     import httpx
     from_raw = os.getenv("SMTP_FROM", "Delight Shoppe <noreply@delightshoppe.org>")
     if '<' in from_raw:
@@ -64,6 +65,10 @@ def _send_via_sendgrid(to: str, subject: str, html: str, api_key: str):
         "subject": subject,
         "content": [{"type": "text/html", "value": html}],
     }
+    if reply_to:
+        payload["reply_to"] = {"email": reply_to}
+    if custom_headers:
+        payload["headers"] = custom_headers
     resp = httpx.post(
         "https://api.sendgrid.com/v3/mail/send",
         json=payload,
@@ -109,14 +114,16 @@ def _send_via_resend(to: str, subject: str, html: str, api_key: str):
         raise Exception(f"Resend {e.code}: {body}")
 
 
-def send_email(to: str, subject: str, html: str):
+def send_email(to: str, subject: str, html: str,
+               reply_to: str = None, custom_headers: dict = None):
     # Read env vars at call time so Railway env changes take effect without restart
     sendgrid_key = os.getenv("SENDGRID_API_KEY", "").strip()
 
     if not sendgrid_key:
         raise Exception("No email provider configured — set SENDGRID_API_KEY in Railway")
 
-    _send_via_sendgrid(to, subject, html, sendgrid_key)
+    _send_via_sendgrid(to, subject, html, sendgrid_key,
+                       reply_to=reply_to, custom_headers=custom_headers)
 
 
 # ─── digest builder ───────────────────────────────────────────────────────────

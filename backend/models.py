@@ -169,6 +169,23 @@ class OrderItem(Base):
     order = relationship("Order", back_populates="items")
 
 
+class EmailMessage(Base):
+    __tablename__ = "email_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    account_id = Column(Integer, ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True, index=True)
+    direction = Column(String, nullable=False)   # "sent" | "received"
+    from_email = Column(String)
+    to_email = Column(String)
+    subject = Column(String)
+    body_text = Column(Text)
+    is_read = Column(Boolean, default=False)
+    sent_by = Column(String, nullable=True)      # username for outbound emails
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    account = relationship("Account", backref="email_messages")
+
+
 class TimeEntry(Base):
     __tablename__ = "time_entries"
 

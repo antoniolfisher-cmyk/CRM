@@ -4,6 +4,66 @@ import { useAuth } from '../context/AuthContext'
 import Modal from '../components/Modal'
 import { formatDate } from '../utils'
 
+function InboundEmailSetup({ status }) {
+  const webhookUrl = status.inbound_webhook_url || '/api/webhooks/inbound-email'
+  const configured = status.inbound_configured
+
+  return (
+    <div className="card p-5 space-y-4">
+      <div className="flex items-start justify-between">
+        <div>
+          <h2 className="font-semibold text-gray-900">Inbound Email (Reply Capture)</h2>
+          <p className="text-sm text-gray-500 mt-0.5">
+            Route replies from suppliers back into the CRM — matched to the right account automatically.
+          </p>
+        </div>
+        <span className={`badge ${configured ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
+          {configured ? 'Configured' : 'Not Set Up'}
+        </span>
+      </div>
+
+      {configured ? (
+        <div className="text-sm text-gray-600 bg-green-50 rounded-lg p-3">
+          Replies to <span className="font-mono font-medium">{status.inbound_email}</span> will flow into each account's Email tab and notify the assigned user.
+        </div>
+      ) : (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 space-y-3 text-sm">
+          <p className="font-medium text-amber-900">3 steps to capture reply emails:</p>
+          <ol className="space-y-3 text-amber-800">
+            <li className="flex gap-2">
+              <span className="font-bold shrink-0">1.</span>
+              <span>
+                In <strong>SendGrid dashboard</strong> → Settings → Inbound Parse → Add Host & URL.
+                Set the webhook URL to:<br />
+                <code className="block mt-1 bg-amber-100 px-2 py-1 rounded text-xs break-all">{webhookUrl}</code>
+              </span>
+            </li>
+            <li className="flex gap-2">
+              <span className="font-bold shrink-0">2.</span>
+              <span>
+                Add an <strong>MX record</strong> on your domain (e.g. <code>inbound.delightshoppe.org</code>) pointing to <code>mx.sendgrid.net</code> (priority 10).
+                This is the address your wholesale contacts will reply to.
+              </span>
+            </li>
+            <li className="flex gap-2">
+              <span className="font-bold shrink-0">3.</span>
+              <span>
+                In <strong>Railway Variables</strong>, set:<br />
+                <code className="inline-block mt-1 bg-amber-100 px-2 py-0.5 rounded text-xs">CRM_INBOUND_EMAIL = crm@inbound.delightshoppe.org</code><br />
+                <span className="text-xs text-amber-600 mt-1 block">This becomes the Reply-To on every outbound email.</span>
+              </span>
+            </li>
+          </ol>
+          <p className="text-xs text-amber-600">
+            Once configured, every reply from a supplier lands in the account's Email tab and triggers a notification to the assigned user.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 function TimeClockReport() {
   const [entries, setEntries] = useState([])
   const [users, setUsers] = useState([])
@@ -302,6 +362,9 @@ export default function Admin() {
           </button>
         </div>
       </div>
+
+      {/* ── Inbound Email Setup ── */}
+      {notifStatus && <InboundEmailSetup status={notifStatus} />}
 
       {/* ── Time Clock Report ── */}
       <TimeClockReport />

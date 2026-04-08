@@ -172,7 +172,7 @@ function fillTemplate(text, vars) {
     .replace(/\{\{company_name\}\}/g, 'Delight Shoppe')
 }
 
-function EmailComposer({ account, onClose }) {
+function EmailComposer({ account, onClose, onSent }) {
   const { user } = useAuth()
   const primaryContact = account.contacts?.find(c => c.is_primary) || account.contacts?.[0]
   const defaultTo = account.email || primaryContact?.email || ''
@@ -214,6 +214,7 @@ function EmailComposer({ account, onClose }) {
         sender_name: user?.username || 'Delight Shoppe',
       })
       setMsg('✓ Email sent successfully!')
+      onSent?.()  // refresh thread in parent
     } catch (e) {
       setMsg(`✗ ${e.message}`)
     } finally { setSending(false) }
@@ -454,12 +455,25 @@ function AccountDetail({ accountId, onClose, onEdit, onDeleted }) {
   const [editingContact, setEditingContact] = useState(null)
   const [tab, setTab] = useState('contacts')
   const [showEmail, setShowEmail] = useState(false)
+  const [emails, setEmails] = useState([])
+  const [unreadCount, setUnreadCount] = useState(0)
+  const [loadingEmails, setLoadingEmails] = useState(false)
 
   useEffect(() => {
     api.getAccount(accountId).then(setAccount)
     api.getFollowUps({ account_id: accountId }).then(setFollowUps)
     api.getOrders({ account_id: accountId }).then(setOrders)
+    api.getAccountUnreadCount(accountId).then(r => setUnreadCount(r.unread)).catch(() => {})
   }, [accountId])
+
+  useEffect(() => {
+    if (tab === 'emails') {
+      setLoadingEmails(true)
+      api.getAccountEmails(accountId)
+        .then(data => { setEmails(data); setUnreadCount(0) })
+        .finally(() => setLoadingEmails(false))
+    }
+  }, [tab, accountId])
 
   const handleDeleteContact = async (cid) => {
     if (!confirm('Delete this contact?')) return
@@ -521,13 +535,19 @@ function AccountDetail({ accountId, onClose, onEdit, onDeleted }) {
               { id: 'contacts', label: `Contacts (${account.contacts?.length || 0})` },
               { id: 'followups', label: `Follow-Ups (${followUps.length})` },
               { id: 'orders', label: `Orders (${orders.length})` },
+              { id: 'emails', label: 'Emails', badge: unreadCount },
             ].map(t => (
               <button
                 key={t.id}
                 onClick={() => setTab(t.id)}
-                className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${tab === t.id ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+                className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors flex items-center gap-1.5 ${tab === t.id ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
               >
                 {t.label}
+                {t.badge > 0 && (
+                  <span className="bg-red-500 text-white text-xs font-bold rounded-full w-4 h-4 flex items-center justify-center leading-none">
+                    {t.badge}
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -589,6 +609,43 @@ function AccountDetail({ accountId, onClose, onEdit, onDeleted }) {
             ))}
           </div>
         )}
+
+        {tab === 'emails' && (
+          <div className="space-y-3">
+            <div className="flex justify-end">
+              <button className="btn-primary flex items-center gap-1.5" onClick={() => setShowEmail(true)}>
+                <MailIcon className="w-4 h-4" /> Compose Email
+              </button>
+            </div>
+            {loadingEmails && <p className="text-gray-400 text-sm text-center py-6">Loading...</p>}
+            {!loadingEmails && emails.length === 0 && (
+              <p className="text-gray-400 text-sm text-center py-6">No emails yet. Use the button above to send the first one.</p>
+            )}
+            {!loadingEmails && emails.map(e => {
+              const sent = e.direction === 'sent'
+              const dt = e.created_at ? new Date(e.created_at + (e.created_at.endsWith('Z') ? '' : 'Z')) : null
+              return (
+                <div key={e.id} className={`rounded-xl border px-4 py-3 ${sent ? 'bg-blue-50 border-blue-100 ml-8' : 'bg-gray-50 border-gray-200 mr-8'}`}>
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <div className="flex items-center gap-2">
+                      <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${sent ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700'}`}>
+                        {sent ? `Sent by ${e.sent_by || 'you'}` : 'Received'}
+                      </span>
+                      <span className="text-xs text-gray-500 truncate max-w-xs">
+                        {sent ? `→ ${e.to_email}` : `← ${e.from_email}`}
+                      </span>
+                    </div>
+                    <span className="text-xs text-gray-400 shrink-0">
+                      {dt ? dt.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}
+                    </span>
+                  </div>
+                  <p className="text-sm font-semibold text-gray-800 mb-1">{e.subject}</p>
+                  <p className="text-sm text-gray-600 whitespace-pre-line leading-relaxed line-clamp-4">{e.body_text}</p>
+                </div>
+              )
+            })}
+          </div>
+        )}
       </div>
 
       {showContactForm && (
@@ -598,7 +655,16 @@ function AccountDetail({ accountId, onClose, onEdit, onDeleted }) {
       )}
 
       {showEmail && (
-        <EmailComposer account={account} onClose={() => setShowEmail(false)} />
+        <EmailComposer
+          account={account}
+          onClose={() => setShowEmail(false)}
+          onSent={() => {
+            setShowEmail(false)
+            setTab('emails')
+            setLoadingEmails(true)
+            api.getAccountEmails(accountId).then(setEmails).finally(() => setLoadingEmails(false))
+          }}
+        />
       )}
     </Modal>
   )

@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -186,12 +186,19 @@ def set_my_email(body: dict, db: Session = Depends(get_db), current: dict = Depe
 @app.get("/api/notifications/status")
 def notification_status(db: Session = Depends(get_db), current: dict = Depends(require_admin)):
     user = db.query(models.User).filter(models.User.username == current["sub"]).first()
+    inbound_email = os.getenv("CRM_INBOUND_EMAIL", "").strip()
+    app_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+    if app_domain and not app_domain.startswith("http"):
+        app_domain = f"https://{app_domain}"
     return {
         "smtp_configured": _smtp_configured(),
         "smtp_host": os.getenv("SMTP_HOST", ""),
         "smtp_user": (os.getenv("SENDGRID_API_KEY") and "SendGrid API") or (os.getenv("RESEND_API_KEY") and "Resend API") or os.getenv("SMTP_USER", ""),
         "notify_hour_utc": int(os.getenv("NOTIFY_HOUR", "8")),
         "admin_email": user.email if user else None,
+        "inbound_configured": bool(inbound_email),
+        "inbound_email": inbound_email or None,
+        "inbound_webhook_url": f"{app_domain}/api/webhooks/inbound-email" if app_domain else "/api/webhooks/inbound-email",
     }
 
 
@@ -555,6 +562,40 @@ def _build_wholesale_email_html(body: str, template_id: str, sender_name: str) -
 </body></html>"""
 
 
+def _build_reply_notification_html(owner_name, account_name, from_email, subject, body_preview):
+    safe = lambda s: str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    preview_html = safe(body_preview).replace("\n", "<br>")
+    app_url = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+    if app_url and not app_url.startswith("http"):
+        app_url = f"https://{app_url}"
+    cta = (f'<div style="text-align:center;margin-top:24px;">'
+           f'<a href="{app_url}/accounts" style="display:inline-block;background:#0f1729;color:#c9a84c;'
+           f'padding:12px 28px;border-radius:3px;text-decoration:none;font-weight:700;font-size:11px;'
+           f'letter-spacing:2px;text-transform:uppercase;">View in CRM →</a></div>') if app_url else ""
+    return f"""<!DOCTYPE html><html><body style="margin:0;padding:0;background:#f5f3ee;font-family:-apple-system,sans-serif;">
+<div style="max-width:600px;margin:32px auto;background:#fff;border-radius:4px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.08);">
+  <div style="background:#0f1729;padding:24px 32px;">
+    <h2 style="margin:0;color:#c9a84c;font-family:Georgia,serif;font-size:20px;font-weight:400;">&#128236; New Reply Received</h2>
+    <p style="margin:6px 0 0;color:#8a9bb5;font-size:10px;letter-spacing:3px;text-transform:uppercase;">Delight Shoppe CRM</p>
+  </div>
+  <div style="padding:32px;">
+    <p style="margin:0 0 16px;font-size:15px;color:#374151;">Hi <strong>{safe(owner_name)}</strong>, you have a new reply from <strong>{safe(account_name)}</strong>.</p>
+    <div style="background:#f9f8f6;border-left:3px solid #c9a84c;padding:16px 20px;border-radius:0 5px 5px 0;">
+      <p style="margin:0 0 4px;font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:1px;">From</p>
+      <p style="margin:0 0 12px;font-size:14px;color:#374151;">{safe(from_email)}</p>
+      <p style="margin:0 0 4px;font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:1px;">Subject</p>
+      <p style="margin:0 0 12px;font-size:14px;font-weight:600;color:#0f1729;">{safe(subject)}</p>
+      <p style="margin:0 0 4px;font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:1px;">Preview</p>
+      <p style="margin:0;font-size:13px;color:#6b7280;line-height:1.6;">{preview_html}</p>
+    </div>
+    {cta}
+  </div>
+  <div style="background:#f9f8f6;padding:14px 32px;border-top:1px solid #ede9e0;">
+    <p style="margin:0;font-size:10px;color:#b5b0a8;text-align:center;letter-spacing:1px;text-transform:uppercase;">Delight Shoppe CRM · Automated Notification</p>
+  </div>
+</div></body></html>"""
+
+
 @app.post("/api/accounts/{account_id}/send-email")
 def send_account_email(
     account_id: int,
@@ -562,7 +603,7 @@ def send_account_email(
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
 ):
-    """Send a branded wholesale email to an account via SendGrid."""
+    """Send a branded wholesale email and log it to the account thread."""
     from notifications import send_email as _send_email, _smtp_configured
     if not _smtp_configured():
         raise HTTPException(status_code=400, detail="Email not configured — add SENDGRID_API_KEY in Railway")
@@ -576,12 +617,179 @@ def send_account_email(
     sender = data.sender_name or current.get("sub", "Delight Shoppe")
     html = _build_wholesale_email_html(data.body, data.template_id or "", sender)
 
+    # Set Reply-To to CRM inbound address and embed account id in header
+    inbound_email = os.getenv("CRM_INBOUND_EMAIL", "").strip()
+    reply_to = inbound_email if inbound_email else None
+    custom_headers = {"X-Crm-Account-Id": str(account_id)}
+
     try:
-        _send_email(data.to, data.subject, html)
+        _send_email(data.to, data.subject, html,
+                    reply_to=reply_to, custom_headers=custom_headers)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+    # Log sent email to thread
+    log_entry = models.EmailMessage(
+        account_id=account_id,
+        direction="sent",
+        from_email=current.get("sub", ""),
+        to_email=data.to,
+        subject=data.subject,
+        body_text=data.body,
+        is_read=True,
+        sent_by=current.get("sub", ""),
+    )
+    db.add(log_entry)
+    db.commit()
+
     return {"detail": "Email sent"}
+
+
+@app.get("/api/accounts/{account_id}/emails")
+def get_account_emails(account_id: int, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    acc = db.query(models.Account).filter(models.Account.id == account_id).first()
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+    _check_owner(acc, current)
+    msgs = (
+        db.query(models.EmailMessage)
+        .filter(models.EmailMessage.account_id == account_id)
+        .order_by(models.EmailMessage.created_at.asc())
+        .all()
+    )
+    # Auto-mark received messages as read
+    for m in msgs:
+        if m.direction == "received" and not m.is_read:
+            m.is_read = True
+    db.commit()
+    return [
+        {
+            "id": m.id,
+            "direction": m.direction,
+            "from_email": m.from_email,
+            "to_email": m.to_email,
+            "subject": m.subject,
+            "body_text": m.body_text,
+            "is_read": m.is_read,
+            "sent_by": m.sent_by,
+            "created_at": m.created_at.isoformat() if m.created_at else None,
+        }
+        for m in msgs
+    ]
+
+
+@app.get("/api/accounts/{account_id}/emails/unread-count")
+def get_unread_count(account_id: int, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    acc = db.query(models.Account).filter(models.Account.id == account_id).first()
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+    _check_owner(acc, current)
+    count = db.query(models.EmailMessage).filter(
+        models.EmailMessage.account_id == account_id,
+        models.EmailMessage.direction == "received",
+        models.EmailMessage.is_read == False,
+    ).count()
+    return {"unread": count}
+
+
+@app.post("/api/webhooks/inbound-email")
+async def inbound_email_webhook(request: Request, db: Session = Depends(get_db)):
+    """
+    SendGrid Inbound Parse webhook.
+    Configure in SendGrid dashboard → Settings → Inbound Parse.
+    Point MX record for your inbound domain to mx.sendgrid.net.
+    Set webhook URL to: https://<your-app>/api/webhooks/inbound-email
+    Set CRM_INBOUND_EMAIL env var to the address replies should go to.
+    """
+    import re as _re
+    try:
+        form = await request.form()
+    except Exception:
+        return {"status": "error", "detail": "invalid form"}
+
+    from_raw   = form.get("from", "") or ""
+    to_raw     = form.get("to", "")   or ""
+    subject    = (form.get("subject", "") or "(no subject)").strip()
+    body_text  = form.get("text", "") or ""
+    body_html  = form.get("html", "") or ""
+    headers_raw = form.get("headers", "") or ""
+
+    # Prefer plain text; strip basic HTML if only html provided
+    if not body_text and body_html:
+        body_text = _re.sub(r'<[^>]+>', '', body_html).strip()
+    body_text = body_text[:10000]
+
+    def _extract_addr(s):
+        m = _re.search(r'<([^>]+)>', s)
+        return (m.group(1) if m else s).strip().lower()
+
+    from_addr = _extract_addr(from_raw)
+
+    # 1. Look for X-Crm-Account-Id header (set by CRM when sending)
+    account_id = None
+    for line in headers_raw.splitlines():
+        if line.lower().startswith("x-crm-account-id:"):
+            try:
+                account_id = int(line.split(":", 1)[1].strip())
+            except (ValueError, IndexError):
+                pass
+            break
+
+    # 2. Fall back: match from address to account.email or contact.email
+    if not account_id and from_addr:
+        acc_match = db.query(models.Account).filter(
+            func.lower(models.Account.email) == from_addr
+        ).first()
+        if acc_match:
+            account_id = acc_match.id
+        else:
+            contact_match = db.query(models.Contact).filter(
+                func.lower(models.Contact.email) == from_addr
+            ).first()
+            if contact_match:
+                account_id = contact_match.account_id
+
+    # Store the inbound message
+    msg = models.EmailMessage(
+        account_id=account_id,
+        direction="received",
+        from_email=from_raw,
+        to_email=to_raw,
+        subject=subject,
+        body_text=body_text,
+        is_read=False,
+    )
+    db.add(msg)
+    db.commit()
+    db.refresh(msg)
+
+    # Notify the account owner
+    if account_id:
+        acc = db.query(models.Account).filter(models.Account.id == account_id).first()
+        if acc and acc.created_by:
+            owner = db.query(models.User).filter(
+                models.User.username == acc.created_by
+            ).first()
+            if owner and owner.email:
+                from notifications import send_email as _send_email, _smtp_configured
+                if _smtp_configured():
+                    try:
+                        notif = _build_reply_notification_html(
+                            owner_name=owner.username,
+                            account_name=acc.name,
+                            from_email=from_raw,
+                            subject=subject,
+                            body_preview=body_text[:400],
+                        )
+                        _send_email(
+                            owner.email,
+                            f"New reply from {acc.name}: {subject}",
+                            notif,
+                        )
+                    except Exception:
+                        pass  # never fail the webhook
+
+    return {"status": "ok"}
 
 
 # ─── Contacts ─────────────────────────────────────────────────────────────────
