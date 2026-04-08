@@ -104,16 +104,41 @@ def trigger_digest_now(_=Depends(require_admin)):
 @app.post("/api/notifications/test")
 def send_test_email(db: Session = Depends(get_db), current: dict = Depends(require_admin)):
     """Send a test email to the requesting admin."""
+    import httpx as _httpx
     user = db.query(models.User).filter(models.User.username == current["sub"]).first()
+    if not user:
+        user = db.query(models.User).filter(
+            func.lower(models.User.username) == current["sub"].lower()
+        ).first()
     if not user or not user.email:
         raise HTTPException(status_code=400, detail="Set your email address first")
-    if not _smtp_configured():
-        raise HTTPException(status_code=400, detail="SMTP not configured — add SMTP_HOST, SMTP_USER, SMTP_PASSWORD to Railway env vars")
-    html = build_digest_html(user.username, [], [], [])
+    api_key = os.getenv("SENDGRID_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="SENDGRID_API_KEY not set in Railway")
+    from_raw = os.getenv("SMTP_FROM", "Delight Shoppe <noreply@delightshoppe.org>")
+    if '<' in from_raw:
+        name_part = from_raw[:from_raw.index('<')].strip()
+        email_from = from_raw[from_raw.index('<')+1:from_raw.index('>')].strip().lower()
+    else:
+        name_part, email_from = "Delight Shoppe", from_raw.strip().lower()
     try:
-        send_email(user.email, "Delight Shoppe · Test Email", html)
+        resp = _httpx.post(
+            "https://api.sendgrid.com/v3/mail/send",
+            json={
+                "personalizations": [{"to": [{"email": user.email}]}],
+                "from": {"email": email_from, "name": name_part},
+                "subject": "Delight Shoppe - Test Email",
+                "content": [{"type": "text/plain", "value": f"Hi {user.username}, your email notifications are working!"}],
+            },
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=20,
+        )
+        if resp.status_code >= 400:
+            raise HTTPException(status_code=500, detail=f"SendGrid {resp.status_code}: {resp.text}")
+    except _httpx.TimeoutException:
+        raise HTTPException(status_code=500, detail="SendGrid request timed out")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"SMTP error: {e}")
+        raise HTTPException(status_code=500, detail=f"Email error: {e}")
     return {"detail": f"Test email sent to {user.email}"}
 
 
