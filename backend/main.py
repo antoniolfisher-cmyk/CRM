@@ -438,6 +438,61 @@ def delete_account(account_id: int, db: Session = Depends(get_db), current: dict
     db.commit()
 
 
+@app.post("/api/accounts/{account_id}/send-email")
+def send_account_email(
+    account_id: int,
+    data: schemas.AccountEmailSend,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_auth),
+):
+    """Send an email to an account using pre-loaded wholesale templates."""
+    from notifications import send_email as _send_email, _smtp_configured
+    if not _smtp_configured():
+        raise HTTPException(status_code=400, detail="Email not configured — add SENDGRID_API_KEY in Railway")
+    acc = db.query(models.Account).filter(models.Account.id == account_id).first()
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+    _check_owner(acc, current)
+    if not data.to or "@" not in data.to:
+        raise HTTPException(status_code=400, detail="Invalid recipient email address")
+
+    # Convert plain-text body to minimal HTML (preserve line breaks)
+    html_body = data.body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    html_body = html_body.replace("\n", "<br>")
+
+    from_raw = os.getenv("SMTP_FROM", "Delight Shoppe <noreply@delightshoppe.org>")
+    if "<" in from_raw:
+        sender_display = from_raw[:from_raw.index("<")].strip().strip('"')
+    else:
+        sender_display = from_raw.strip()
+
+    html = f"""<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <div style="max-width:600px;margin:32px auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1);">
+    <div style="background:#1e293b;padding:20px 32px;">
+      <p style="margin:0;color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:.05em;">Delight Shoppe</p>
+    </div>
+    <div style="padding:28px 32px;font-size:15px;line-height:1.7;color:#374151;">
+      {html_body}
+    </div>
+    <div style="background:#f9fafb;padding:16px 32px;border-top:1px solid #e5e7eb;">
+      <p style="margin:0;color:#9ca3af;font-size:12px;text-align:center;">
+        {sender_display} · Delight Shoppe
+      </p>
+    </div>
+  </div>
+</body>
+</html>"""
+
+    try:
+        _send_email(data.to, data.subject, html)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"detail": "Email sent"}
+
+
 # ─── Contacts ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/contacts", response_model=List[schemas.ContactOut])

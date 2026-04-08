@@ -118,26 +118,6 @@ def send_email(to: str, subject: str, html: str):
 
     _send_via_sendgrid(to, subject, html, sendgrid_key)
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"]    = SMTP_FROM
-    msg["To"]      = to
-    msg.attach(MIMEText(html, "html"))
-
-    port = SMTP_PORT
-    if port == 465:
-        with smtplib.SMTP_SSL(SMTP_HOST, port, timeout=15) as server:
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            server.sendmail(SMTP_USER, to, msg.as_string())
-    else:
-        with smtplib.SMTP(SMTP_HOST, port, timeout=15) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            server.sendmail(SMTP_USER, to, msg.as_string())
-    log.info("Email sent via SMTP to %s: %s", to, subject)
-
 
 # ─── digest builder ───────────────────────────────────────────────────────────
 

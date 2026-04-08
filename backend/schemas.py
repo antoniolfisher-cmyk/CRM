@@ -260,6 +260,13 @@ class ProductOut(ProductBase):
         from_attributes = True
 
 
+# Account email
+class AccountEmailSend(BaseModel):
+    to: str
+    subject: str
+    body: str  # plain text; server wraps in HTML
+
+
 # Dashboard schema
 class DashboardStats(BaseModel):
     total_accounts: int

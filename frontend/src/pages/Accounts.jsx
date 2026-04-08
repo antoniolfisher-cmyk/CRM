@@ -4,6 +4,279 @@ import { api } from '../api'
 import StatusBadge from '../components/StatusBadge'
 import Modal from '../components/Modal'
 import { formatDate } from '../utils'
+import { useAuth } from '../context/AuthContext'
+
+// ─── Wholesale email templates ────────────────────────────────────────────────
+
+const TEMPLATES = [
+  {
+    id: 'intro',
+    label: 'Introduction / First Outreach',
+    subject: 'Wholesale Partnership Opportunity — Delight Shoppe',
+    body: `Hi {{contact_name}},
+
+I hope this message finds you well! My name is {{sender_name}} with Delight Shoppe, and I'm reaching out to introduce our wholesale program to {{account_name}}.
+
+We carry a curated selection of high-quality products and offer competitive wholesale pricing, flexible minimum order quantities, and reliable fulfillment.
+
+I'd love the opportunity to share our current catalog and discuss how we can support {{account_name}}'s needs. Would you be open to a quick call this week?
+
+Looking forward to hearing from you.
+
+Best regards,
+{{sender_name}}
+Delight Shoppe
+`,
+  },
+  {
+    id: 'catalog',
+    label: 'Product Catalog / Line Sheet',
+    subject: 'Delight Shoppe Wholesale Catalog — Exclusive Pricing for {{account_name}}',
+    body: `Hi {{contact_name}},
+
+Thank you for your interest in Delight Shoppe's wholesale program! We're excited to share our product lineup with {{account_name}}.
+
+Here's a quick overview of what we offer:
+• Competitive wholesale pricing (30–50% below retail)
+• Low minimum order quantities to get started
+• Fast turnaround and reliable fulfillment
+• Dedicated wholesale support
+
+Please reply to this email and we'll send over our full line sheet and current pricing. We'd also be happy to put together a custom quote based on {{account_name}}'s volume needs.
+
+Best regards,
+{{sender_name}}
+Delight Shoppe
+`,
+  },
+  {
+    id: 'followup',
+    label: 'Follow-Up — No Response',
+    subject: 'Following Up — Delight Shoppe Wholesale',
+    body: `Hi {{contact_name}},
+
+I wanted to follow up on my previous message regarding a wholesale partnership with {{account_name}}. I understand things get busy, so I just wanted to make sure my note didn't get lost.
+
+We'd love the chance to work with {{account_name}} and are happy to tailor our offering to fit your needs — whether that's pricing, quantities, or product mix.
+
+If now isn't the right time, no worries at all. Just let me know and I'll check back in a few months. Either way, feel free to reach out any time.
+
+Best regards,
+{{sender_name}}
+Delight Shoppe
+`,
+  },
+  {
+    id: 'welcome',
+    label: 'Welcome to Wholesale Program',
+    subject: 'Welcome to the Delight Shoppe Wholesale Family, {{account_name}}!',
+    body: `Hi {{contact_name}},
+
+Welcome aboard! We're thrilled to have {{account_name}} as part of the Delight Shoppe wholesale family.
+
+Here's what to expect next:
+1. You'll receive your account credentials and wholesale pricing within 1 business day
+2. Our team will reach out to walk you through the ordering process
+3. Your first order will receive free shipping as a welcome gift
+
+If you have any questions in the meantime, don't hesitate to reply to this email or call us directly. We're here to make this as smooth as possible.
+
+Thank you for choosing to partner with Delight Shoppe. We look forward to a long and successful relationship with {{account_name}}!
+
+Best regards,
+{{sender_name}}
+Delight Shoppe
+`,
+  },
+  {
+    id: 'reorder',
+    label: 'Reorder Reminder',
+    subject: 'Time to Reorder? — Delight Shoppe',
+    body: `Hi {{contact_name}},
+
+We wanted to check in with {{account_name}} to see how your Delight Shoppe inventory is holding up. Based on your typical order cycle, you may be getting close to reorder time!
+
+Our current stock is looking great, so now is a perfect time to place your next order and ensure you don't run into any gaps on the shelf.
+
+Ready to reorder? Just reply to this email with your quantities or any product questions and we'll get everything taken care of quickly.
+
+Best regards,
+{{sender_name}}
+Delight Shoppe
+`,
+  },
+  {
+    id: 'pricing',
+    label: 'Pricing & Terms Overview',
+    subject: 'Wholesale Pricing & Terms — Delight Shoppe × {{account_name}}',
+    body: `Hi {{contact_name}},
+
+Thank you for considering Delight Shoppe as a wholesale partner for {{account_name}}. Here's a quick summary of our standard wholesale terms:
+
+PRICING
+• Wholesale pricing is 40–55% below MSRP
+• Volume discounts available on orders over $1,000
+
+MINIMUM ORDERS
+• Opening order minimum: $250
+• Reorder minimum: $150
+
+PAYMENT TERMS
+• We accept ACH, check, and major credit cards
+• Net 30 terms available for established accounts
+
+SHIPPING
+• Orders typically ship within 2–3 business days
+• Free shipping on orders over $500
+
+I'm happy to put together a custom quote for {{account_name}}. Just let me know what products you're interested in and I'll send over a formal proposal.
+
+Best regards,
+{{sender_name}}
+Delight Shoppe
+`,
+  },
+  {
+    id: 'new_product',
+    label: 'New Product Announcement',
+    subject: 'New Arrivals — Just Added to the Delight Shoppe Wholesale Catalog',
+    body: `Hi {{contact_name}},
+
+Exciting news for {{account_name}}! We've just added several new products to our wholesale catalog, and we think they'd be a great fit for your customers.
+
+These new items are already generating strong interest, and we expect inventory to move quickly. As a valued wholesale partner, we wanted to make sure you had first access.
+
+Reply to this email to request the updated catalog or to place a priority order on any new items before they sell out.
+
+As always, thank you for your continued partnership with Delight Shoppe. We look forward to helping {{account_name}} grow!
+
+Best regards,
+{{sender_name}}
+Delight Shoppe
+`,
+  },
+]
+
+function fillTemplate(text, vars) {
+  return text
+    .replace(/\{\{account_name\}\}/g, vars.account_name || 'your company')
+    .replace(/\{\{contact_name\}\}/g, vars.contact_name || 'there')
+    .replace(/\{\{sender_name\}\}/g, vars.sender_name || 'The Delight Shoppe Team')
+    .replace(/\{\{company_name\}\}/g, 'Delight Shoppe')
+}
+
+function EmailComposer({ account, onClose }) {
+  const { user } = useAuth()
+  const primaryContact = account.contacts?.find(c => c.is_primary) || account.contacts?.[0]
+  const defaultTo = account.email || primaryContact?.email || ''
+  const contactName = primaryContact ? primaryContact.first_name : ''
+
+  const vars = {
+    account_name: account.name,
+    contact_name: contactName || 'there',
+    sender_name: user?.username || 'The Delight Shoppe Team',
+  }
+
+  const [templateId, setTemplateId] = useState(TEMPLATES[0].id)
+  const [to, setTo] = useState(defaultTo)
+  const [subject, setSubject] = useState(() => fillTemplate(TEMPLATES[0].subject, vars))
+  const [body, setBody] = useState(() => fillTemplate(TEMPLATES[0].body, vars))
+  const [sending, setSending] = useState(false)
+  const [msg, setMsg] = useState('')
+
+  const applyTemplate = (id) => {
+    const tpl = TEMPLATES.find(t => t.id === id)
+    if (!tpl) return
+    setTemplateId(id)
+    setSubject(fillTemplate(tpl.subject, vars))
+    setBody(fillTemplate(tpl.body, vars))
+    setMsg('')
+  }
+
+  const handleSend = async () => {
+    if (!to) { setMsg('Enter a recipient email address.'); return }
+    setSending(true); setMsg('')
+    try {
+      await api.sendAccountEmail(account.id, { to, subject, body })
+      setMsg('✓ Email sent successfully!')
+    } catch (e) {
+      setMsg(`✗ ${e.message}`)
+    } finally { setSending(false) }
+  }
+
+  return (
+    <Modal title={`Email — ${account.name}`} onClose={onClose} size="xl">
+      <div className="space-y-4">
+        {/* Template picker */}
+        <div>
+          <label className="label">Template</label>
+          <select
+            className="input"
+            value={templateId}
+            onChange={e => applyTemplate(e.target.value)}
+          >
+            {TEMPLATES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+            <option value="blank">— Blank (write your own) —</option>
+          </select>
+          <p className="text-xs text-gray-400 mt-1">Selecting a template will replace the subject and body below. You can edit freely after.</p>
+        </div>
+
+        <div className="border-t border-gray-100 pt-4 space-y-3">
+          {/* To */}
+          <div>
+            <label className="label">To *</label>
+            <input
+              className="input"
+              type="email"
+              value={to}
+              onChange={e => setTo(e.target.value)}
+              placeholder="recipient@example.com"
+            />
+            {!defaultTo && (
+              <p className="text-xs text-amber-600 mt-1">No email on file for this account — enter one above or add it to the account record.</p>
+            )}
+          </div>
+
+          {/* Subject */}
+          <div>
+            <label className="label">Subject *</label>
+            <input className="input" value={subject} onChange={e => setSubject(e.target.value)} />
+          </div>
+
+          {/* Body */}
+          <div>
+            <label className="label">Message</label>
+            <textarea
+              className="input font-mono text-sm"
+              rows={14}
+              value={body}
+              onChange={e => setBody(e.target.value)}
+            />
+            <p className="text-xs text-gray-400 mt-1">
+              Variables auto-filled: account name, contact name, your username.
+            </p>
+          </div>
+        </div>
+
+        {msg && (
+          <p className={`text-sm font-medium ${msg.startsWith('✓') ? 'text-green-700' : 'text-red-600'}`}>{msg}</p>
+        )}
+
+        <div className="flex justify-end gap-3 pt-2 border-t border-gray-100">
+          <button type="button" className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button
+            className="btn-primary flex items-center gap-2"
+            onClick={handleSend}
+            disabled={sending}
+          >
+            <MailIcon />
+            {sending ? 'Sending...' : 'Send Email'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
 
 const ACCOUNT_TYPES = ['retailer', 'distributor', 'restaurant', 'grocery', 'online', 'other']
 const STATUSES = ['prospect', 'active', 'inactive', 'on_hold']
@@ -18,6 +291,7 @@ export default function Accounts() {
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState(null)
   const [selected, setSelected] = useState(null)
+  const [emailAccount, setEmailAccount] = useState(null)
   const navigate = useNavigate()
 
   const load = useCallback(() => {
@@ -114,6 +388,11 @@ export default function Accounts() {
                   <td className="px-4 py-3 text-gray-500 text-xs">{formatDate(acc.created_at)}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                      <button className="btn-ghost py-1 px-2 flex items-center gap-1 text-blue-600 hover:bg-blue-50"
+                        title="Send wholesale email"
+                        onClick={() => setEmailAccount(acc)}>
+                        <MailIcon className="w-3.5 h-3.5" />
+                      </button>
                       <button className="btn-ghost py-1 px-2" onClick={() => { setEditing(acc); setShowForm(true) }}>Edit</button>
                       <button className="btn-ghost py-1 px-2 text-red-500 hover:bg-red-50" onClick={() => handleDelete(acc.id)}>Del</button>
                     </div>
@@ -143,6 +422,11 @@ export default function Accounts() {
           onClose={() => { setShowForm(false); setEditing(null) }}
         />
       )}
+
+      {/* Email Composer */}
+      {emailAccount && (
+        <EmailComposer account={emailAccount} onClose={() => setEmailAccount(null)} />
+      )}
     </div>
   )
 }
@@ -154,6 +438,7 @@ function AccountDetail({ accountId, onClose, onEdit, onDeleted }) {
   const [showContactForm, setShowContactForm] = useState(false)
   const [editingContact, setEditingContact] = useState(null)
   const [tab, setTab] = useState('contacts')
+  const [showEmail, setShowEmail] = useState(false)
 
   useEffect(() => {
     api.getAccount(accountId).then(setAccount)
@@ -190,7 +475,12 @@ function AccountDetail({ accountId, onClose, onEdit, onDeleted }) {
             <StatusBadge value={account.account_type} />
             {account.territory && <span className="badge bg-slate-100 text-slate-600">{account.territory}</span>}
           </div>
-          <button className="btn-secondary ml-auto" onClick={onEdit}>Edit Account</button>
+          <div className="ml-auto flex gap-2">
+            <button className="btn-secondary flex items-center gap-1.5" onClick={() => setShowEmail(true)}>
+              <MailIcon className="w-4 h-4" /> Email
+            </button>
+            <button className="btn-secondary" onClick={onEdit}>Edit Account</button>
+          </div>
         </div>
 
         <div className="grid grid-cols-2 gap-4 text-sm">
@@ -290,6 +580,10 @@ function AccountDetail({ accountId, onClose, onEdit, onDeleted }) {
         <Modal title={editingContact ? 'Edit Contact' : 'New Contact'} onClose={() => { setShowContactForm(false); setEditingContact(null) }}>
           <ContactForm initial={editingContact} onSave={handleSaveContact} onClose={() => { setShowContactForm(false); setEditingContact(null) }} />
         </Modal>
+      )}
+
+      {showEmail && (
+        <EmailComposer account={account} onClose={() => setShowEmail(false)} />
       )}
     </Modal>
   )
@@ -459,4 +753,12 @@ function ContactForm({ initial, onSave, onClose }) {
 
 function PlusIcon() {
   return <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
+}
+
+function MailIcon({ className = 'w-4 h-4' }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75" />
+    </svg>
+  )
 }

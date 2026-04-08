@@ -39,6 +39,7 @@ export const api = {
   createAccount: (data) => req('POST', '/accounts', data),
   updateAccount: (id, data) => req('PUT', `/accounts/${id}`, data),
   deleteAccount: (id) => req('DELETE', `/accounts/${id}`),
+  sendAccountEmail: (id, data) => req('POST', `/accounts/${id}/send-email`, data),
 
   // Contacts
   getContacts: (accountId) => req('GET', `/contacts${accountId ? `?account_id=${accountId}` : ''}`),
