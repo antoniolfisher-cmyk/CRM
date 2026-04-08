@@ -116,14 +116,11 @@ export default function Admin() {
 
         {notifStatus && !notifStatus.smtp_configured && (
           <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800 space-y-1">
-            <p className="font-medium">Add these environment variables in Railway to enable emails:</p>
+            <p className="font-medium">Add this environment variable in Railway to enable emails:</p>
             <code className="block bg-amber-100 rounded p-2 text-xs mt-2 space-y-1">
-              <span className="block">SMTP_HOST = smtp.gmail.com</span>
-              <span className="block">SMTP_PORT = 587</span>
-              <span className="block">SMTP_USER = yourname@gmail.com</span>
-              <span className="block">SMTP_PASSWORD = your-app-password</span>
-              <span className="block">SMTP_FROM = Delight Shoppe &lt;yourname@gmail.com&gt;</span>
-              <span className="block">NOTIFY_HOUR = 8  (UTC hour to send, default 8 AM)</span>
+              <span className="block">SENDGRID_API_KEY = SG.xxxxxxxxxxxx</span>
+              <span className="block">SMTP_FROM = Delight Shoppe &lt;antonio.fisher@delightshoppe.org&gt;</span>
+              <span className="block">NOTIFY_HOUR = 8</span>
             </code>
           </div>
         )}
