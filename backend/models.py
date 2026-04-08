@@ -169,6 +169,18 @@ class OrderItem(Base):
     order = relationship("Order", back_populates="items")
 
 
+class TimeEntry(Base):
+    __tablename__ = "time_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, nullable=False, index=True)
+    clock_in = Column(DateTime(timezone=True), nullable=False)
+    clock_out = Column(DateTime(timezone=True), nullable=True)
+    duration_minutes = Column(Float, nullable=True)  # computed on clock-out
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class Product(Base):
     __tablename__ = "products"
 

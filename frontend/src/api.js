@@ -85,6 +85,16 @@ export const api = {
   updateUser: (id, data) => req('PUT', `/users/${id}`, data),
   deleteUser: (id) => req('DELETE', `/users/${id}`),
 
+  // Time Clock
+  timeclockIn: () => req('POST', '/timeclock/in', {}),
+  timeclockOut: (notes) => req('POST', '/timeclock/out', { notes: notes || null }),
+  timeclockStatus: () => req('GET', '/timeclock/status'),
+  timeclockMyEntries: () => req('GET', '/timeclock/my-entries'),
+  timeclockReport: (params = {}) => {
+    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v)).toString()
+    return req('GET', `/timeclock/report${qs ? '?' + qs : ''}`)
+  },
+
   // Orders
   getOrders: (params = {}) => {
     const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v)).toString()

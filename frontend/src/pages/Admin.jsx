@@ -4,6 +4,172 @@ import { useAuth } from '../context/AuthContext'
 import Modal from '../components/Modal'
 import { formatDate } from '../utils'
 
+function TimeClockReport() {
+  const [entries, setEntries] = useState([])
+  const [users, setUsers] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [filters, setFilters] = useState({ user: '', date_from: '', date_to: '' })
+  const [exporting, setExporting] = useState(false)
+
+  const load = async () => {
+    setLoading(true)
+    try {
+      const data = await api.timeclockReport(filters)
+      setEntries(data)
+    } catch {} finally { setLoading(false) }
+  }
+
+  useEffect(() => {
+    api.getUsers().then(u => setUsers(u)).catch(() => {})
+    load()
+  }, [])
+
+  const fmtDateTime = (iso) => {
+    if (!iso) return '—'
+    const d = new Date(iso + (iso.endsWith('Z') ? '' : 'Z'))
+    return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  }
+
+  const fmtDuration = (mins) => {
+    if (mins == null) return <span className="text-amber-600 text-xs">In progress</span>
+    const h = Math.floor(mins / 60)
+    const m = Math.round(mins % 60)
+    return `${h}h ${m}m`
+  }
+
+  const totalHours = entries
+    .filter(e => e.duration_minutes != null)
+    .reduce((sum, e) => sum + e.duration_minutes, 0) / 60
+
+  const handleExport = async () => {
+    setExporting(true)
+    try {
+      const qs = new URLSearchParams(
+        Object.entries(filters).filter(([, v]) => v)
+      ).toString()
+      const token = localStorage.getItem('crm_token')
+      const res = await fetch(`/api/timeclock/report/export${qs ? '?' + qs : ''}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Export failed')
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `timeclock_${new Date().toISOString().slice(0, 10)}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) { alert(e.message) }
+    finally { setExporting(false) }
+  }
+
+  return (
+    <div className="card overflow-hidden">
+      <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between gap-4 flex-wrap">
+        <div>
+          <h2 className="font-semibold text-gray-900">Time Clock Report</h2>
+          <p className="text-xs text-gray-400 mt-0.5">Employee hours for payroll</p>
+        </div>
+        <button
+          onClick={handleExport}
+          disabled={exporting}
+          className="btn-secondary flex items-center gap-2 text-sm"
+        >
+          <DownloadIcon />
+          {exporting ? 'Exporting...' : 'Export CSV'}
+        </button>
+      </div>
+
+      {/* Filters */}
+      <div className="px-5 py-3 border-b border-gray-100 flex flex-wrap gap-3 items-end bg-gray-50">
+        <div>
+          <label className="label text-xs">Employee</label>
+          <select
+            className="input text-sm py-1.5"
+            value={filters.user}
+            onChange={e => setFilters(f => ({ ...f, user: e.target.value }))}
+          >
+            <option value="">All employees</option>
+            {users.filter(u => u.role !== 'admin').map(u => (
+              <option key={u.id} value={u.username}>{u.username}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="label text-xs">From</label>
+          <input type="date" className="input text-sm py-1.5" value={filters.date_from}
+            onChange={e => setFilters(f => ({ ...f, date_from: e.target.value }))} />
+        </div>
+        <div>
+          <label className="label text-xs">To</label>
+          <input type="date" className="input text-sm py-1.5" value={filters.date_to}
+            onChange={e => setFilters(f => ({ ...f, date_to: e.target.value }))} />
+        </div>
+        <button className="btn-primary text-sm py-1.5" onClick={load}>Apply</button>
+        <button className="btn-secondary text-sm py-1.5" onClick={() => {
+          setFilters({ user: '', date_from: '', date_to: '' })
+          setTimeout(load, 0)
+        }}>Clear</button>
+      </div>
+
+      {/* Summary */}
+      {entries.length > 0 && (
+        <div className="px-5 py-2.5 bg-blue-50 border-b border-blue-100 flex gap-6 text-sm">
+          <span><span className="font-semibold text-blue-800">{entries.length}</span> <span className="text-blue-600">entries</span></span>
+          <span><span className="font-semibold text-blue-800">{totalHours.toFixed(2)}</span> <span className="text-blue-600">total hours</span></span>
+        </div>
+      )}
+
+      {/* Table */}
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50 border-b border-gray-200">
+            <tr>
+              <th className="text-left px-4 py-3 font-medium text-gray-600">Employee</th>
+              <th className="text-left px-4 py-3 font-medium text-gray-600">Clock In</th>
+              <th className="text-left px-4 py-3 font-medium text-gray-600">Clock Out</th>
+              <th className="text-left px-4 py-3 font-medium text-gray-600">Duration</th>
+              <th className="text-left px-4 py-3 font-medium text-gray-600">Notes</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {loading && (
+              <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">Loading...</td></tr>
+            )}
+            {!loading && entries.length === 0 && (
+              <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">No entries found.</td></tr>
+            )}
+            {!loading && entries.map(e => (
+              <tr key={e.id} className="hover:bg-gray-50">
+                <td className="px-4 py-3">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-full bg-slate-200 flex items-center justify-center text-slate-600 font-semibold text-xs">
+                      {e.username[0].toUpperCase()}
+                    </div>
+                    <span className="font-medium">{e.username}</span>
+                  </div>
+                </td>
+                <td className="px-4 py-3 text-gray-600">{fmtDateTime(e.clock_in)}</td>
+                <td className="px-4 py-3 text-gray-600">{e.clock_out ? fmtDateTime(e.clock_out) : <span className="text-green-600 text-xs font-medium">In progress</span>}</td>
+                <td className="px-4 py-3 font-medium">{fmtDuration(e.duration_minutes)}</td>
+                <td className="px-4 py-3 text-gray-400 text-xs">{e.notes || ''}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function DownloadIcon() {
+  return (
+    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+    </svg>
+  )
+}
+
 export default function Admin() {
   const { user: currentUser } = useAuth()
   const [users, setUsers] = useState([])
@@ -136,6 +302,9 @@ export default function Admin() {
           </button>
         </div>
       </div>
+
+      {/* ── Time Clock Report ── */}
+      <TimeClockReport />
 
       {/* ── Role legend ── */}
       <div className="card p-4 flex gap-6 text-sm">

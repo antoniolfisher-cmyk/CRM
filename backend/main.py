@@ -760,6 +760,175 @@ def delete_product(product_id: int, db: Session = Depends(get_db), current: dict
     db.commit()
 
 
+# ─── Time Clock ───────────────────────────────────────────────────────────────
+
+@app.post("/api/timeclock/in")
+def clock_in(db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    username = current["sub"]
+    # Prevent double clock-in
+    open_entry = (
+        db.query(models.TimeEntry)
+        .filter(models.TimeEntry.username == username, models.TimeEntry.clock_out == None)
+        .first()
+    )
+    if open_entry:
+        raise HTTPException(status_code=400, detail="Already clocked in")
+    entry = models.TimeEntry(username=username, clock_in=datetime.utcnow())
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    return {"id": entry.id, "clock_in": entry.clock_in.isoformat(), "status": "clocked_in"}
+
+
+@app.post("/api/timeclock/out")
+def clock_out(data: dict = {}, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    username = current["sub"]
+    open_entry = (
+        db.query(models.TimeEntry)
+        .filter(models.TimeEntry.username == username, models.TimeEntry.clock_out == None)
+        .first()
+    )
+    if not open_entry:
+        raise HTTPException(status_code=400, detail="Not currently clocked in")
+    now = datetime.utcnow()
+    open_entry.clock_out = now
+    open_entry.duration_minutes = (now - open_entry.clock_in.replace(tzinfo=None)).total_seconds() / 60
+    if isinstance(data, dict):
+        open_entry.notes = data.get("notes") or open_entry.notes
+    db.commit()
+    db.refresh(open_entry)
+    hours = open_entry.duration_minutes / 60
+    return {
+        "id": open_entry.id,
+        "clock_in": open_entry.clock_in.isoformat(),
+        "clock_out": open_entry.clock_out.isoformat(),
+        "duration_minutes": round(open_entry.duration_minutes, 2),
+        "hours": round(hours, 2),
+        "status": "clocked_out",
+    }
+
+
+@app.get("/api/timeclock/status")
+def timeclock_status(db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    username = current["sub"]
+    open_entry = (
+        db.query(models.TimeEntry)
+        .filter(models.TimeEntry.username == username, models.TimeEntry.clock_out == None)
+        .first()
+    )
+    if open_entry:
+        return {"clocked_in": True, "clock_in": open_entry.clock_in.isoformat(), "entry_id": open_entry.id}
+    return {"clocked_in": False}
+
+
+@app.get("/api/timeclock/my-entries")
+def my_entries(db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    entries = (
+        db.query(models.TimeEntry)
+        .filter(models.TimeEntry.username == current["sub"])
+        .order_by(models.TimeEntry.clock_in.desc())
+        .limit(30)
+        .all()
+    )
+    return [
+        {
+            "id": e.id,
+            "clock_in": e.clock_in.isoformat() if e.clock_in else None,
+            "clock_out": e.clock_out.isoformat() if e.clock_out else None,
+            "duration_minutes": round(e.duration_minutes, 2) if e.duration_minutes else None,
+            "notes": e.notes,
+        }
+        for e in entries
+    ]
+
+
+@app.get("/api/timeclock/report")
+def timeclock_report(
+    user: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    db: Session = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    q = db.query(models.TimeEntry)
+    if user:
+        q = q.filter(models.TimeEntry.username == user)
+    if date_from:
+        try:
+            q = q.filter(models.TimeEntry.clock_in >= datetime.fromisoformat(date_from))
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            end = datetime.fromisoformat(date_to) + timedelta(days=1)
+            q = q.filter(models.TimeEntry.clock_in < end)
+        except ValueError:
+            pass
+    entries = q.order_by(models.TimeEntry.clock_in.desc()).all()
+    rows = []
+    for e in entries:
+        rows.append({
+            "id": e.id,
+            "username": e.username,
+            "clock_in": e.clock_in.isoformat() if e.clock_in else None,
+            "clock_out": e.clock_out.isoformat() if e.clock_out else None,
+            "duration_minutes": round(e.duration_minutes, 2) if e.duration_minutes else None,
+            "notes": e.notes,
+        })
+    return rows
+
+
+@app.get("/api/timeclock/report/export")
+def timeclock_export(
+    user: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    db: Session = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    from fastapi.responses import StreamingResponse
+    import io, csv as csv_mod
+
+    q = db.query(models.TimeEntry)
+    if user:
+        q = q.filter(models.TimeEntry.username == user)
+    if date_from:
+        try:
+            q = q.filter(models.TimeEntry.clock_in >= datetime.fromisoformat(date_from))
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            end = datetime.fromisoformat(date_to) + timedelta(days=1)
+            q = q.filter(models.TimeEntry.clock_in < end)
+        except ValueError:
+            pass
+    entries = q.order_by(models.TimeEntry.clock_in.asc()).all()
+
+    output = io.StringIO()
+    writer = csv_mod.writer(output)
+    writer.writerow(["ID", "Username", "Clock In", "Clock Out", "Hours", "Minutes", "Notes"])
+    for e in entries:
+        hours = round(e.duration_minutes / 60, 4) if e.duration_minutes else ""
+        mins = round(e.duration_minutes, 2) if e.duration_minutes else ""
+        writer.writerow([
+            e.id,
+            e.username,
+            e.clock_in.strftime("%Y-%m-%d %H:%M:%S") if e.clock_in else "",
+            e.clock_out.strftime("%Y-%m-%d %H:%M:%S") if e.clock_out else "Still clocked in",
+            hours,
+            mins,
+            e.notes or "",
+        ])
+    output.seek(0)
+    filename = f"timeclock_report_{datetime.utcnow().strftime('%Y%m%d')}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
