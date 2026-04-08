@@ -12,147 +12,188 @@ const TEMPLATES = [
   {
     id: 'intro',
     label: 'Introduction / First Outreach',
-    subject: 'Wholesale Partnership Opportunity — Delight Shoppe',
+    subject: 'Products Your Customers Are Already Searching For — Delight Shoppe',
     body: `Hi {{contact_name}},
 
-I hope this message finds you well! My name is {{sender_name}} with Delight Shoppe, and I'm reaching out to introduce our wholesale program to {{account_name}}.
+My name is {{sender_name}} and I represent Delight Shoppe — an e-commerce brand that sources and sells high-demand consumer products on Amazon and other major online platforms.
 
-We carry a curated selection of high-quality products and offer competitive wholesale pricing, flexible minimum order quantities, and reliable fulfillment.
+Here's what makes us different from every other vendor in your inbox:
 
-I'd love the opportunity to share our current catalog and discuss how we can support {{account_name}}'s needs. Would you be open to a quick call this week?
+We don't guess what sells. We know. Every product in our wholesale catalog is an active Amazon listing with verified sales history, customer reviews, and measurable market demand. Before we ever offer a product to wholesale partners, it's already proven itself with real buyers.
 
-Looking forward to hearing from you.
+That means when {{account_name}} carries our products, you're not taking a bet on something untested — you're stocking items that consumers are already searching for and buying.
 
-Best regards,
+What we're offering {{account_name}}:
+→ Wholesale access to our top-performing product lines
+→ Transparent pricing with strong margins built in
+→ Low opening order minimums — easy to get started
+→ A direct line to our team, not a call center
+
+We'd love to put together a custom line sheet for {{account_name}} based on your market and customer base. Would you be open to a quick call or email exchange this week?
+
+Looking forward to connecting.
+
 {{sender_name}}
-Delight Shoppe
+Delight Shoppe Wholesale
 `,
   },
   {
     id: 'catalog',
     label: 'Product Catalog / Line Sheet',
-    subject: 'Delight Shoppe Wholesale Catalog — Exclusive Pricing for {{account_name}}',
+    subject: 'Your Custom Delight Shoppe Line Sheet Is Ready, {{account_name}}',
     body: `Hi {{contact_name}},
 
-Thank you for your interest in Delight Shoppe's wholesale program! We're excited to share our product lineup with {{account_name}}.
+Thank you for your interest in Delight Shoppe — we're excited to put our products in front of {{account_name}}'s customers.
 
-Here's a quick overview of what we offer:
-• Competitive wholesale pricing (30–50% below retail)
-• Low minimum order quantities to get started
-• Fast turnaround and reliable fulfillment
-• Dedicated wholesale support
+A quick word about how we're built differently:
 
-Please reply to this email and we'll send over our full line sheet and current pricing. We'd also be happy to put together a custom quote based on {{account_name}}'s volume needs.
+Most wholesale vendors hand you a generic catalog and hope something sticks. We do the opposite. Because every product we sell has an active Amazon listing, we can show you real data — bestseller rankings, customer review scores, and demand trends — so you can make confident buying decisions backed by actual market proof.
 
-Best regards,
+WHAT'S IN OUR CATALOG
+Our current wholesale lineup includes products across home essentials, lifestyle, and everyday consumer goods — all with:
+✓ 4-star ratings or higher on Amazon
+✓ Proven repeat-purchase demand
+✓ Retail-ready packaging
+✓ Barcodes and compliance docs on file
+
+GETTING STARTED WITH {{account_name}}
+→ Opening order minimum: $250
+→ Reorder minimum: $150
+→ Net 30 terms available for established accounts
+→ Dedicated account rep — you'll always have a direct contact
+
+Reply to this email and I'll send over our current line sheet with wholesale pricing. I can also pull together a curated selection specifically matched to what typically performs well for distributors like {{account_name}}.
+
 {{sender_name}}
-Delight Shoppe
+Delight Shoppe Wholesale
 `,
   },
   {
     id: 'followup',
     label: 'Follow-Up — No Response',
-    subject: 'Following Up — Delight Shoppe Wholesale',
+    subject: 'One More Thing Before I Move On, {{contact_name}}',
     body: `Hi {{contact_name}},
 
-I wanted to follow up on my previous message regarding a wholesale partnership with {{account_name}}. I understand things get busy, so I just wanted to make sure my note didn't get lost.
+I sent a note a little while back about Delight Shoppe's wholesale program and didn't want to disappear without a proper follow-up.
 
-We'd love the chance to work with {{account_name}} and are happy to tailor our offering to fit your needs — whether that's pricing, quantities, or product mix.
+I'll keep it short:
 
-If now isn't the right time, no worries at all. Just let me know and I'll check back in a few months. Either way, feel free to reach out any time.
+We're an e-commerce brand with Amazon-validated products looking to open wholesale accounts with distributors who want to carry items that already have a proven buyer base. No unproven SKUs, no guesswork — just products that move.
 
-Best regards,
+If this isn't the right moment for {{account_name}}, no pressure at all — just say the word and I'll circle back when the timing is better. But if there's even a small window of interest, I'd love 10 minutes to show you what we have.
+
+Either way, I appreciate your time and wish {{account_name}} continued success.
+
 {{sender_name}}
-Delight Shoppe
+Delight Shoppe Wholesale
 `,
   },
   {
     id: 'welcome',
-    label: 'Welcome to Wholesale Program',
-    subject: 'Welcome to the Delight Shoppe Wholesale Family, {{account_name}}!',
+    label: 'Welcome — New Wholesale Account',
+    subject: '{{account_name}} Is Now a Delight Shoppe Wholesale Partner 🎉',
     body: `Hi {{contact_name}},
 
-Welcome aboard! We're thrilled to have {{account_name}} as part of the Delight Shoppe wholesale family.
+Welcome to the Delight Shoppe wholesale family — we're genuinely excited to have {{account_name}} on board, and we don't take that lightly.
 
-Here's what to expect next:
-1. You'll receive your account credentials and wholesale pricing within 1 business day
-2. Our team will reach out to walk you through the ordering process
-3. Your first order will receive free shipping as a welcome gift
+Here's how we'll make sure this partnership starts strong:
 
-If you have any questions in the meantime, don't hesitate to reply to this email or call us directly. We're here to make this as smooth as possible.
+WHAT HAPPENS NEXT
+1. Your account is now active — wholesale pricing is applied automatically
+2. Your first order ships free, no minimum required
+3. You'll have a direct line to {{sender_name}} for anything you need — no ticketing system, no runaround
 
-Thank you for choosing to partner with Delight Shoppe. We look forward to a long and successful relationship with {{account_name}}!
+WHAT SETS THIS PARTNERSHIP APART
+We built Delight Shoppe around a simple idea: only sell what's already proven. Every product you'll order from us has real Amazon performance data behind it. That means fewer slow movers, faster turns, and more confidence in every purchase you make.
 
-Best regards,
+As {{account_name}} grows with us, we'll keep you first in line for new product drops, volume pricing tiers, and early access to items before they hit the general catalog.
+
+Reply anytime — we're always reachable and always paying attention.
+
 {{sender_name}}
-Delight Shoppe
+Delight Shoppe Wholesale
 `,
   },
   {
     id: 'reorder',
     label: 'Reorder Reminder',
-    subject: 'Time to Reorder? — Delight Shoppe',
+    subject: 'Stock Check — Don\'t Let These Run Out, {{contact_name}}',
     body: `Hi {{contact_name}},
 
-We wanted to check in with {{account_name}} to see how your Delight Shoppe inventory is holding up. Based on your typical order cycle, you may be getting close to reorder time!
+Quick heads-up for {{account_name}} — based on your last order, you may be getting close to reorder territory on some of your top Delight Shoppe SKUs.
 
-Our current stock is looking great, so now is a perfect time to place your next order and ensure you don't run into any gaps on the shelf.
+We're flagging this now because a few of our bestsellers have been moving faster than usual lately. Amazon demand has been climbing on several lines, and that same momentum tends to carry over into wholesale reorders. We'd hate for {{account_name}} to face a gap when the demand is there.
 
-Ready to reorder? Just reply to this email with your quantities or any product questions and we'll get everything taken care of quickly.
+Our current inventory is in great shape, so now is the ideal time to restock before lead times tighten.
 
-Best regards,
+To reorder:
+→ Just reply with your quantities and I'll confirm availability and get your order moving same day
+→ Need to adjust your mix? I can pull up what's been performing best recently and make suggestions
+
+You're in good hands either way — just let me know.
+
 {{sender_name}}
-Delight Shoppe
+Delight Shoppe Wholesale
 `,
   },
   {
     id: 'pricing',
-    label: 'Pricing & Terms Overview',
-    subject: 'Wholesale Pricing & Terms — Delight Shoppe × {{account_name}}',
+    label: 'Pricing & Terms — No Surprises',
+    subject: 'Delight Shoppe Wholesale Terms for {{account_name}} — Straight Talk',
     body: `Hi {{contact_name}},
 
-Thank you for considering Delight Shoppe as a wholesale partner for {{account_name}}. Here's a quick summary of our standard wholesale terms:
+We believe in keeping things transparent — no fine print surprises, no inflated MSRPs to make the discount look bigger than it is. Here's exactly how our wholesale program works for {{account_name}}:
 
 PRICING
-• Wholesale pricing is 40–55% below MSRP
-• Volume discounts available on orders over $1,000
+• Wholesale pricing runs 40–55% below verified Amazon retail pricing
+• Volume breaks kick in at $750, $1,500, and $3,000 order levels
+• All pricing is based on real retail comps — not inflated list prices
 
-MINIMUM ORDERS
-• Opening order minimum: $250
-• Reorder minimum: $150
+MINIMUMS
+• Opening order: $250 (low bar by design — we want you to test before you commit)
+• Reorder: $150
 
-PAYMENT TERMS
-• We accept ACH, check, and major credit cards
-• Net 30 terms available for established accounts
+PAYMENT
+• ACH, check, and all major credit cards accepted
+• Net 30 terms extended to accounts in good standing after the first order
 
-SHIPPING
-• Orders typically ship within 2–3 business days
-• Free shipping on orders over $500
+SHIPPING & FULFILLMENT
+• Orders ship within 2 business days
+• Free shipping on orders $500+
+• Tracking provided on every shipment, no chasing required
 
-I'm happy to put together a custom quote for {{account_name}}. Just let me know what products you're interested in and I'll send over a formal proposal.
+WHY THIS MATTERS FOR {{account_name}}
+We price this way because our products don't need inflated markups to look attractive — they sell because customers already want them. The margins we offer are sustainable for both sides, and we're building long-term partners, not one-time transactions.
 
-Best regards,
+Ready to move forward? Reply with any questions or to request a formal quote.
+
 {{sender_name}}
-Delight Shoppe
+Delight Shoppe Wholesale
 `,
   },
   {
     id: 'new_product',
-    label: 'New Product Announcement',
-    subject: 'New Arrivals — Just Added to the Delight Shoppe Wholesale Catalog',
+    label: 'New Product Drop — Early Access',
+    subject: 'First Look: New Delight Shoppe Products — Before They Go Wide',
     body: `Hi {{contact_name}},
 
-Exciting news for {{account_name}}! We've just added several new products to our wholesale catalog, and we think they'd be a great fit for your customers.
+As a Delight Shoppe wholesale partner, {{account_name}} gets early access — so I wanted to make sure this landed in your inbox before we open these to the broader catalog.
 
-These new items are already generating strong interest, and we expect inventory to move quickly. As a valued wholesale partner, we wanted to make sure you had first access.
+We've just brought in several new product lines that have been going through our vetting process over the past few weeks. Our standard: we don't add anything to the wholesale catalog until it's demonstrated real traction on Amazon — reviews, sales velocity, and sustained demand.
 
-Reply to this email to request the updated catalog or to place a priority order on any new items before they sell out.
+These new additions cleared that bar, and we think they're going to move well.
 
-As always, thank you for your continued partnership with Delight Shoppe. We look forward to helping {{account_name}} grow!
+WHY ACT NOW
+Amazon demand on these categories is rising, which typically signals strong brick-and-mortar and distributor pull shortly after. Getting them into {{account_name}}'s inventory now puts you ahead of that curve — not chasing it.
 
-Best regards,
+Early access orders also receive:
+→ Preferred wholesale pricing (locked in before the next price review)
+→ Priority fulfillment — your order ships before general catalog orders
+
+I'll hold allocation for {{account_name}} for 5 business days. Reply to this email and I'll send over the product details, pricing, and availability.
+
 {{sender_name}}
-Delight Shoppe
+Delight Shoppe Wholesale
 `,
   },
 ]
