@@ -258,6 +258,25 @@ def me(payload: dict = Depends(require_auth)):
     return {"username": payload["sub"], "role": payload["role"]}
 
 
+# ─── Ownership helpers ────────────────────────────────────────────────────────
+
+def _is_admin(current: dict) -> bool:
+    return current.get("role") == "admin"
+
+def _filter_owned(q, model, current: dict):
+    """Filter query to records owned by current user (admin sees all)."""
+    if not _is_admin(current):
+        q = q.filter(
+            (model.created_by == current["sub"]) | (model.created_by == None)
+        )
+    return q
+
+def _check_owner(record, current: dict):
+    """Raise 403 if current user doesn't own the record (admin bypasses)."""
+    if not _is_admin(current) and record.created_by and record.created_by != current["sub"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+
 # ─── Dashboard ────────────────────────────────────────────────────────────────
 
 @app.get("/api/dashboard", response_model=schemas.DashboardStats)
@@ -340,17 +359,16 @@ def list_accounts(
     account_type: Optional[str] = None,
     territory: Optional[str] = None,
     db: Session = Depends(get_db),
-    _ = Depends(require_auth),
+    current: dict = Depends(require_auth),
 ):
     q = db.query(models.Account)
+    q = _filter_owned(q, models.Account, current)
     if search:
-        q = q.filter(
-            or_(
-                models.Account.name.ilike(f"%{search}%"),
-                models.Account.city.ilike(f"%{search}%"),
-                models.Account.email.ilike(f"%{search}%"),
-            )
-        )
+        q = q.filter(or_(
+            models.Account.name.ilike(f"%{search}%"),
+            models.Account.city.ilike(f"%{search}%"),
+            models.Account.email.ilike(f"%{search}%"),
+        ))
     if status:
         q = q.filter(models.Account.status == status)
     if account_type:
@@ -361,16 +379,17 @@ def list_accounts(
 
 
 @app.get("/api/accounts/{account_id}", response_model=schemas.AccountOut)
-def get_account(account_id: int, db: Session = Depends(get_db), _ = Depends(require_auth)):
+def get_account(account_id: int, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     acc = db.query(models.Account).options(joinedload(models.Account.contacts)).filter(models.Account.id == account_id).first()
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
+    _check_owner(acc, current)
     return acc
 
 
 @app.post("/api/accounts", response_model=schemas.AccountOut, status_code=201)
-def create_account(data: schemas.AccountCreate, db: Session = Depends(get_db), _ = Depends(require_auth)):
-    acc = models.Account(**data.model_dump())
+def create_account(data: schemas.AccountCreate, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    acc = models.Account(**data.model_dump(), created_by=current["sub"])
     db.add(acc)
     db.commit()
     db.refresh(acc)
@@ -378,10 +397,11 @@ def create_account(data: schemas.AccountCreate, db: Session = Depends(get_db), _
 
 
 @app.put("/api/accounts/{account_id}", response_model=schemas.AccountOut)
-def update_account(account_id: int, data: schemas.AccountUpdate, db: Session = Depends(get_db), _ = Depends(require_auth)):
+def update_account(account_id: int, data: schemas.AccountUpdate, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     acc = db.query(models.Account).filter(models.Account.id == account_id).first()
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
+    _check_owner(acc, current)
     for k, v in data.model_dump(exclude_unset=True).items():
         setattr(acc, k, v)
     db.commit()
@@ -390,10 +410,11 @@ def update_account(account_id: int, data: schemas.AccountUpdate, db: Session = D
 
 
 @app.delete("/api/accounts/{account_id}", status_code=204)
-def delete_account(account_id: int, db: Session = Depends(get_db), _ = Depends(require_auth)):
+def delete_account(account_id: int, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     acc = db.query(models.Account).filter(models.Account.id == account_id).first()
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
+    _check_owner(acc, current)
     db.delete(acc)
     db.commit()
 
@@ -401,21 +422,23 @@ def delete_account(account_id: int, db: Session = Depends(get_db), _ = Depends(r
 # ─── Contacts ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/contacts", response_model=List[schemas.ContactOut])
-def list_contacts(account_id: Optional[int] = None, db: Session = Depends(get_db), _ = Depends(require_auth)):
+def list_contacts(account_id: Optional[int] = None, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     q = db.query(models.Contact)
+    q = _filter_owned(q, models.Contact, current)
     if account_id:
         q = q.filter(models.Contact.account_id == account_id)
     return q.all()
 
 
 @app.post("/api/contacts", response_model=schemas.ContactOut, status_code=201)
-def create_contact(data: schemas.ContactCreate, db: Session = Depends(get_db), _ = Depends(require_auth)):
+def create_contact(data: schemas.ContactCreate, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     acc = db.query(models.Account).filter(models.Account.id == data.account_id).first()
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
+    _check_owner(acc, current)
     if data.is_primary:
         db.query(models.Contact).filter(models.Contact.account_id == data.account_id).update({"is_primary": False})
-    contact = models.Contact(**data.model_dump())
+    contact = models.Contact(**data.model_dump(), created_by=current["sub"])
     db.add(contact)
     db.commit()
     db.refresh(contact)
@@ -423,10 +446,11 @@ def create_contact(data: schemas.ContactCreate, db: Session = Depends(get_db), _
 
 
 @app.put("/api/contacts/{contact_id}", response_model=schemas.ContactOut)
-def update_contact(contact_id: int, data: schemas.ContactUpdate, db: Session = Depends(get_db), _ = Depends(require_auth)):
+def update_contact(contact_id: int, data: schemas.ContactUpdate, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     contact = db.query(models.Contact).filter(models.Contact.id == contact_id).first()
     if not contact:
         raise HTTPException(status_code=404, detail="Contact not found")
+    _check_owner(contact, current)
     for k, v in data.model_dump(exclude_unset=True).items():
         setattr(contact, k, v)
     db.commit()
@@ -435,10 +459,11 @@ def update_contact(contact_id: int, data: schemas.ContactUpdate, db: Session = D
 
 
 @app.delete("/api/contacts/{contact_id}", status_code=204)
-def delete_contact(contact_id: int, db: Session = Depends(get_db), _ = Depends(require_auth)):
+def delete_contact(contact_id: int, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     contact = db.query(models.Contact).filter(models.Contact.id == contact_id).first()
     if not contact:
         raise HTTPException(status_code=404, detail="Contact not found")
+    _check_owner(contact, current)
     db.delete(contact)
     db.commit()
 
@@ -453,9 +478,10 @@ def list_follow_ups(
     follow_up_type: Optional[str] = None,
     overdue_only: bool = False,
     db: Session = Depends(get_db),
-    _ = Depends(require_auth),
+    current: dict = Depends(require_auth),
 ):
     q = db.query(models.FollowUp).options(joinedload(models.FollowUp.account), joinedload(models.FollowUp.contact))
+    q = _filter_owned(q, models.FollowUp, current)
     if account_id:
         q = q.filter(models.FollowUp.account_id == account_id)
     if status:
@@ -470,16 +496,17 @@ def list_follow_ups(
 
 
 @app.get("/api/follow-ups/{follow_up_id}", response_model=schemas.FollowUpOut)
-def get_follow_up(follow_up_id: int, db: Session = Depends(get_db), _ = Depends(require_auth)):
+def get_follow_up(follow_up_id: int, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     fu = db.query(models.FollowUp).options(joinedload(models.FollowUp.account), joinedload(models.FollowUp.contact)).filter(models.FollowUp.id == follow_up_id).first()
     if not fu:
         raise HTTPException(status_code=404, detail="Follow-up not found")
+    _check_owner(fu, current)
     return fu
 
 
 @app.post("/api/follow-ups", response_model=schemas.FollowUpOut, status_code=201)
-def create_follow_up(data: schemas.FollowUpCreate, db: Session = Depends(get_db), _ = Depends(require_auth)):
-    fu = models.FollowUp(**data.model_dump())
+def create_follow_up(data: schemas.FollowUpCreate, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    fu = models.FollowUp(**data.model_dump(), created_by=current["sub"])
     db.add(fu)
     db.commit()
     db.refresh(fu)
@@ -487,10 +514,11 @@ def create_follow_up(data: schemas.FollowUpCreate, db: Session = Depends(get_db)
 
 
 @app.put("/api/follow-ups/{follow_up_id}", response_model=schemas.FollowUpOut)
-def update_follow_up(follow_up_id: int, data: schemas.FollowUpUpdate, db: Session = Depends(get_db), _ = Depends(require_auth)):
+def update_follow_up(follow_up_id: int, data: schemas.FollowUpUpdate, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     fu = db.query(models.FollowUp).filter(models.FollowUp.id == follow_up_id).first()
     if not fu:
         raise HTTPException(status_code=404, detail="Follow-up not found")
+    _check_owner(fu, current)
     updates = data.model_dump(exclude_unset=True)
     if updates.get("status") == "completed" and not fu.completed_date:
         updates["completed_date"] = datetime.utcnow()
@@ -501,10 +529,11 @@ def update_follow_up(follow_up_id: int, data: schemas.FollowUpUpdate, db: Sessio
 
 
 @app.delete("/api/follow-ups/{follow_up_id}", status_code=204)
-def delete_follow_up(follow_up_id: int, db: Session = Depends(get_db), _ = Depends(require_auth)):
+def delete_follow_up(follow_up_id: int, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     fu = db.query(models.FollowUp).filter(models.FollowUp.id == follow_up_id).first()
     if not fu:
         raise HTTPException(status_code=404, detail="Follow-up not found")
+    _check_owner(fu, current)
     db.delete(fu)
     db.commit()
 
@@ -516,9 +545,10 @@ def list_orders(
     account_id: Optional[int] = None,
     status: Optional[str] = None,
     db: Session = Depends(get_db),
-    _ = Depends(require_auth),
+    current: dict = Depends(require_auth),
 ):
     q = db.query(models.Order).options(joinedload(models.Order.account), joinedload(models.Order.items))
+    q = _filter_owned(q, models.Order, current)
     if account_id:
         q = q.filter(models.Order.account_id == account_id)
     if status:
@@ -527,20 +557,21 @@ def list_orders(
 
 
 @app.get("/api/orders/{order_id}", response_model=schemas.OrderOut)
-def get_order(order_id: int, db: Session = Depends(get_db), _ = Depends(require_auth)):
+def get_order(order_id: int, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     order = db.query(models.Order).options(joinedload(models.Order.account), joinedload(models.Order.items)).filter(models.Order.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
+    _check_owner(order, current)
     return order
 
 
 @app.post("/api/orders", response_model=schemas.OrderOut, status_code=201)
-def create_order(data: schemas.OrderCreate, db: Session = Depends(get_db), _ = Depends(require_auth)):
+def create_order(data: schemas.OrderCreate, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     order_data = data.model_dump(exclude={"items"})
     if not order_data.get("order_number"):
         count = db.query(func.count(models.Order.id)).scalar() + 1
         order_data["order_number"] = f"ORD-{datetime.utcnow().year}-{count:04d}"
-    order = models.Order(**order_data)
+    order = models.Order(**order_data, created_by=current["sub"])
     db.add(order)
     db.flush()
     subtotal = 0
@@ -557,10 +588,11 @@ def create_order(data: schemas.OrderCreate, db: Session = Depends(get_db), _ = D
 
 
 @app.put("/api/orders/{order_id}", response_model=schemas.OrderOut)
-def update_order(order_id: int, data: schemas.OrderUpdate, db: Session = Depends(get_db), _ = Depends(require_auth)):
+def update_order(order_id: int, data: schemas.OrderUpdate, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     order = db.query(models.Order).filter(models.Order.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
+    _check_owner(order, current)
     updates = data.model_dump(exclude_unset=True, exclude={"items"})
     for k, v in updates.items():
         setattr(order, k, v)
@@ -579,10 +611,11 @@ def update_order(order_id: int, data: schemas.OrderUpdate, db: Session = Depends
 
 
 @app.delete("/api/orders/{order_id}", status_code=204)
-def delete_order(order_id: int, db: Session = Depends(get_db), _ = Depends(require_auth)):
+def delete_order(order_id: int, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     order = db.query(models.Order).filter(models.Order.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
+    _check_owner(order, current)
     db.delete(order)
     db.commit()
 
@@ -649,18 +682,17 @@ def list_products(
     replenish: Optional[bool] = None,
     ungated: Optional[bool] = None,
     db: Session = Depends(get_db),
-    _ = Depends(require_auth),
+    current: dict = Depends(require_auth),
 ):
     q = db.query(models.Product)
+    q = _filter_owned(q, models.Product, current)
     if search:
-        q = q.filter(
-            or_(
-                models.Product.product_name.ilike(f"%{search}%"),
-                models.Product.asin.ilike(f"%{search}%"),
-                models.Product.order_number.ilike(f"%{search}%"),
-                models.Product.va_finder.ilike(f"%{search}%"),
-            )
-        )
+        q = q.filter(or_(
+            models.Product.product_name.ilike(f"%{search}%"),
+            models.Product.asin.ilike(f"%{search}%"),
+            models.Product.order_number.ilike(f"%{search}%"),
+            models.Product.va_finder.ilike(f"%{search}%"),
+        ))
     if replenish is not None:
         q = q.filter(models.Product.replenish == replenish)
     if ungated is not None:
@@ -669,16 +701,17 @@ def list_products(
 
 
 @app.get("/api/products/{product_id}", response_model=schemas.ProductOut)
-def get_product(product_id: int, db: Session = Depends(get_db), _ = Depends(require_auth)):
+def get_product(product_id: int, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     p = db.query(models.Product).filter(models.Product.id == product_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
+    _check_owner(p, current)
     return p
 
 
 @app.post("/api/products", response_model=schemas.ProductOut, status_code=201)
-def create_product(data: schemas.ProductCreate, db: Session = Depends(get_db), _ = Depends(require_auth)):
-    p = models.Product(**data.model_dump())
+def create_product(data: schemas.ProductCreate, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    p = models.Product(**data.model_dump(), created_by=current["sub"])
     db.add(p)
     db.commit()
     db.refresh(p)
@@ -686,10 +719,11 @@ def create_product(data: schemas.ProductCreate, db: Session = Depends(get_db), _
 
 
 @app.put("/api/products/{product_id}", response_model=schemas.ProductOut)
-def update_product(product_id: int, data: schemas.ProductUpdate, db: Session = Depends(get_db), _ = Depends(require_auth)):
+def update_product(product_id: int, data: schemas.ProductUpdate, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     p = db.query(models.Product).filter(models.Product.id == product_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
+    _check_owner(p, current)
     for k, v in data.model_dump(exclude_unset=True).items():
         setattr(p, k, v)
     db.commit()
@@ -698,10 +732,11 @@ def update_product(product_id: int, data: schemas.ProductUpdate, db: Session = D
 
 
 @app.delete("/api/products/{product_id}", status_code=204)
-def delete_product(product_id: int, db: Session = Depends(get_db), _ = Depends(require_auth)):
+def delete_product(product_id: int, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     p = db.query(models.Product).filter(models.Product.id == product_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
+    _check_owner(p, current)
     db.delete(p)
     db.commit()
 

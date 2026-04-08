@@ -67,6 +67,7 @@ class Account(Base):
     __tablename__ = "accounts"
 
     id = Column(Integer, primary_key=True, index=True)
+    created_by = Column(String, nullable=True, index=True)
     name = Column(String, nullable=False, index=True)
     account_type = Column(String, default="retailer")
     status = Column(String, default="prospect")
@@ -93,6 +94,7 @@ class Contact(Base):
     __tablename__ = "contacts"
 
     id = Column(Integer, primary_key=True, index=True)
+    created_by = Column(String, nullable=True, index=True)
     account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
     first_name = Column(String, nullable=False)
     last_name = Column(String, nullable=False)
@@ -112,6 +114,7 @@ class FollowUp(Base):
     __tablename__ = "follow_ups"
 
     id = Column(Integer, primary_key=True, index=True)
+    created_by = Column(String, nullable=True, index=True)
     account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
     contact_id = Column(Integer, ForeignKey("contacts.id"), nullable=True)
     follow_up_type = Column(String, default="call")
@@ -134,6 +137,7 @@ class Order(Base):
     __tablename__ = "orders"
 
     id = Column(Integer, primary_key=True, index=True)
+    created_by = Column(String, nullable=True, index=True)
     account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
     order_number = Column(String, unique=True, index=True)
     status = Column(String, default="pending")
@@ -169,6 +173,7 @@ class Product(Base):
     __tablename__ = "products"
 
     id = Column(Integer, primary_key=True, index=True)
+    created_by = Column(String, nullable=True, index=True)
 
     # Identity
     asin = Column(String, index=True)
