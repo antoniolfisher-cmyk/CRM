@@ -1247,7 +1247,27 @@ def _keepa_buy_box(kp: dict):
     return None
 
 
-def _parse_keepa_product(kp: dict, product: models.Product) -> None:
+def _keepa_fba_fees(kp: dict, buy_box_price: float | None):
+    """
+    Extract FBA fulfillment fee from Keepa fbaFees object and compute
+    referral fee (15% of buy box — standard rate for most categories).
+    Returns (fba_fulfillment, referral, combined) or (None, None, None).
+    """
+    fba_data = kp.get("fbaFees") or {}
+    raw = fba_data.get("pickAndPackFee")
+    fulfillment = round(raw / 100, 2) if raw and raw > 0 else None
+
+    if buy_box_price and buy_box_price > 0:
+        referral = round(buy_box_price * 0.15, 2)
+    else:
+        referral = None
+
+    if fulfillment is not None and referral is not None:
+        combined = round(fulfillment + referral, 2)
+    else:
+        combined = None
+
+    return fulfillment, referral, combined
     """Write Keepa API data into a Product ORM instance (no commit)."""
     from datetime import timezone as _tz
     stats = kp.get("stats") or {}
@@ -1264,6 +1284,11 @@ def _parse_keepa_product(kp: dict, product: models.Product) -> None:
     bb = _keepa_buy_box(kp)
     if bb is not None:
         product.buy_box = bb
+
+    # FBA fee (fulfillment + 15% referral)
+    _, _, combined_fee = _keepa_fba_fees(kp, bb)
+    if combined_fee is not None:
+        product.amazon_fee = combined_fee
 
     bsr = _rank(3)
     if bsr is not None:
@@ -1336,14 +1361,20 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth)):
     if cat_tree:
         category = (cat_tree[-1].get("name") or cat_tree[0].get("name") or "").strip()
 
+    buy_box_price = _keepa_buy_box(kp)
+    fba_fulfillment, referral_fee, amazon_fee = _keepa_fba_fees(kp, buy_box_price)
+
     return {
         "asin": asin,
         "title": (kp.get("title") or "").strip(),
-        "buy_box": _keepa_buy_box(kp),
+        "buy_box": buy_box_price,
         "bsr": _rank(3),
         "category": category,
         "num_sellers": kp.get("newCount"),
         "estimated_sales": kp.get("monthlySold"),
+        "fba_fulfillment_fee": fba_fulfillment,
+        "referral_fee": referral_fee,
+        "amazon_fee": amazon_fee,
         "tokens_left": data.get("tokensLeft"),
     }
 
@@ -1441,6 +1472,103 @@ async def keepa_bulk_refresh(
 
     db.commit()
     return {"refreshed": refreshed, "skipped": len(all_asins) - refreshed, "errors": errors}
+
+
+# ─── Amazon SP-API ─────────────────────────────────────────────────────────────
+#
+# Required Railway Variables:
+#   AMAZON_LWA_CLIENT_ID      – Login with Amazon app Client ID
+#   AMAZON_LWA_CLIENT_SECRET  – Login with Amazon app Client Secret
+#   AMAZON_SP_REFRESH_TOKEN   – SP-API refresh token (from Seller Central)
+#   AMAZON_SELLER_ID          – Your Seller Central Seller ID
+#   AMAZON_MARKETPLACE_ID     – defaults to ATVPDKIKX0DER (US)
+
+_AMAZON_LWA_URL  = "https://api.amazon.com/auth/o2/token"
+_AMAZON_SP_BASE  = "https://sellingpartnerapi-na.amazon.com"
+_AMAZON_MKT_ID   = os.getenv("AMAZON_MARKETPLACE_ID", "ATVPDKIKX0DER")
+
+
+def _amazon_sp_configured() -> bool:
+    return all(os.getenv(k, "").strip() for k in (
+        "AMAZON_LWA_CLIENT_ID", "AMAZON_LWA_CLIENT_SECRET",
+        "AMAZON_SP_REFRESH_TOKEN", "AMAZON_SELLER_ID",
+    ))
+
+
+async def _get_amazon_access_token() -> str:
+    import httpx as _httpx
+    resp_data = await _httpx.AsyncClient(timeout=15).post(
+        _AMAZON_LWA_URL,
+        data={
+            "grant_type":    "refresh_token",
+            "refresh_token": os.getenv("AMAZON_SP_REFRESH_TOKEN", ""),
+            "client_id":     os.getenv("AMAZON_LWA_CLIENT_ID", ""),
+            "client_secret": os.getenv("AMAZON_LWA_CLIENT_SECRET", ""),
+        },
+    )
+    if resp_data.status_code != 200:
+        raise HTTPException(502, f"Amazon LWA token error: {resp_data.text[:200]}")
+    return resp_data.json()["access_token"]
+
+
+@app.get("/api/amazon/status")
+def amazon_status(current: dict = Depends(require_auth)):
+    return {"configured": _amazon_sp_configured()}
+
+
+@app.post("/api/products/{product_id}/check-ungated")
+async def check_amazon_ungated(
+    product_id: int,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_auth),
+):
+    """Call Amazon SP-API Listings Restrictions to check if this account
+    is approved to sell the given ASIN new condition."""
+    product = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if not product:
+        raise HTTPException(404, "Product not found")
+    if not product.asin:
+        raise HTTPException(400, "Product has no ASIN")
+    if not _amazon_sp_configured():
+        raise HTTPException(503, "Amazon SP-API credentials are not configured — see Admin → Amazon SP-API setup")
+
+    seller_id = os.getenv("AMAZON_SELLER_ID", "").strip()
+    access_token = await _get_amazon_access_token()
+
+    import httpx as _httpx
+    async with _httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(
+            f"{_AMAZON_SP_BASE}/listings/2021-08-01/restrictions",
+            params={
+                "asin":           product.asin.strip().upper(),
+                "sellerId":       seller_id,
+                "marketplaceIds": _AMAZON_MKT_ID,
+                "conditionType":  "new_new",
+            },
+            headers={
+                "x-amz-access-token": access_token,
+                "Content-Type":       "application/json",
+            },
+        )
+
+    if resp.status_code == 403:
+        raise HTTPException(403, "Amazon SP-API access denied — check your credentials and app permissions")
+    if resp.status_code != 200:
+        raise HTTPException(502, f"Amazon SP-API error {resp.status_code}: {resp.text[:300]}")
+
+    data = resp.json()
+    restrictions = data.get("restrictions", [])
+    is_ungated = len(restrictions) == 0
+
+    # Persist the result
+    product.ungated = is_ungated
+    db.commit()
+
+    return {
+        "asin": product.asin,
+        "ungated": is_ungated,
+        "restrictions": restrictions,
+    }
 
 
 # ─── Time Clock ───────────────────────────────────────────────────────────────

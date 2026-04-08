@@ -94,10 +94,12 @@ export default function Products() {
   const [editing, setEditing] = useState(null)
   const [auraConfigured, setAuraConfigured] = useState(false)
   const [keepaConfigured, setKeepaConfigured] = useState(false)
+  const [amazonConfigured, setAmazonConfigured] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [syncingId, setSyncingId] = useState(null)
   const [syncResult, setSyncResult] = useState(null)
   const [keepaSyncingId, setKeepaSyncingId] = useState(null)
+  const [ungatingId, setUngatingId] = useState(null)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -111,6 +113,7 @@ export default function Products() {
     load()
     api.getAuraStatus().then(r => setAuraConfigured(r.configured)).catch(() => {})
     api.keepaStatus().then(r => setKeepaConfigured(r.configured)).catch(() => {})
+    api.amazonStatus().then(r => setAmazonConfigured(r.configured)).catch(() => {})
   }, [load])
 
   const handleDelete = async (id) => {
@@ -160,6 +163,19 @@ export default function Products() {
     } catch (err) {
       alert(`Keepa sync failed: ${err.message}`)
     } finally { setKeepaSyncingId(null) }
+  }
+
+  const handleCheckUngated = async (productId, e) => {
+    e.stopPropagation()
+    setUngatingId(productId)
+    try {
+      const result = await api.checkAmazonUngated(productId)
+      setProducts(prev => prev.map(p =>
+        p.id === productId ? { ...p, ungated: result.ungated } : p
+      ))
+    } catch (err) {
+      alert(`Ungated check failed: ${err.message}`)
+    } finally { setUngatingId(null) }
   }
 
   const totalSpent = products.reduce((s, p) => s + (p.money_spent || 0), 0)
@@ -292,6 +308,16 @@ export default function Products() {
                           <KeepaIcon spinning={keepaSyncingId === p.id} />
                         </button>
                       )}
+                      {amazonConfigured && p.asin && (
+                        <button
+                          className={`btn-ghost py-1 px-2 text-xs flex items-center gap-1 ${ungatingId === p.id ? 'opacity-50' : p.ungated ? 'text-green-600 hover:bg-green-50' : 'text-amber-600 hover:bg-amber-50'}`}
+                          onClick={(e) => handleCheckUngated(p.id, e)}
+                          disabled={ungatingId === p.id}
+                          title="Check gating status in Amazon Seller Central"
+                        >
+                          {ungatingId === p.id ? '⏳' : p.ungated ? '✓ Ungated' : '? Gate'}
+                        </button>
+                      )}
                       {auraConfigured && p.asin && (
                         <button
                           className="btn-ghost py-1 px-2 text-xs text-purple-600 hover:bg-purple-50"
@@ -324,6 +350,7 @@ export default function Products() {
             onSave={handleSave}
             onClose={() => { setShowForm(false); setEditing(null) }}
             keepaConfigured={keepaConfigured}
+            amazonConfigured={amazonConfigured}
           />
         </Modal>
       )}
@@ -349,7 +376,7 @@ function toFormDate(val) {
   try { return val.slice(0, 10) } catch { return '' }
 }
 
-function ProductForm({ initial, onSave, onClose, keepaConfigured }) {
+function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigured }) {
   const [form, setForm] = useState(() => ({
     ...EMPTY,
     ...initial,
@@ -360,8 +387,9 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured }) {
   }))
   const [saving, setSaving] = useState(false)
   const [keepaLoading, setKeepaLoading] = useState(false)
-  const [keepaFilled, setKeepaFilled] = useState(null)  // { bsr, category, tokens_left } or null
+  const [keepaFilled, setKeepaFilled] = useState(null)  // full Keepa response or null
   const [keepaError, setKeepaError] = useState('')
+  const [ungatingStatus, setUngatingStatus] = useState(null)  // null | 'loading' | true | false
 
   // Auto-calculate financials whenever inputs change
   useEffect(() => {
@@ -385,13 +413,14 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured }) {
         const data = await api.keepaLookup(asin)
         setForm(f => ({
           ...f,
-          // Only fill product_name if the field is blank
-          product_name: f.product_name || data.title || f.product_name,
-          buy_box:        data.buy_box        ?? f.buy_box,
-          num_sellers:    data.num_sellers     ?? f.num_sellers,
-          estimated_sales: data.estimated_sales ?? f.estimated_sales,
+          product_name:    f.product_name || data.title || f.product_name,
+          buy_box:         data.buy_box          ?? f.buy_box,
+          amazon_fee:      data.amazon_fee        ?? f.amazon_fee,
+          num_sellers:     data.num_sellers        ?? f.num_sellers,
+          estimated_sales: data.estimated_sales    ?? f.estimated_sales,
         }))
         setKeepaFilled(data)
+        setUngatingStatus(null)  // reset ungating when ASIN changes
       } catch (e) {
         setKeepaError(e.message)
       } finally {
@@ -477,11 +506,46 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured }) {
             )}
           </div>
           {keepaFilled && (
-            <p className="text-xs text-green-700 mt-1 flex items-center gap-1">
-              <span>✓ Keepa data loaded</span>
-              {keepaFilled.bsr && <span className="text-gray-500">· BSR #{Number(keepaFilled.bsr).toLocaleString()}</span>}
-              {keepaFilled.category && <span className="text-gray-500 truncate max-w-[10rem]">· {keepaFilled.category}</span>}
-            </p>
+            <div className="mt-1 space-y-1">
+              <p className="text-xs text-green-700 flex flex-wrap items-center gap-x-2">
+                <span className="font-medium">✓ Keepa data loaded</span>
+                {keepaFilled.bsr && <span className="text-gray-500">BSR #{Number(keepaFilled.bsr).toLocaleString()}</span>}
+                {keepaFilled.category && <span className="text-gray-500 truncate max-w-[12rem]">{keepaFilled.category}</span>}
+              </p>
+              {keepaFilled.fba_fulfillment_fee != null && (
+                <p className="text-xs text-gray-500">
+                  FBA fee: <span className="font-medium text-gray-700">${keepaFilled.fba_fulfillment_fee.toFixed(2)}</span>
+                  {' '}+ Referral (15%): <span className="font-medium text-gray-700">${keepaFilled.referral_fee?.toFixed(2)}</span>
+                  {' '}= <span className="font-semibold text-gray-800">${keepaFilled.amazon_fee?.toFixed(2)}</span> total
+                </p>
+              )}
+              {amazonConfigured && (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="text-xs border border-gray-200 rounded px-2 py-0.5 text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+                    disabled={ungatingStatus === 'loading' || !initial?.id}
+                    onClick={async () => {
+                      if (!initial?.id) return
+                      setUngatingStatus('loading')
+                      try {
+                        const r = await api.checkAmazonUngated(initial.id)
+                        setUngatingStatus(r.ungated)
+                        setForm(f => ({ ...f, ungated: r.ungated }))
+                      } catch (e) {
+                        setUngatingStatus(null)
+                        alert(`Ungated check failed: ${e.message}`)
+                      }
+                    }}
+                  >
+                    {ungatingStatus === 'loading' ? '⏳ Checking...' : '🔍 Check Ungating (Seller Central)'}
+                  </button>
+                  {ungatingStatus === true && <span className="text-xs text-green-700 font-medium">✓ You are approved to sell this ASIN</span>}
+                  {ungatingStatus === false && <span className="text-xs text-amber-700 font-medium">⚠ You are gated for this ASIN</span>}
+                  {ungatingStatus === null && !initial?.id && <span className="text-xs text-gray-400">Save product first to check ungating</span>}
+                </div>
+              )}
+            </div>
           )}
           {keepaError && (
             <p className="text-xs text-amber-600 mt-1">⚠ {keepaError}</p>
@@ -536,6 +600,32 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured }) {
             </div>
           ))}
         </div>
+
+        {/* Max Buy Cost */}
+        {Number(form.buy_box) > 0 && Number(form.amazon_fee) > 0 && (() => {
+          const net = Number(form.buy_box) - Number(form.amazon_fee)
+          const at20 = net > 0 ? net / 1.20 : null
+          const at30 = net > 0 ? net / 1.30 : null
+          return (
+            <div className="col-span-2 bg-blue-50 border border-blue-100 rounded-lg p-3">
+              <p className="text-xs font-semibold text-blue-800 mb-2">Max Buy Cost (to hit target ROI)</p>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <p className="text-xs text-blue-600">Break-even</p>
+                  <p className="font-bold text-sm text-blue-900">{fmtCurrency(net)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-blue-600">@ 20% ROI</p>
+                  <p className="font-bold text-sm text-blue-900">{at20 ? fmtCurrency(at20) : '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-blue-600">@ 30% ROI</p>
+                  <p className="font-bold text-sm text-blue-900">{at30 ? fmtCurrency(at30) : '—'}</p>
+                </div>
+              </div>
+            </div>
+          )
+        })()}
       </Section>
 
       <Section title="Notes">

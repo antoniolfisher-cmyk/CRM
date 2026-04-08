@@ -80,6 +80,8 @@ export const api = {
   keepaLookup: (asin) => req('GET', `/keepa/lookup/${asin}`),
   keepaRefreshOne: (id) => req('POST', `/products/${id}/keepa-refresh`),
   keepaBulkRefresh: () => req('POST', '/keepa/bulk-refresh'),
+  amazonStatus: () => req('GET', '/amazon/status'),
+  checkAmazonUngated: (id) => req('POST', `/products/${id}/check-ungated`),
 
   // Notifications (admin only)
   getNotificationStatus: () => req('GET', '/notifications/status'),
