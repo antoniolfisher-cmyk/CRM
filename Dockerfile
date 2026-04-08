@@ -15,7 +15,7 @@ COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Force cache bust - updated 2026-04-08
-ARG CACHEBUST=2026-04-08-v2
+ARG CACHEBUST=2026-04-08-v3
 RUN echo "Cache bust: $CACHEBUST"
 
 # Copy backend source
@@ -30,4 +30,4 @@ RUN mkdir -p /data
 ENV PORT=8000
 EXPOSE 8000
 
-CMD python seed_if_empty.py && uvicorn main:app --host 0.0.0.0 --port ${PORT}
+CMD python seed_if_empty.py; uvicorn main:app --host 0.0.0.0 --port ${PORT}

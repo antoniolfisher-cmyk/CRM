@@ -36,11 +36,14 @@ except Exception:
     pass
 
 # Create default admin on startup if no users exist
-_startup_db = next(get_db())
 try:
-    ensure_bootstrap_admin(_startup_db)
-finally:
-    _startup_db.close()
+    _startup_db = next(get_db())
+    try:
+        ensure_bootstrap_admin(_startup_db)
+    finally:
+        _startup_db.close()
+except Exception as _e:
+    print(f"Warning: bootstrap admin setup failed ({_e}), continuing anyway.")
 
 app = FastAPI(title="Delight Shoppe API", version="1.0.0")
 
