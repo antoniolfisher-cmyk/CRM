@@ -49,7 +49,8 @@ def _smtp_configured() -> bool:
 
 
 def _send_via_sendgrid(to: str, subject: str, html: str, api_key: str):
-    from_raw = SMTP_FROM or "Delight Shoppe <noreply@delightshoppe.org>"
+    import httpx
+    from_raw = os.getenv("SMTP_FROM", "Delight Shoppe <noreply@delightshoppe.org>")
     if '<' in from_raw:
         name_part = from_raw[:from_raw.index('<')].strip().strip('"')
         email_part = from_raw[from_raw.index('<')+1:from_raw.index('>')].strip().lower()
@@ -57,27 +58,21 @@ def _send_via_sendgrid(to: str, subject: str, html: str, api_key: str):
         name_part = "Delight Shoppe"
         email_part = from_raw.strip().lower()
 
-    payload = json.dumps({
+    payload = {
         "personalizations": [{"to": [{"email": to}]}],
         "from": {"email": email_part, "name": name_part},
         "subject": subject,
         "content": [{"type": "text/html", "value": html}],
-    }).encode()
-    req = urllib.request.Request(
+    }
+    resp = httpx.post(
         "https://api.sendgrid.com/v3/mail/send",
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
+        json=payload,
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=30,
     )
-    try:
-        urllib.request.urlopen(req, timeout=15)
-        log.info("Email sent via SendGrid to %s: %s", to, subject)
-    except urllib.error.HTTPError as e:
-        body = e.read().decode(errors="replace")
-        raise Exception(f"SendGrid {e.code}: {body}")
+    if resp.status_code >= 400:
+        raise Exception(f"SendGrid {resp.status_code}: {resp.text}")
+    log.info("Email sent via SendGrid to %s: %s", to, subject)
 
 
 def _send_via_resend(to: str, subject: str, html: str, api_key: str):
