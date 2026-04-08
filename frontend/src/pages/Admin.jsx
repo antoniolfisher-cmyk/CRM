@@ -341,9 +341,10 @@ export default function Admin() {
         </div>
 
         {notifStatus && notifStatus.smtp_configured && (
-          <div className="text-sm text-gray-600 bg-gray-50 rounded-lg p-3">
-            <span className="font-medium">Sending from:</span> {notifStatus.smtp_user} &nbsp;·&nbsp;
-            <span className="font-medium">Daily digest at:</span> {notifStatus.notify_hour_utc}:00 UTC
+          <div className="text-sm text-gray-600 bg-gray-50 rounded-lg p-3 flex flex-wrap gap-x-4 gap-y-1">
+            <span><span className="font-medium">Sending from:</span> {notifStatus.smtp_user}</span>
+            <span><span className="font-medium">Daily digest at:</span> {notifStatus.notify_hour_utc}:00 UTC</span>
+            <span><span className="font-medium">Auto follow-up after:</span> {notifStatus.followup_days ?? 4} days of no reply</span>
           </div>
         )}
 

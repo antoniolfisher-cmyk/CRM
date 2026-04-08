@@ -36,8 +36,155 @@ SMTP_PASSWORD    = os.getenv("SMTP_PASSWORD", "")
 SMTP_FROM        = os.getenv("SMTP_FROM", SMTP_USER)
 RESEND_API_KEY   = os.getenv("RESEND_API_KEY", "")
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
-NOTIFY_HOUR      = int(os.getenv("NOTIFY_HOUR", "8"))
+NOTIFY_HOUR   = int(os.getenv("NOTIFY_HOUR", "8"))
+FOLLOWUP_DAYS = int(os.getenv("FOLLOWUP_DAYS", "4"))
 APP_URL       = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+if APP_URL and not APP_URL.startswith("http"):
+    APP_URL = f"https://{APP_URL}"
+
+# ─── Auto follow-up bodies ────────────────────────────────────────────────────
+
+def _auto_followup_body(stage: str, account_name: str, contact_name: str, sender_name: str) -> tuple:
+    """Return (subject, body_text) for an auto follow-up at the given stage."""
+    acct = account_name
+    contact = contact_name or "there"
+    sender = sender_name
+
+    if stage == "outreach_sent":
+        subject = f"Still Interested — Delight Shoppe × {acct}"
+        body = f"""Dear {contact},
+
+I wanted to follow up on my earlier note about a potential wholesale partnership between Delight Shoppe and {acct}. I understand how busy things get, and I didn't want my message to get buried.
+
+[CALLOUT]We're a curated e-commerce retailer actively looking to carry quality products for a loyal and growing customer base. We believe {acct} could be a great fit, and we'd love the chance to show you why Delight Shoppe is a different kind of retail partner.
+
+If the timing isn't right at the moment, no pressure at all — just let me know and I'll circle back when it suits you better.
+
+But if there's any interest, even just a quick reply or a catalog to review, that would mean a great deal to us.
+
+Warm regards,
+{sender}
+Delight Shoppe Wholesale"""
+
+    elif stage == "catalog_sent":
+        subject = f"Any Questions About Our Inquiry? — Delight Shoppe × {acct}"
+        body = f"""Dear {contact},
+
+Just a quick follow-up to see if you had a chance to review our earlier message about a wholesale partnership with Delight Shoppe.
+
+We know your inbox is busy, so we'll keep this short: we're genuinely interested in carrying {acct}'s products, and we're flexible on how we get started — whether that's a small initial order, a call to talk through terms, or simply receiving your catalog so we can review what you offer.
+
+[CALLOUT]We're a reliable, consistent buyer with an active e-commerce presence and a customer base that responds well to quality brands. When we commit to a supplier, we order regularly and promote actively.
+
+Would this week work for a quick email exchange or call? We'll follow your lead.
+
+Warm regards,
+{sender}
+Delight Shoppe Wholesale"""
+
+    else:
+        subject = f"Checking In — Delight Shoppe × {acct}"
+        body = f"""Dear {contact},
+
+Just checking in on our ongoing conversation about a possible partnership between Delight Shoppe and {acct}. We remain genuinely interested and would love to move things forward at whatever pace works best for you.
+
+Please don't hesitate to reply with any questions, and thank you again for your time.
+
+Warm regards,
+{sender}
+Delight Shoppe Wholesale"""
+
+    return subject, body
+
+
+# ─── Auto follow-up job ───────────────────────────────────────────────────────
+
+def send_auto_followups():
+    """
+    Daily job: find accounts stuck in an opening-pipeline stage for FOLLOWUP_DAYS
+    with no reply received, and send an auto follow-up on behalf of the account owner.
+    """
+    if not _smtp_configured():
+        return
+
+    # Import here to avoid circular dependency at module load time
+    from database import SessionLocal
+    import models as _models
+
+    db = SessionLocal()
+    try:
+        cutoff = datetime.utcnow() - timedelta(days=FOLLOWUP_DAYS)
+
+        # Accounts in an actionable stage, updated more than FOLLOWUP_DAYS ago,
+        # and haven't had an auto-follow-up in the last 7 days
+        stale = db.query(_models.Account).filter(
+            _models.Account.pipeline_stage.in_(["outreach_sent", "catalog_sent"]),
+            _models.Account.pipeline_updated_at <= cutoff,
+            _models.Account.email != None,
+            _models.Account.email != "",
+        ).filter(
+            (_models.Account.last_auto_followup_at == None) |
+            (_models.Account.last_auto_followup_at <= datetime.utcnow() - timedelta(days=7))
+        ).all()
+
+        log.info("Auto follow-up check: %d account(s) due", len(stale))
+
+        for acc in stale:
+            # Get the account owner
+            owner = db.query(_models.User).filter(
+                _models.User.username == acc.created_by
+            ).first() if acc.created_by else None
+            sender_name = owner.username if owner else "Delight Shoppe"
+
+            # Get primary contact name
+            primary = next((c for c in acc.contacts if c.is_primary), None)
+            if not primary and acc.contacts:
+                primary = acc.contacts[0]
+            contact_name = primary.first_name if primary else ""
+
+            subject, body_text = _auto_followup_body(
+                acc.pipeline_stage, acc.name, contact_name, sender_name
+            )
+
+            # Build branded HTML
+            from main import _build_wholesale_email_html
+            html = _build_wholesale_email_html(body_text, "followup", sender_name)
+
+            inbound_email = os.getenv("CRM_INBOUND_EMAIL", "").strip()
+            try:
+                send_email(
+                    acc.email,
+                    subject,
+                    html,
+                    reply_to=inbound_email or None,
+                    custom_headers={"X-Crm-Account-Id": str(acc.id)},
+                )
+
+                # Log to email thread
+                db.add(_models.EmailMessage(
+                    account_id=acc.id,
+                    direction="sent",
+                    from_email=sender_name,
+                    to_email=acc.email,
+                    subject=subject,
+                    body_text=body_text,
+                    is_read=True,
+                    sent_by=sender_name + " (auto)",
+                ))
+                acc.last_auto_followup_at = datetime.utcnow()
+                log.info("Auto follow-up sent to %s (account %d, stage=%s)", acc.email, acc.id, acc.pipeline_stage)
+
+            except Exception as e:
+                log.error("Auto follow-up failed for account %d: %s", acc.id, e)
+
+        db.commit()
+    except Exception as e:
+        log.error("Auto follow-up job error: %s", e)
+    finally:
+        db.close()
+
+
+
 if APP_URL and not APP_URL.startswith("http"):
     APP_URL = f"https://{APP_URL}"
 
@@ -295,6 +442,12 @@ def start_scheduler():
         send_daily_digests,
         CronTrigger(hour=NOTIFY_HOUR, minute=0),
         id="daily_digest",
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        send_auto_followups,
+        CronTrigger(hour=10, minute=30),   # 10:30 AM UTC daily
+        id="auto_followups",
         replace_existing=True,
     )
     _scheduler.start()

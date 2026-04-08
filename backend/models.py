@@ -85,6 +85,11 @@ class Account(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
+    # Opening pipeline tracking
+    pipeline_stage = Column(String, default="new", nullable=False)
+    pipeline_updated_at = Column(DateTime(timezone=True), nullable=True)
+    last_auto_followup_at = Column(DateTime(timezone=True), nullable=True)
+
     contacts = relationship("Contact", back_populates="account", cascade="all, delete-orphan")
     follow_ups = relationship("FollowUp", back_populates="account", cascade="all, delete-orphan")
     orders = relationship("Order", back_populates="account", cascade="all, delete-orphan")

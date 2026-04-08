@@ -298,6 +298,26 @@ const ACCOUNT_TYPES = ['retailer', 'distributor', 'restaurant', 'grocery', 'onli
 const STATUSES = ['prospect', 'active', 'inactive', 'on_hold']
 const TERRITORIES = ['Midwest', 'Southeast', 'West', 'Mountain', 'Northeast', 'Southwest']
 
+const STAGE_ORDER = ['new', 'outreach_sent', 'replied', 'catalog_sent', 'negotiating', 'won', 'lost']
+const STAGE_LABELS = {
+  new: 'New',
+  outreach_sent: 'Outreach Sent',
+  replied: 'Replied',
+  catalog_sent: 'Catalog Sent',
+  negotiating: 'Negotiating',
+  won: 'Won',
+  lost: 'Lost',
+}
+const STAGE_COLORS = {
+  new: 'bg-gray-100 text-gray-600',
+  outreach_sent: 'bg-blue-100 text-blue-700',
+  replied: 'bg-cyan-100 text-cyan-700',
+  catalog_sent: 'bg-purple-100 text-purple-700',
+  negotiating: 'bg-amber-100 text-amber-700',
+  won: 'bg-green-100 text-green-700',
+  lost: 'bg-red-100 text-red-600',
+}
+
 export default function Accounts() {
   const [accounts, setAccounts] = useState([])
   const [loading, setLoading] = useState(true)
@@ -376,6 +396,7 @@ export default function Accounts() {
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Account</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Type</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Status</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Pipeline</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Location</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Territory</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Contact</th>
@@ -385,10 +406,10 @@ export default function Accounts() {
             </thead>
             <tbody className="divide-y divide-gray-100">
               {loading && (
-                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400">Loading...</td></tr>
+                <tr><td colSpan={9} className="px-4 py-8 text-center text-gray-400">Loading...</td></tr>
               )}
               {!loading && accounts.length === 0 && (
-                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400">No accounts found</td></tr>
+                <tr><td colSpan={9} className="px-4 py-8 text-center text-gray-400">No accounts found</td></tr>
               )}
               {accounts.map((acc) => (
                 <tr key={acc.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => setSelected(acc)}>
@@ -398,6 +419,11 @@ export default function Accounts() {
                   </td>
                   <td className="px-4 py-3"><StatusBadge value={acc.account_type} /></td>
                   <td className="px-4 py-3"><StatusBadge value={acc.status} /></td>
+                  <td className="px-4 py-3">
+                    <span className={`badge text-xs ${STAGE_COLORS[acc.pipeline_stage] || 'bg-gray-100 text-gray-600'}`}>
+                      {STAGE_LABELS[acc.pipeline_stage] || acc.pipeline_stage || 'New'}
+                    </span>
+                  </td>
                   <td className="px-4 py-3 text-gray-600">{[acc.city, acc.state].filter(Boolean).join(', ') || '—'}</td>
                   <td className="px-4 py-3 text-gray-600">{acc.territory || '—'}</td>
                   <td className="px-4 py-3 text-gray-600">{acc.phone || '—'}</td>
@@ -492,6 +518,15 @@ function AccountDetail({ accountId, onClose, onEdit, onDeleted }) {
     api.getAccount(accountId).then(setAccount)
   }
 
+  const handleStageChange = async (stage) => {
+    try {
+      await api.updateAccountStage(accountId, stage)
+      setAccount(a => ({ ...a, pipeline_stage: stage }))
+    } catch (e) {
+      alert(`Could not update stage: ${e.message}`)
+    }
+  }
+
   if (!account) return null
 
   return (
@@ -499,12 +534,24 @@ function AccountDetail({ accountId, onClose, onEdit, onDeleted }) {
       <div className="space-y-4">
         {/* Header info */}
         <div className="flex items-start gap-4 flex-wrap">
-          <div className="flex gap-2 flex-wrap">
+          <div className="flex gap-2 flex-wrap items-center">
             <StatusBadge value={account.status} />
             <StatusBadge value={account.account_type} />
             {account.territory && <span className="badge bg-slate-100 text-slate-600">{account.territory}</span>}
           </div>
-          <div className="ml-auto flex gap-2">
+          <div className="ml-auto flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-gray-500 font-medium">Pipeline:</span>
+              <select
+                className="text-xs border border-gray-200 rounded-lg px-2 py-1 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={account.pipeline_stage || 'new'}
+                onChange={e => handleStageChange(e.target.value)}
+              >
+                {STAGE_ORDER.map(s => (
+                  <option key={s} value={s}>{STAGE_LABELS[s]}</option>
+                ))}
+              </select>
+            </div>
             <button className="btn-secondary flex items-center gap-1.5" onClick={() => setShowEmail(true)}>
               <MailIcon className="w-4 h-4" /> Email
             </button>

@@ -42,6 +42,7 @@ export const api = {
   sendAccountEmail: (id, data) => req('POST', `/accounts/${id}/send-email`, data),
   getAccountEmails: (id) => req('GET', `/accounts/${id}/emails`),
   getAccountUnreadCount: (id) => req('GET', `/accounts/${id}/emails/unread-count`),
+  updateAccountStage: (id, stage) => req('PUT', `/accounts/${id}/stage`, { stage }),
 
   // Contacts
   getContacts: (accountId) => req('GET', `/contacts${accountId ? `?account_id=${accountId}` : ''}`),

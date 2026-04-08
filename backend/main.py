@@ -32,6 +32,20 @@ try:
                     _conn.commit()
         except Exception:
             pass
+    # Pipeline stage columns on accounts
+    try:
+        _cols = [c["name"] for c in _inspector.get_columns("accounts")]
+        with engine.connect() as _conn:
+            for _col, _ddl in [
+                ("pipeline_stage", "VARCHAR NOT NULL DEFAULT 'new'"),
+                ("pipeline_updated_at", "DATETIME"),
+                ("last_auto_followup_at", "DATETIME"),
+            ]:
+                if _col not in _cols:
+                    _conn.execute(text(f"ALTER TABLE accounts ADD COLUMN {_col} {_ddl}"))
+            _conn.commit()
+    except Exception:
+        pass
 except Exception:
     pass
 
@@ -199,6 +213,7 @@ def notification_status(db: Session = Depends(get_db), current: dict = Depends(r
         "inbound_configured": bool(inbound_email),
         "inbound_email": inbound_email or None,
         "inbound_webhook_url": f"{app_domain}/api/webhooks/inbound-email" if app_domain else "/api/webhooks/inbound-email",
+        "followup_days": int(os.getenv("FOLLOWUP_DAYS", "4")),
     }
 
 
@@ -628,6 +643,27 @@ def send_account_email(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+    # Auto-advance pipeline stage based on template
+    _stage_map = {
+        "intro":       "outreach_sent",
+        "followup":    "outreach_sent",   # manual follow-up keeps same bucket
+        "catalog":     "catalog_sent",
+        "terms":       "catalog_sent",
+        "welcome":     "won",
+        "new_product": None,              # no stage change for these
+        "reorder":     None,
+    }
+    new_stage = _stage_map.get(data.template_id or "")
+    if new_stage and new_stage != acc.pipeline_stage:
+        # Only advance forward, never back
+        _order = ["new", "outreach_sent", "replied", "catalog_sent", "negotiating", "won"]
+        current_idx = _order.index(acc.pipeline_stage) if acc.pipeline_stage in _order else 0
+        new_idx = _order.index(new_stage) if new_stage in _order else 0
+        if new_idx >= current_idx:
+            acc.pipeline_stage = new_stage
+            acc.pipeline_updated_at = datetime.utcnow()
+            db.commit()
+
     # Log sent email to thread
     log_entry = models.EmailMessage(
         account_id=account_id,
@@ -692,6 +728,30 @@ def get_unread_count(account_id: int, db: Session = Depends(get_db), current: di
     return {"unread": count}
 
 
+_STAGE_ORDER = ["new", "outreach_sent", "replied", "catalog_sent", "negotiating", "won", "lost"]
+
+
+@app.put("/api/accounts/{account_id}/stage")
+def update_account_stage(
+    account_id: int,
+    data: dict,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_auth),
+):
+    """Manually set the pipeline stage for an account."""
+    stage = (data.get("stage") or "").strip()
+    if stage not in _STAGE_ORDER:
+        raise HTTPException(status_code=400, detail=f"Invalid stage. Must be one of: {', '.join(_STAGE_ORDER)}")
+    acc = db.query(models.Account).filter(models.Account.id == account_id).first()
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+    _check_owner(acc, current)
+    acc.pipeline_stage = stage
+    acc.pipeline_updated_at = datetime.utcnow()
+    db.commit()
+    return {"stage": stage, "pipeline_updated_at": acc.pipeline_updated_at.isoformat()}
+
+
 @app.post("/api/webhooks/inbound-email")
 async def inbound_email_webhook(request: Request, db: Session = Depends(get_db)):
     """
@@ -748,6 +808,14 @@ async def inbound_email_webhook(request: Request, db: Session = Depends(get_db))
             ).first()
             if contact_match:
                 account_id = contact_match.account_id
+
+    # Advance pipeline stage to 'replied' when a reply comes in
+    if account_id:
+        _acc = db.query(models.Account).filter(models.Account.id == account_id).first()
+        if _acc and _acc.pipeline_stage not in ("won", "lost", "negotiating", "replied"):
+            _acc.pipeline_stage = "replied"
+            _acc.pipeline_updated_at = datetime.utcnow()
+            # no commit yet — will commit with the message below
 
     # Store the inbound message
     msg = models.EmailMessage(
