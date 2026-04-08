@@ -19,6 +19,22 @@ import aura as aura_client
 
 models.Base.metadata.create_all(bind=engine)
 
+# ─── Migrations: add new columns to existing tables ───────────────────────────
+def _run_migrations():
+    from sqlalchemy import inspect, text
+    inspector = inspect(engine)
+    for table in ["accounts", "contacts", "follow_ups", "orders", "products"]:
+        try:
+            cols = [c["name"] for c in inspector.get_columns(table)]
+            if "created_by" not in cols:
+                with engine.connect() as conn:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN created_by VARCHAR"))
+                    conn.commit()
+        except Exception:
+            pass  # table may not exist yet
+
+_run_migrations()
+
 # Create default admin on startup if no users exist
 _startup_db = next(get_db())
 try:
