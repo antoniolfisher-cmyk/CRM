@@ -252,3 +252,8 @@ class Product(Base):
     notes = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Keepa live market data
+    keepa_bsr = Column(Integer, nullable=True)          # Best Seller Rank
+    keepa_category = Column(String, nullable=True)      # Amazon category name
+    keepa_last_synced = Column(DateTime(timezone=True), nullable=True)

@@ -76,6 +76,9 @@ export const api = {
   createProduct: (data) => req('POST', '/products', data),
   updateProduct: (id, data) => req('PUT', `/products/${id}`, data),
   deleteProduct: (id) => req('DELETE', `/products/${id}`),
+  keepaStatus: () => req('GET', '/keepa/status'),
+  keepaRefreshOne: (id) => req('POST', `/products/${id}/keepa-refresh`),
+  keepaBulkRefresh: () => req('POST', '/keepa/bulk-refresh'),
 
   // Notifications (admin only)
   getNotificationStatus: () => req('GET', '/notifications/status'),

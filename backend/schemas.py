@@ -241,6 +241,9 @@ class ProductBase(BaseModel):
     estimated_sales: Optional[float] = 0
     num_sellers: Optional[int] = 0
     notes: Optional[str] = None
+    keepa_bsr: Optional[int] = None
+    keepa_category: Optional[str] = None
+    keepa_last_synced: Optional[datetime] = None
 
 
 class ProductCreate(ProductBase):

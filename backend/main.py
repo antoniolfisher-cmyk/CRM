@@ -46,6 +46,20 @@ try:
             _conn.commit()
     except Exception:
         pass
+    # Keepa columns on products
+    try:
+        _cols = [c["name"] for c in _inspector.get_columns("products")]
+        with engine.connect() as _conn:
+            for _col, _ddl in [
+                ("keepa_bsr", "INTEGER"),
+                ("keepa_category", "VARCHAR"),
+                ("keepa_last_synced", "DATETIME"),
+            ]:
+                if _col not in _cols:
+                    _conn.execute(text(f"ALTER TABLE products ADD COLUMN {_col} {_ddl}"))
+            _conn.commit()
+    except Exception:
+        pass
 except Exception:
     pass
 
@@ -1180,6 +1194,158 @@ def delete_product(product_id: int, db: Session = Depends(get_db), current: dict
     _check_owner(p, current)
     db.delete(p)
     db.commit()
+
+
+# ─── Keepa Integration ────────────────────────────────────────────────────────
+
+_KEEPA_DOMAIN = int(os.getenv("KEEPA_DOMAIN", "1"))   # 1 = US marketplace
+
+
+def _parse_keepa_product(kp: dict, product: models.Product) -> None:
+    """Write Keepa API data into a Product ORM instance (no commit)."""
+    from datetime import timezone as _tz
+    stats = kp.get("stats") or {}
+    current = stats.get("current") or []
+
+    def _price(idx: int):
+        if idx < len(current):
+            v = current[idx]
+            if v is not None and v > 0:
+                return round(v / 100, 2)
+        return None
+
+    def _rank(idx: int):
+        if idx < len(current):
+            v = current[idx]
+            if v is not None and v > 0:
+                return int(v)
+        return None
+
+    # Buy Box = data type 7 (NEW_FBA), BSR = data type 3 (SALES)
+    bb = _price(7)
+    if bb is not None:
+        product.buy_box = bb
+
+    bsr = _rank(3)
+    if bsr is not None:
+        product.keepa_bsr = bsr
+
+    # Category — use deepest node in tree
+    cat_tree = kp.get("categoryTree") or []
+    if cat_tree:
+        product.keepa_category = (cat_tree[-1].get("name") or cat_tree[0].get("name") or "").strip() or None
+
+    # Seller count
+    new_count = kp.get("newCount")
+    if new_count is not None and new_count >= 0:
+        product.num_sellers = new_count
+
+    # Estimated monthly sales
+    monthly_sold = kp.get("monthlySold")
+    if monthly_sold is not None and monthly_sold >= 0:
+        product.estimated_sales = float(monthly_sold)
+
+    product.keepa_last_synced = datetime.now(_tz.utc)
+
+
+@app.get("/api/keepa/status")
+def keepa_status_endpoint(current: dict = Depends(require_auth)):
+    return {"configured": bool(os.getenv("KEEPA_API_KEY", "").strip())}
+
+
+@app.post("/api/products/{product_id}/keepa-refresh", response_model=schemas.ProductOut)
+async def keepa_refresh_one(
+    product_id: int,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_auth),
+):
+    product = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if not product:
+        raise HTTPException(404, "Product not found")
+    if not product.asin:
+        raise HTTPException(400, "Product has no ASIN — add one in the Products page first")
+
+    api_key = os.getenv("KEEPA_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(503, "KEEPA_API_KEY is not set — add it in Railway Variables")
+
+    url = (
+        f"https://api.keepa.com/product"
+        f"?key={api_key}&domain={_KEEPA_DOMAIN}&asin={product.asin.strip()}&stats=90"
+    )
+    import httpx as _httpx
+    async with _httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(url)
+
+    if resp.status_code != 200:
+        raise HTTPException(502, f"Keepa returned {resp.status_code}: {resp.text[:200]}")
+
+    data = resp.json()
+    if data.get("error"):
+        raise HTTPException(502, f"Keepa error: {data.get('status', 'unknown')}")
+
+    products_data = data.get("products") or []
+    if not products_data:
+        raise HTTPException(404, f"ASIN {product.asin} not found in Keepa")
+
+    _parse_keepa_product(products_data[0], product)
+    db.commit()
+    db.refresh(product)
+    return product
+
+
+@app.post("/api/keepa/bulk-refresh")
+async def keepa_bulk_refresh(
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_admin),
+):
+    """Bulk-refresh all products that have an ASIN. Batches 100 per Keepa request."""
+    api_key = os.getenv("KEEPA_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(503, "KEEPA_API_KEY is not set — add it in Railway Variables")
+
+    products = (
+        db.query(models.Product)
+        .filter(models.Product.asin.isnot(None), models.Product.asin != "")
+        .all()
+    )
+    if not products:
+        return {"refreshed": 0, "skipped": 0, "errors": []}
+
+    # ASIN → list of products (handle duplicates)
+    asin_map: dict = {}
+    for p in products:
+        key = p.asin.strip().upper()
+        asin_map.setdefault(key, []).append(p)
+
+    all_asins = list(asin_map.keys())
+    refreshed = 0
+    errors: list = []
+
+    import httpx as _httpx
+    async with _httpx.AsyncClient(timeout=60) as client:
+        for i in range(0, len(all_asins), 100):
+            batch = all_asins[i: i + 100]
+            url = (
+                f"https://api.keepa.com/product"
+                f"?key={api_key}&domain={_KEEPA_DOMAIN}&asin={','.join(batch)}&stats=90"
+            )
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                errors.append(f"Keepa {resp.status_code} on batch {i // 100 + 1}")
+                continue
+            data = resp.json()
+            if data.get("error"):
+                errors.append(f"Keepa error: {data.get('status')} on batch {i // 100 + 1}")
+                continue
+            for kp in data.get("products") or []:
+                kp_asin = (kp.get("asin") or "").strip().upper()
+                for prod in asin_map.get(kp_asin, []):
+                    _parse_keepa_product(kp, prod)
+                    refreshed += 1
+
+    db.commit()
+    return {"refreshed": refreshed, "skipped": len(all_asins) - refreshed, "errors": errors}
 
 
 # ─── Time Clock ───────────────────────────────────────────────────────────────
