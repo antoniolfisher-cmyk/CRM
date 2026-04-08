@@ -109,41 +109,15 @@ export default function Admin() {
           </div>
           {notifStatus && (
             <span className={`badge ${notifStatus.smtp_configured ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-              {notifStatus.smtp_configured ? 'SMTP Connected' : 'SMTP Not Set Up'}
+              {notifStatus.smtp_configured ? 'Connected' : 'Not Set Up'}
             </span>
           )}
         </div>
-
-        {notifStatus && !notifStatus.smtp_configured && (
-          <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800 space-y-1">
-            <p className="font-medium">Add this environment variable in Railway to enable emails:</p>
-            <code className="block bg-amber-100 rounded p-2 text-xs mt-2 space-y-1">
-              <span className="block">SENDGRID_API_KEY = SG.xxxxxxxxxxxx</span>
-              <span className="block">SMTP_FROM = Delight Shoppe &lt;antonio.fisher@delightshoppe.org&gt;</span>
-              <span className="block">NOTIFY_HOUR = 8</span>
-            </code>
-          </div>
-        )}
 
         {notifStatus && notifStatus.smtp_configured && (
           <div className="text-sm text-gray-600 bg-gray-50 rounded-lg p-3">
             <span className="font-medium">Sending from:</span> {notifStatus.smtp_user} &nbsp;·&nbsp;
             <span className="font-medium">Daily digest at:</span> {notifStatus.notify_hour_utc}:00 UTC
-          </div>
-        )}
-
-        {notifStatus && notifStatus.smtp_configured && (
-          <div className="flex gap-2 items-center">
-            <input
-              className="input flex-1"
-              type="email"
-              placeholder="your@email.com"
-              value={myEmail}
-              onChange={e => setMyEmail(e.target.value)}
-            />
-            <button className="btn-primary whitespace-nowrap" onClick={handleSaveMyEmail} disabled={savingEmail}>
-              {savingEmail ? 'Saving...' : 'Save My Email'}
-            </button>
           </div>
         )}
 
@@ -154,10 +128,10 @@ export default function Admin() {
         )}
 
         <div className="flex gap-3">
-          <button className="btn-secondary" onClick={handleSendTest} disabled={sendingTest}>
+          <button className="btn-secondary" onClick={handleSendTest} disabled={sendingTest || !notifStatus?.smtp_configured}>
             {sendingTest ? 'Sending...' : 'Send Test Email to Me'}
           </button>
-          <button className="btn-primary" onClick={handleSendNow} disabled={sendingNow}>
+          <button className="btn-primary" onClick={handleSendNow} disabled={sendingNow || !notifStatus?.smtp_configured}>
             {sendingNow ? 'Sending...' : 'Send Digest Now'}
           </button>
         </div>
