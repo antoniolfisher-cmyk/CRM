@@ -264,7 +264,9 @@ class ProductOut(ProductBase):
 class AccountEmailSend(BaseModel):
     to: str
     subject: str
-    body: str  # plain text; server wraps in HTML
+    body: str           # plain text with optional [CALLOUT] / [FEATURE_CARDS] markers
+    template_id: Optional[str] = None
+    sender_name: Optional[str] = None
 
 
 # Dashboard schema

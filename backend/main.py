@@ -438,6 +438,123 @@ def delete_account(account_id: int, db: Session = Depends(get_db), current: dict
     db.commit()
 
 
+def _build_wholesale_email_html(body: str, template_id: str, sender_name: str) -> str:
+    """Convert plain-text body (with optional markers) into premium branded HTML."""
+
+    FEATURE_CARDS_HTML = """
+<table width="100%" cellpadding="0" cellspacing="0" style="margin:24px 0 8px;">
+  <tr>
+    <td width="50%" style="padding:0 8px 12px 0;vertical-align:top;">
+      <div style="background:#f9f8f6;border-radius:6px;padding:20px 18px;">
+        <p style="margin:0 0 8px;font-size:22px;">🛒</p>
+        <p style="margin:0 0 5px;font-weight:700;font-size:13px;color:#0f1729;font-family:-apple-system,sans-serif;">Online storefront reach</p>
+        <p style="margin:0;font-size:13px;color:#6b7280;line-height:1.55;font-family:-apple-system,sans-serif;">Active e-commerce presence with a growing, engaged customer base.</p>
+      </div>
+    </td>
+    <td width="50%" style="padding:0 0 12px 8px;vertical-align:top;">
+      <div style="background:#f9f8f6;border-radius:6px;padding:20px 18px;">
+        <p style="margin:0 0 8px;font-size:22px;">📦</p>
+        <p style="margin:0 0 5px;font-weight:700;font-size:13px;color:#0f1729;font-family:-apple-system,sans-serif;">Regular reordering</p>
+        <p style="margin:0;font-size:13px;color:#6b7280;line-height:1.55;font-family:-apple-system,sans-serif;">We operate on a consistent inventory cycle with reliable wholesale orders.</p>
+      </div>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" style="padding:0 8px 0 0;vertical-align:top;">
+      <div style="background:#f9f8f6;border-radius:6px;padding:20px 18px;">
+        <p style="margin:0 0 8px;font-size:22px;">📢</p>
+        <p style="margin:0 0 5px;font-weight:700;font-size:13px;color:#0f1729;font-family:-apple-system,sans-serif;">Brand visibility</p>
+        <p style="margin:0;font-size:13px;color:#6b7280;line-height:1.55;font-family:-apple-system,sans-serif;">Featured product pages, social promotion, and email campaigns.</p>
+      </div>
+    </td>
+    <td width="50%" style="padding:0 0 0 8px;vertical-align:top;">
+      <div style="background:#f9f8f6;border-radius:6px;padding:20px 18px;">
+        <p style="margin:0 0 8px;font-size:22px;">🤝</p>
+        <p style="margin:0 0 5px;font-weight:700;font-size:13px;color:#0f1729;font-family:-apple-system,sans-serif;">Long-term relationship</p>
+        <p style="margin:0;font-size:13px;color:#6b7280;line-height:1.55;font-family:-apple-system,sans-serif;">We value partners and aim to grow together over time.</p>
+      </div>
+    </td>
+  </tr>
+</table>"""
+
+    CTA_HTML = """
+<div style="text-align:center;margin:36px 0 8px;">
+  <a href="#" style="display:inline-block;background:#0f1729;color:#c9a84c;padding:15px 36px;border-radius:3px;text-decoration:none;font-weight:700;font-size:11px;letter-spacing:2.5px;text-transform:uppercase;font-family:-apple-system,sans-serif;">
+    Request a Wholesale Catalog
+  </a>
+  <p style="margin:12px 0 0;font-size:12px;color:#9ca3af;font-family:-apple-system,sans-serif;">Or reply directly to this email to start the conversation.</p>
+</div>"""
+
+    # Process each paragraph
+    chunks = []
+    for para in body.strip().split("\n\n"):
+        stripped = para.strip()
+        if stripped == "[FEATURE_CARDS]":
+            chunks.append(FEATURE_CARDS_HTML)
+        elif stripped == "[CTA]":
+            chunks.append(CTA_HTML)
+        elif stripped.startswith("[CALLOUT]"):
+            text = stripped[9:].strip().replace("\n", "<br>")
+            chunks.append(
+                f'<div style="border-left:3px solid #c9a84c;background:#faf8f2;padding:16px 20px;'
+                f'margin:20px 0;border-radius:0 5px 5px 0;font-size:14px;color:#374151;'
+                f'line-height:1.7;font-family:-apple-system,sans-serif;">{text}</div>'
+            )
+        elif stripped.startswith("[H2]"):
+            text = stripped[4:].strip()
+            chunks.append(
+                f'<h2 style="margin:24px 0 8px;font-size:20px;font-weight:700;color:#0f1729;'
+                f'font-family:Georgia,serif;line-height:1.3;">{text}</h2>'
+            )
+        else:
+            # Escape HTML entities, preserve line breaks
+            safe = para.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            lines = safe.replace("\n", "<br>")
+            chunks.append(
+                f'<p style="margin:0 0 18px;font-size:15px;line-height:1.8;color:#374151;'
+                f'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;">{lines}</p>'
+            )
+
+    body_html = "".join(chunks)
+    safe_sender = sender_name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background:#f5f3ee;">
+<div style="max-width:600px;margin:32px auto;background:#ffffff;border-radius:4px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.10);">
+
+  <!-- Header -->
+  <div style="background:#0f1729;padding:44px 32px 36px;text-align:center;">
+    <h1 style="margin:0;font-family:Georgia,'Times New Roman',serif;font-size:30px;font-weight:400;color:#c9a84c;letter-spacing:3px;">Delight Shoppe</h1>
+    <p style="margin:10px 0 0;color:#8a9bb5;font-size:10px;letter-spacing:4px;text-transform:uppercase;font-family:-apple-system,sans-serif;">Curated E&#x2011;Commerce &nbsp;&middot;&nbsp; Est. 2024</p>
+    <div style="width:48px;height:1px;background:#c9a84c;margin:18px auto 0;"></div>
+  </div>
+
+  <!-- Body -->
+  <div style="padding:44px 48px 28px;">
+    {body_html}
+  </div>
+
+  <!-- Signature -->
+  <div style="border-top:1px solid #e5e7eb;padding:24px 48px 32px;">
+    <p style="margin:0;font-size:13px;color:#6b7280;font-family:-apple-system,sans-serif;line-height:1.7;">
+      Warm regards,<br>
+      <strong style="color:#0f1729;font-size:14px;">{safe_sender}</strong><br>
+      <span style="color:#9ca3af;">Delight Shoppe &nbsp;&middot;&nbsp; Curated E-Commerce</span>
+    </p>
+  </div>
+
+  <!-- Footer -->
+  <div style="background:#f9f8f6;padding:14px 48px;border-top:1px solid #ede9e0;">
+    <p style="margin:0;font-size:10px;color:#b5b0a8;text-align:center;letter-spacing:1px;font-family:-apple-system,sans-serif;text-transform:uppercase;">
+      Delight Shoppe &nbsp;&middot;&nbsp; You are receiving this as a direct wholesale inquiry.
+    </p>
+  </div>
+
+</div>
+</body></html>"""
+
+
 @app.post("/api/accounts/{account_id}/send-email")
 def send_account_email(
     account_id: int,
@@ -445,7 +562,7 @@ def send_account_email(
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
 ):
-    """Send an email to an account using pre-loaded wholesale templates."""
+    """Send a branded wholesale email to an account via SendGrid."""
     from notifications import send_email as _send_email, _smtp_configured
     if not _smtp_configured():
         raise HTTPException(status_code=400, detail="Email not configured — add SENDGRID_API_KEY in Railway")
@@ -456,34 +573,8 @@ def send_account_email(
     if not data.to or "@" not in data.to:
         raise HTTPException(status_code=400, detail="Invalid recipient email address")
 
-    # Convert plain-text body to minimal HTML (preserve line breaks)
-    html_body = data.body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    html_body = html_body.replace("\n", "<br>")
-
-    from_raw = os.getenv("SMTP_FROM", "Delight Shoppe <noreply@delightshoppe.org>")
-    if "<" in from_raw:
-        sender_display = from_raw[:from_raw.index("<")].strip().strip('"')
-    else:
-        sender_display = from_raw.strip()
-
-    html = f"""<!DOCTYPE html>
-<html>
-<body style="margin:0;padding:0;background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
-  <div style="max-width:600px;margin:32px auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1);">
-    <div style="background:#1e293b;padding:20px 32px;">
-      <p style="margin:0;color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:.05em;">Delight Shoppe</p>
-    </div>
-    <div style="padding:28px 32px;font-size:15px;line-height:1.7;color:#374151;">
-      {html_body}
-    </div>
-    <div style="background:#f9fafb;padding:16px 32px;border-top:1px solid #e5e7eb;">
-      <p style="margin:0;color:#9ca3af;font-size:12px;text-align:center;">
-        {sender_display} · Delight Shoppe
-      </p>
-    </div>
-  </div>
-</body>
-</html>"""
+    sender = data.sender_name or current.get("sub", "Delight Shoppe")
+    html = _build_wholesale_email_html(data.body, data.template_id or "", sender)
 
     try:
         _send_email(data.to, data.subject, html)

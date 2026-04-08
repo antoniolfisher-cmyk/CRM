@@ -12,189 +12,155 @@ const TEMPLATES = [
   {
     id: 'intro',
     label: 'Introduction / First Outreach',
-    subject: 'Products Your Customers Are Already Searching For — Delight Shoppe',
-    body: `Hi {{contact_name}},
+    subject: 'A Wholesale Partnership Built Around Products People Love — Delight Shoppe',
+    body: `Dear {{contact_name}},
 
-My name is {{sender_name}} and I represent Delight Shoppe — an e-commerce brand that sources and sells high-demand consumer products on Amazon and other major online platforms.
+[H2]A wholesale partnership built around products people love
 
-Here's what makes us different from every other vendor in your inbox:
+My name is {{sender_name}}, and I'm reaching out on behalf of Delight Shoppe — an e-commerce retailer dedicated to sourcing thoughtful, high-quality products for customers who care about what they bring into their homes.
 
-We don't guess what sells. We know. Every product in our wholesale catalog is an active Amazon listing with verified sales history, customer reviews, and measurable market demand. Before we ever offer a product to wholesale partners, it's already proven itself with real buyers.
+We've built a loyal online community around our curated selections, and as we continue to grow, we're actively seeking wholesale partnerships with brands whose values align with ours — quality, authenticity, and a genuine delight in the details.
 
-That means when {{account_name}} carries our products, you're not taking a bet on something untested — you're stocking items that consumers are already searching for and buying.
+[CALLOUT]We'd love to explore carrying {{account_name}}'s products within our store. Based on what we know of your line, we believe it's an excellent fit for our customer base and would perform well across our channels.
 
-What we're offering {{account_name}}:
-→ Wholesale access to our top-performing product lines
-→ Transparent pricing with strong margins built in
-→ Low opening order minimums — easy to get started
-→ A direct line to our team, not a call center
+Here's a little more about what a partnership with Delight Shoppe looks like:
 
-We'd love to put together a custom line sheet for {{account_name}} based on your market and customer base. Would you be open to a quick call or email exchange this week?
+[FEATURE_CARDS]
 
-Looking forward to connecting.
+We'd love to receive your current wholesale catalog, minimum order requirements, and any onboarding information for new retail partners. We're happy to schedule a call at your convenience to learn more about your offerings.
 
-{{sender_name}}
-Delight Shoppe Wholesale
-`,
+Thank you so much for your time — we genuinely look forward to the possibility of working together.
+
+[CTA]`,
   },
   {
     id: 'catalog',
-    label: 'Product Catalog / Line Sheet',
-    subject: 'Your Custom Delight Shoppe Line Sheet Is Ready, {{account_name}}',
-    body: `Hi {{contact_name}},
+    label: 'Catalog & Pricing Request',
+    subject: 'Requesting Wholesale Catalog — Delight Shoppe × {{account_name}}',
+    body: `Dear {{contact_name}},
 
-Thank you for your interest in Delight Shoppe — we're excited to put our products in front of {{account_name}}'s customers.
+Thank you for your time — we're genuinely interested in carrying {{account_name}}'s products through Delight Shoppe's e-commerce channels.
 
-A quick word about how we're built differently:
+To move forward with our internal review process, we'd love to receive the following from {{account_name}}:
 
-Most wholesale vendors hand you a generic catalog and hope something sticks. We do the opposite. Because every product we sell has an active Amazon listing, we can show you real data — bestseller rankings, customer review scores, and demand trends — so you can make confident buying decisions backed by actual market proof.
+→ Current wholesale catalog or line sheet
+→ Wholesale pricing and any volume tier structure
+→ Minimum order quantities (opening and reorder)
+→ Lead times and shipping terms
+→ Any exclusivity or territory considerations
 
-WHAT'S IN OUR CATALOG
-Our current wholesale lineup includes products across home essentials, lifestyle, and everyday consumer goods — all with:
-✓ 4-star ratings or higher on Amazon
-✓ Proven repeat-purchase demand
-✓ Retail-ready packaging
-✓ Barcodes and compliance docs on file
+A little more about Delight Shoppe as a retail partner:
 
-GETTING STARTED WITH {{account_name}}
-→ Opening order minimum: $250
-→ Reorder minimum: $150
-→ Net 30 terms available for established accounts
-→ Dedicated account rep — you'll always have a direct contact
+We operate an active storefront across Amazon and direct e-commerce channels with a growing, loyal customer base. We order on a consistent, predictable cycle, and we actively promote the brands we carry through product pages, email marketing, and social content.
 
-Reply to this email and I'll send over our current line sheet with wholesale pricing. I can also pull together a curated selection specifically matched to what typically performs well for distributors like {{account_name}}.
+We're not looking for a one-time transaction — we're looking for suppliers we can grow with over time. {{account_name}} feels like a strong fit for what our customers love.
 
-{{sender_name}}
-Delight Shoppe Wholesale
-`,
+Please feel free to reply directly to this email or send any catalog materials to this address. We'll review and follow up promptly.
+
+Looking forward to learning more.`,
   },
   {
     id: 'followup',
     label: 'Follow-Up — No Response',
-    subject: 'One More Thing Before I Move On, {{contact_name}}',
-    body: `Hi {{contact_name}},
+    subject: 'Still Interested — Delight Shoppe × {{account_name}}',
+    body: `Dear {{contact_name}},
 
-I sent a note a little while back about Delight Shoppe's wholesale program and didn't want to disappear without a proper follow-up.
+I wanted to follow up on my earlier note about a potential wholesale partnership between Delight Shoppe and {{account_name}}. I understand how busy things get, and I didn't want my message to get buried.
 
-I'll keep it short:
+To recap briefly: Delight Shoppe is a curated e-commerce retailer actively looking to source quality products for our customer base. We believe {{account_name}}'s line is a strong fit for what we carry, and we'd love to explore what a partnership could look like.
 
-We're an e-commerce brand with Amazon-validated products looking to open wholesale accounts with distributors who want to carry items that already have a proven buyer base. No unproven SKUs, no guesswork — just products that move.
+[CALLOUT]If the timing isn't right at the moment, I completely understand. Just let me know and I'll circle back at a better time — no pressure at all.
 
-If this isn't the right moment for {{account_name}}, no pressure at all — just say the word and I'll circle back when the timing is better. But if there's even a small window of interest, I'd love 10 minutes to show you what we have.
+But if there's any interest, even just a quick call or a catalog to review, that would mean a lot to us.
 
-Either way, I appreciate your time and wish {{account_name}} continued success.
-
-{{sender_name}}
-Delight Shoppe Wholesale
-`,
+Thank you again for your time. Whatever you decide, we wish {{account_name}} continued success.`,
   },
   {
     id: 'welcome',
-    label: 'Welcome — New Wholesale Account',
-    subject: '{{account_name}} Is Now a Delight Shoppe Wholesale Partner 🎉',
-    body: `Hi {{contact_name}},
+    label: 'Welcome — New Supplier Partner',
+    subject: 'Welcome to the Delight Shoppe Partner Network, {{account_name}}',
+    body: `Dear {{contact_name}},
 
-Welcome to the Delight Shoppe wholesale family — we're genuinely excited to have {{account_name}} on board, and we don't take that lightly.
+[H2]We're thrilled to have {{account_name}} as a Delight Shoppe supplier partner.
 
-Here's how we'll make sure this partnership starts strong:
+This is the beginning of something we're genuinely excited about, and we want to make sure the partnership starts off on the right foot.
 
-WHAT HAPPENS NEXT
-1. Your account is now active — wholesale pricing is applied automatically
-2. Your first order ships free, no minimum required
-3. You'll have a direct line to {{sender_name}} for anything you need — no ticketing system, no runaround
+Here's what you can expect from us:
 
-WHAT SETS THIS PARTNERSHIP APART
-We built Delight Shoppe around a simple idea: only sell what's already proven. Every product you'll order from us has real Amazon performance data behind it. That means fewer slow movers, faster turns, and more confidence in every purchase you make.
+→ Clear, timely purchase orders — no surprises on quantities or timing
+→ Prompt payment within agreed terms, every time
+→ Active promotion of {{account_name}}'s products across our storefronts and marketing channels
+→ A dedicated point of contact — you'll always have a direct line to {{sender_name}}
 
-As {{account_name}} grows with us, we'll keep you first in line for new product drops, volume pricing tiers, and early access to items before they hit the general catalog.
+[CALLOUT]We treat our supplier relationships as long-term partnerships. When your products do well, we reorder consistently and grow the line. We believe the best vendor relationships are built on trust, transparency, and shared growth.
 
-Reply anytime — we're always reachable and always paying attention.
+Our first order details will follow in a separate message. In the meantime, please don't hesitate to reach out with any questions, preferred communication preferences, or anything that would make working together easier.
 
-{{sender_name}}
-Delight Shoppe Wholesale
-`,
+Thank you for choosing to partner with Delight Shoppe — we look forward to building something great with {{account_name}}.`,
   },
   {
     id: 'reorder',
-    label: 'Reorder Reminder',
-    subject: 'Stock Check — Don\'t Let These Run Out, {{contact_name}}',
-    body: `Hi {{contact_name}},
+    label: 'Purchase Order / Reorder',
+    subject: 'Reorder Request — Delight Shoppe × {{account_name}}',
+    body: `Dear {{contact_name}},
 
-Quick heads-up for {{account_name}} — based on your last order, you may be getting close to reorder territory on some of your top Delight Shoppe SKUs.
+I'm reaching out to place our next order with {{account_name}} for Delight Shoppe's upcoming inventory cycle.
 
-We're flagging this now because a few of our bestsellers have been moving faster than usual lately. Amazon demand has been climbing on several lines, and that same momentum tends to carry over into wholesale reorders. We'd hate for {{account_name}} to face a gap when the demand is there.
+[CALLOUT]Please find our reorder quantities below. We'd appreciate a confirmation of availability, estimated ship date, and updated invoice at your earliest convenience.
 
-Our current inventory is in great shape, so now is the ideal time to restock before lead times tighten.
+REORDER DETAILS
+• Account: Delight Shoppe
+• Ship to: [Your warehouse/prep center address]
+• Requested ship date: [Date]
+• Payment method: [ACH / Check / Card on file]
 
-To reorder:
-→ Just reply with your quantities and I'll confirm availability and get your order moving same day
-→ Need to adjust your mix? I can pull up what's been performing best recently and make suggestions
+ITEMS REQUESTED
+• [Product Name / SKU] — Qty: [X]
+• [Product Name / SKU] — Qty: [X]
+• [Add additional lines as needed]
 
-You're in good hands either way — just let me know.
+If any items are out of stock or on backorder, please let us know as soon as possible so we can plan accordingly. We're also open to substitutions or advance notice of upcoming restocks if the timeline is tight.
 
-{{sender_name}}
-Delight Shoppe Wholesale
-`,
+Thank you for the continued partnership — we look forward to your confirmation.`,
   },
   {
-    id: 'pricing',
-    label: 'Pricing & Terms — No Surprises',
-    subject: 'Delight Shoppe Wholesale Terms for {{account_name}} — Straight Talk',
-    body: `Hi {{contact_name}},
+    id: 'terms',
+    label: 'Wholesale Terms Inquiry',
+    subject: 'Wholesale Terms Inquiry — Delight Shoppe Is Interested in {{account_name}}',
+    body: `Dear {{contact_name}},
 
-We believe in keeping things transparent — no fine print surprises, no inflated MSRPs to make the discount look bigger than it is. Here's exactly how our wholesale program works for {{account_name}}:
+My name is {{sender_name}} from Delight Shoppe, an e-commerce retailer curating high-quality products for a loyal and growing customer base.
 
-PRICING
-• Wholesale pricing runs 40–55% below verified Amazon retail pricing
-• Volume breaks kick in at $750, $1,500, and $3,000 order levels
-• All pricing is based on real retail comps — not inflated list prices
+We've been reviewing {{account_name}}'s line and believe there's strong potential for our channels. Before we move forward with a formal buying decision, we'd love to better understand your wholesale structure.
 
-MINIMUMS
-• Opening order: $250 (low bar by design — we want you to test before you commit)
-• Reorder: $150
+Could you share the following?
 
-PAYMENT
-• ACH, check, and all major credit cards accepted
-• Net 30 terms extended to accounts in good standing after the first order
+→ Wholesale pricing or price list
+→ Minimum order requirements (opening and reorder)
+→ Payment terms you offer to new retail accounts
+→ Typical lead times from order to shipment
+→ Whether you offer exclusivity or territory restrictions
+→ Any requirements or approval process for new wholesale partners
 
-SHIPPING & FULFILLMENT
-• Orders ship within 2 business days
-• Free shipping on orders $500+
-• Tracking provided on every shipment, no chasing required
+Delight Shoppe is a serious retail buyer — we order consistently, promote actively, and build long-term relationships with the brands we carry. We'd love {{account_name}} to be one of them.
 
-WHY THIS MATTERS FOR {{account_name}}
-We price this way because our products don't need inflated markups to look attractive — they sell because customers already want them. The margins we offer are sustainable for both sides, and we're building long-term partners, not one-time transactions.
-
-Ready to move forward? Reply with any questions or to request a formal quote.
-
-{{sender_name}}
-Delight Shoppe Wholesale
-`,
+Thank you for your time. I look forward to your response.`,
   },
   {
     id: 'new_product',
-    label: 'New Product Drop — Early Access',
-    subject: 'First Look: New Delight Shoppe Products — Before They Go Wide',
-    body: `Hi {{contact_name}},
+    label: 'New Product Inquiry',
+    subject: 'Curious About What\'s New — Delight Shoppe × {{account_name}}',
+    body: `Dear {{contact_name}},
 
-As a Delight Shoppe wholesale partner, {{account_name}} gets early access — so I wanted to make sure this landed in your inbox before we open these to the broader catalog.
+I hope things are going well at {{account_name}}. I'm reaching out because we're in the process of expanding Delight Shoppe's product selection for the coming season, and you came to mind immediately.
 
-We've just brought in several new product lines that have been going through our vetting process over the past few weeks. Our standard: we don't add anything to the wholesale catalog until it's demonstrated real traction on Amazon — reviews, sales velocity, and sustained demand.
+[CALLOUT]We'd love to know if {{account_name}} has introduced any new products, lines, or collections recently — or anything coming up that you think would be a great fit for our customer base.
 
-These new additions cleared that bar, and we think they're going to move well.
+Our shoppers tend to respond well to products that are thoughtfully made, solve a real need, and come from brands with a clear identity. If any of {{account_name}}'s recent additions fit that description, we'd love to see them.
 
-WHY ACT NOW
-Amazon demand on these categories is rising, which typically signals strong brick-and-mortar and distributor pull shortly after. Getting them into {{account_name}}'s inventory now puts you ahead of that curve — not chasing it.
+A quick email with any new SKUs, lookbooks, or line sheets would be a great starting point — we'll review everything carefully and follow up with feedback and interest levels.
 
-Early access orders also receive:
-→ Preferred wholesale pricing (locked in before the next price review)
-→ Priority fulfillment — your order ships before general catalog orders
-
-I'll hold allocation for {{account_name}} for 5 business days. Reply to this email and I'll send over the product details, pricing, and availability.
-
-{{sender_name}}
-Delight Shoppe Wholesale
-`,
+Thank you for always bringing quality to the table. We're excited to see what's new with {{account_name}}.`,
   },
 ]
 
@@ -227,10 +193,14 @@ function EmailComposer({ account, onClose }) {
 
   const applyTemplate = (id) => {
     const tpl = TEMPLATES.find(t => t.id === id)
-    if (!tpl) return
+    if (tpl) {
+      setSubject(fillTemplate(tpl.subject, vars))
+      setBody(fillTemplate(tpl.body, vars))
+    } else {
+      setSubject('')
+      setBody('')
+    }
     setTemplateId(id)
-    setSubject(fillTemplate(tpl.subject, vars))
-    setBody(fillTemplate(tpl.body, vars))
     setMsg('')
   }
 
@@ -238,7 +208,11 @@ function EmailComposer({ account, onClose }) {
     if (!to) { setMsg('Enter a recipient email address.'); return }
     setSending(true); setMsg('')
     try {
-      await api.sendAccountEmail(account.id, { to, subject, body })
+      await api.sendAccountEmail(account.id, {
+        to, subject, body,
+        template_id: templateId,
+        sender_name: user?.username || 'Delight Shoppe',
+      })
       setMsg('✓ Email sent successfully!')
     } catch (e) {
       setMsg(`✗ ${e.message}`)
@@ -257,7 +231,7 @@ function EmailComposer({ account, onClose }) {
             onChange={e => applyTemplate(e.target.value)}
           >
             {TEMPLATES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
-            <option value="blank">— Blank (write your own) —</option>
+            <option value="blank">— Start from scratch —</option>
           </select>
           <p className="text-xs text-gray-400 mt-1">Selecting a template will replace the subject and body below. You can edit freely after.</p>
         </div>
