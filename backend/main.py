@@ -1484,7 +1484,11 @@ async def keepa_bulk_refresh(
 #   AMAZON_MARKETPLACE_ID     – defaults to ATVPDKIKX0DER (US)
 
 _AMAZON_LWA_URL  = "https://api.amazon.com/auth/o2/token"
-_AMAZON_SP_BASE  = "https://sellingpartnerapi-na.amazon.com"
+_AMAZON_SP_BASE  = (
+    "https://sandbox.sellingpartnerapi-na.amazon.com"
+    if os.getenv("AMAZON_SP_SANDBOX", "").lower() in ("1", "true", "yes")
+    else "https://sellingpartnerapi-na.amazon.com"
+)
 _AMAZON_MKT_ID   = os.getenv("AMAZON_MARKETPLACE_ID", "ATVPDKIKX0DER")
 
 
