@@ -1517,7 +1517,7 @@ async def _get_amazon_access_token() -> str:
 
 
 @app.get("/api/amazon/test")
-async def amazon_test(current: dict = Depends(require_auth)):
+async def amazon_test():
     """Diagnostic endpoint — tests each step of Amazon SP-API auth."""
     result = {
         "credentials_set": {
