@@ -65,6 +65,8 @@ const COLS = [
   { key: 'amazon_fee',        label: 'Amazon Fee',           width: 'w-24', render: (v) => fmtCurrency(v) },
   { key: 'total_cost',        label: 'Total Cost',           width: 'w-24', render: (v) => fmtCurrency(v) },
   { key: 'buy_box',           label: 'Buy Box',              width: 'w-24', render: (v) => fmtCurrency(v) },
+  { key: 'keepa_bsr',        label: 'BSR',                  width: 'w-24', render: (v) => v ? `#${Number(v).toLocaleString()}` : '—' },
+  { key: 'keepa_category',   label: 'Category',             width: 'w-36', render: (v) => <span className="text-xs text-gray-500 truncate block max-w-[9rem]">{v || '—'}</span> },
   { key: 'profit',            label: 'Profit',               width: 'w-24', render: (v) => (
     <span className={Number(v) >= 0 ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold'}>{fmtCurrency(v)}</span>
   )},
@@ -91,9 +93,11 @@ export default function Products() {
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState(null)
   const [auraConfigured, setAuraConfigured] = useState(false)
+  const [keepaConfigured, setKeepaConfigured] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [syncingId, setSyncingId] = useState(null)
   const [syncResult, setSyncResult] = useState(null)
+  const [keepaSyncingId, setKeepaSyncingId] = useState(null)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -106,6 +110,7 @@ export default function Products() {
   useEffect(() => {
     load()
     api.getAuraStatus().then(r => setAuraConfigured(r.configured)).catch(() => {})
+    api.keepaStatus().then(r => setKeepaConfigured(r.configured)).catch(() => {})
   }, [load])
 
   const handleDelete = async (id) => {
@@ -144,6 +149,17 @@ export default function Products() {
     } catch (e) {
       setSyncResult({ error: e.message })
     } finally { setSyncingId(null) }
+  }
+
+  const handleKeepaSyncOne = async (productId, e) => {
+    e.stopPropagation()
+    setKeepaSyncingId(productId)
+    try {
+      const updated = await api.keepaRefreshOne(productId)
+      setProducts(prev => prev.map(p => p.id === productId ? updated : p))
+    } catch (err) {
+      alert(`Keepa sync failed: ${err.message}`)
+    } finally { setKeepaSyncingId(null) }
   }
 
   const totalSpent = products.reduce((s, p) => s + (p.money_spent || 0), 0)
@@ -265,7 +281,17 @@ export default function Products() {
                     </td>
                   ))}
                   <td className="px-3 py-2.5 sticky right-0 bg-white group-hover:bg-gray-50">
-                    <div className="flex gap-1">
+                    <div className="flex gap-1 items-center">
+                      {keepaConfigured && p.asin && (
+                        <button
+                          className="btn-ghost py-1 px-2 text-xs text-blue-600 hover:bg-blue-50 flex items-center gap-1"
+                          onClick={(e) => handleKeepaSyncOne(p.id, e)}
+                          disabled={keepaSyncingId === p.id}
+                          title="Refresh from Keepa"
+                        >
+                          <KeepaIcon spinning={keepaSyncingId === p.id} />
+                        </button>
+                      )}
                       {auraConfigured && p.asin && (
                         <button
                           className="btn-ghost py-1 px-2 text-xs text-purple-600 hover:bg-purple-50"
@@ -297,6 +323,7 @@ export default function Products() {
             initial={editing}
             onSave={handleSave}
             onClose={() => { setShowForm(false); setEditing(null) }}
+            keepaConfigured={keepaConfigured}
           />
         </Modal>
       )}
@@ -322,7 +349,7 @@ function toFormDate(val) {
   try { return val.slice(0, 10) } catch { return '' }
 }
 
-function ProductForm({ initial, onSave, onClose }) {
+function ProductForm({ initial, onSave, onClose, keepaConfigured }) {
   const [form, setForm] = useState(() => ({
     ...EMPTY,
     ...initial,
@@ -332,12 +359,47 @@ function ProductForm({ initial, onSave, onClose }) {
     date_sent_to_amazon: toFormDate(initial?.date_sent_to_amazon),
   }))
   const [saving, setSaving] = useState(false)
+  const [keepaLoading, setKeepaLoading] = useState(false)
+  const [keepaFilled, setKeepaFilled] = useState(null)  // { bsr, category, tokens_left } or null
+  const [keepaError, setKeepaError] = useState('')
 
   // Auto-calculate financials whenever inputs change
   useEffect(() => {
     const calc = calcFinancials(form)
     setForm((f) => ({ ...f, ...calc }))
   }, [form.quantity, form.buy_cost, form.amazon_fee, form.buy_box])
+
+  // Auto-fetch Keepa data when a valid ASIN is entered
+  useEffect(() => {
+    const asin = (form.asin || '').trim().toUpperCase()
+    if (!keepaConfigured || asin.length !== 10) {
+      setKeepaFilled(null)
+      setKeepaError('')
+      return
+    }
+    setKeepaLoading(true)
+    setKeepaFilled(null)
+    setKeepaError('')
+    const timer = setTimeout(async () => {
+      try {
+        const data = await api.keepaLookup(asin)
+        setForm(f => ({
+          ...f,
+          // Only fill product_name if the field is blank
+          product_name: f.product_name || data.title || f.product_name,
+          buy_box:        data.buy_box        ?? f.buy_box,
+          num_sellers:    data.num_sellers     ?? f.num_sellers,
+          estimated_sales: data.estimated_sales ?? f.estimated_sales,
+        }))
+        setKeepaFilled(data)
+      } catch (e) {
+        setKeepaError(e.message)
+      } finally {
+        setKeepaLoading(false)
+      }
+    }, 700)
+    return () => { clearTimeout(timer); setKeepaLoading(false) }
+  }, [form.asin, keepaConfigured])
 
   const set = (k) => (e) =>
     setForm((f) => ({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }))
@@ -394,7 +456,40 @@ function ProductForm({ initial, onSave, onClose }) {
 
       <Section title="Product Info">
         <Field label="Product Name *" k="product_name" span={2} />
-        <Field label="ASIN" k="asin" placeholder="B0XXXXXXXXX" />
+        {/* ASIN field with Keepa live-lookup */}
+        <div>
+          <label className="label">ASIN</label>
+          <div className="relative">
+            <input
+              className="input pr-8"
+              type="text"
+              value={form.asin ?? ''}
+              onChange={set('asin')}
+              placeholder="B0XXXXXXXXX"
+              maxLength={10}
+            />
+            {keepaLoading && (
+              <span className="absolute right-2 top-1/2 -translate-y-1/2">
+                <svg className="w-4 h-4 animate-spin text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              </span>
+            )}
+          </div>
+          {keepaFilled && (
+            <p className="text-xs text-green-700 mt-1 flex items-center gap-1">
+              <span>✓ Keepa data loaded</span>
+              {keepaFilled.bsr && <span className="text-gray-500">· BSR #{Number(keepaFilled.bsr).toLocaleString()}</span>}
+              {keepaFilled.category && <span className="text-gray-500 truncate max-w-[10rem]">· {keepaFilled.category}</span>}
+            </p>
+          )}
+          {keepaError && (
+            <p className="text-xs text-amber-600 mt-1">⚠ {keepaError}</p>
+          )}
+          {keepaConfigured && !keepaFilled && !keepaLoading && (form.asin || '').length > 0 && (form.asin || '').length < 10 && (
+            <p className="text-xs text-gray-400 mt-1">Enter all 10 characters to auto-fill from Keepa</p>
+          )}
+        </div>
         <Field label="VA Finder" k="va_finder" placeholder="Who found this?" />
         <Field label="Amazon URL" k="amazon_url" span={2} />
         <Field label="Purchase Link" k="purchase_link" span={2} />
@@ -462,6 +557,14 @@ function ProductForm({ initial, onSave, onClose }) {
 
 function PlusIcon() {
   return <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
+}
+
+function KeepaIcon({ spinning = false }) {
+  return (
+    <svg className={`w-3.5 h-3.5 ${spinning ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+    </svg>
+  )
 }
 
 function AuraIcon({ className = '' }) {

@@ -1253,6 +1253,67 @@ def keepa_status_endpoint(current: dict = Depends(require_auth)):
     return {"configured": bool(os.getenv("KEEPA_API_KEY", "").strip())}
 
 
+@app.get("/api/keepa/lookup/{asin}")
+async def keepa_lookup(asin: str, current: dict = Depends(require_auth)):
+    """Fetch Keepa data for a single ASIN without requiring a saved product."""
+    api_key = os.getenv("KEEPA_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(503, "KEEPA_API_KEY is not configured")
+
+    asin = asin.strip().upper()
+    if len(asin) != 10:
+        raise HTTPException(400, "ASIN must be 10 characters")
+
+    url = (
+        f"https://api.keepa.com/product"
+        f"?key={api_key}&domain={_KEEPA_DOMAIN}&asin={asin}&stats=90"
+    )
+    import httpx as _httpx
+    async with _httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(url)
+
+    if resp.status_code != 200:
+        raise HTTPException(502, f"Keepa returned {resp.status_code}")
+
+    data = resp.json()
+    if data.get("error"):
+        raise HTTPException(502, f"Keepa error: {data.get('status', 'unknown')}")
+
+    products_data = data.get("products") or []
+    if not products_data:
+        raise HTTPException(404, f"ASIN {asin} not found in Keepa")
+
+    kp = products_data[0]
+    stats = kp.get("stats") or {}
+    cur = stats.get("current") or []
+
+    def _price(idx):
+        if idx < len(cur) and cur[idx] is not None and cur[idx] > 0:
+            return round(cur[idx] / 100, 2)
+        return None
+
+    def _rank(idx):
+        if idx < len(cur) and cur[idx] is not None and cur[idx] > 0:
+            return int(cur[idx])
+        return None
+
+    cat_tree = kp.get("categoryTree") or []
+    category = ""
+    if cat_tree:
+        category = (cat_tree[-1].get("name") or cat_tree[0].get("name") or "").strip()
+
+    return {
+        "asin": asin,
+        "title": (kp.get("title") or "").strip(),
+        "buy_box": _price(7),
+        "bsr": _rank(3),
+        "category": category,
+        "num_sellers": kp.get("newCount"),
+        "estimated_sales": kp.get("monthlySold"),
+        "tokens_left": data.get("tokensLeft"),
+    }
+
+
 @app.post("/api/products/{product_id}/keepa-refresh", response_model=schemas.ProductOut)
 async def keepa_refresh_one(
     product_id: int,

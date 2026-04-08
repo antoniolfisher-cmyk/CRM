@@ -77,6 +77,7 @@ export const api = {
   updateProduct: (id, data) => req('PUT', `/products/${id}`, data),
   deleteProduct: (id) => req('DELETE', `/products/${id}`),
   keepaStatus: () => req('GET', '/keepa/status'),
+  keepaLookup: (asin) => req('GET', `/keepa/lookup/${asin}`),
   keepaRefreshOne: (id) => req('POST', `/products/${id}/keepa-refresh`),
   keepaBulkRefresh: () => req('POST', '/keepa/bulk-refresh'),
 
