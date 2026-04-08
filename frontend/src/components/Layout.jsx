@@ -7,6 +7,7 @@ const nav = [
   { to: '/follow-ups', label: 'Follow-Ups', icon: CalendarIcon },
   { to: '/orders', label: 'Orders', icon: BoxIcon },
   { to: '/products', label: 'Products', icon: TagIcon },
+  { to: '/inventory', label: 'Inventory', icon: InventoryIcon },
   { to: '/timeclock', label: 'Time Clock', icon: ClockIcon },
 ]
 
@@ -138,6 +139,14 @@ function LogoutIcon({ className }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+    </svg>
+  )
+}
+function InventoryIcon({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 10V7" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 12l8-4" />
     </svg>
   )
 }
