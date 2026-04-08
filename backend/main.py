@@ -66,14 +66,21 @@ def me(payload: dict = Depends(require_auth)):
 
 # ─── Debug (admin only) ───────────────────────────────────────────────────────
 
-@app.get("/api/debug/env")
-def debug_env(_=Depends(require_admin)):
-    return {
-        "SENDGRID_API_KEY": bool(os.getenv("SENDGRID_API_KEY")),
-        "RESEND_API_KEY":   bool(os.getenv("RESEND_API_KEY")),
-        "SMTP_HOST":        bool(os.getenv("SMTP_HOST")),
-        "SMTP_FROM":        os.getenv("SMTP_FROM", ""),
-    }
+@app.get("/api/debug/net")
+def debug_net():
+    import socket, httpx
+    results = {}
+    try:
+        socket.create_connection(("api.sendgrid.com", 443), timeout=5)
+        results["tcp_443"] = "ok"
+    except Exception as e:
+        results["tcp_443"] = str(e)
+    try:
+        r = httpx.get("https://api.sendgrid.com", timeout=10)
+        results["https"] = r.status_code
+    except Exception as e:
+        results["https"] = str(e)
+    return results
 
 
 # ─── Notification endpoints ───────────────────────────────────────────────────
