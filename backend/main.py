@@ -75,11 +75,20 @@ def debug_net():
         results["tcp_443"] = "ok"
     except Exception as e:
         results["tcp_443"] = str(e)
+    key = os.getenv("SENDGRID_API_KEY", "").strip()
     try:
-        r = httpx.get("https://api.sendgrid.com", timeout=10)
-        results["https"] = r.status_code
+        r = httpx.post(
+            "https://api.sendgrid.com/v3/mail/send",
+            json={"personalizations": [{"to": [{"email": "test@example.com"}]}],
+                  "from": {"email": "noreply@delightshoppe.org"},
+                  "subject": "test", "content": [{"type": "text/plain", "value": "test"}]},
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=15,
+        )
+        results["api_post"] = r.status_code
+        results["api_body"] = r.text[:300]
     except Exception as e:
-        results["https"] = str(e)
+        results["api_post"] = str(e)
     return results
 
 
