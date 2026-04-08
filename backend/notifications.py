@@ -116,7 +116,7 @@ def _send_via_resend(to: str, subject: str, html: str, api_key: str):
 
 def send_email(to: str, subject: str, html: str):
     # Read env vars at call time so Railway env changes take effect without restart
-    sendgrid_key = os.getenv("SENDGRID_API_KEY", "")
+    sendgrid_key = os.getenv("SENDGRID_API_KEY", "").strip()
 
     if not sendgrid_key:
         raise Exception("No email provider configured — set SENDGRID_API_KEY in Railway")
