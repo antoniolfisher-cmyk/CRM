@@ -1501,18 +1501,42 @@ def _amazon_sp_configured() -> bool:
 
 async def _get_amazon_access_token() -> str:
     import httpx as _httpx
-    resp_data = await _httpx.AsyncClient(timeout=15).post(
-        _AMAZON_LWA_URL,
-        data={
-            "grant_type":    "refresh_token",
-            "refresh_token": os.getenv("AMAZON_SP_REFRESH_TOKEN", ""),
-            "client_id":     os.getenv("AMAZON_LWA_CLIENT_ID", ""),
-            "client_secret": os.getenv("AMAZON_LWA_CLIENT_SECRET", ""),
-        },
-    )
+    async with _httpx.AsyncClient(timeout=15) as client:
+        resp_data = await client.post(
+            _AMAZON_LWA_URL,
+            data={
+                "grant_type":    "refresh_token",
+                "refresh_token": os.getenv("AMAZON_SP_REFRESH_TOKEN", ""),
+                "client_id":     os.getenv("AMAZON_LWA_CLIENT_ID", ""),
+                "client_secret": os.getenv("AMAZON_LWA_CLIENT_SECRET", ""),
+            },
+        )
     if resp_data.status_code != 200:
         raise HTTPException(502, f"Amazon LWA token error: {resp_data.text[:200]}")
     return resp_data.json()["access_token"]
+
+
+@app.get("/api/amazon/test")
+async def amazon_test(current: dict = Depends(require_auth)):
+    """Diagnostic endpoint — tests each step of Amazon SP-API auth."""
+    result = {
+        "credentials_set": {
+            "AMAZON_LWA_CLIENT_ID":     bool(os.getenv("AMAZON_LWA_CLIENT_ID", "").strip()),
+            "AMAZON_LWA_CLIENT_SECRET": bool(os.getenv("AMAZON_LWA_CLIENT_SECRET", "").strip()),
+            "AMAZON_SP_REFRESH_TOKEN":  bool(os.getenv("AMAZON_SP_REFRESH_TOKEN", "").strip()),
+            "AMAZON_SELLER_ID":         bool(os.getenv("AMAZON_SELLER_ID", "").strip()),
+            "AMAZON_SP_SANDBOX":        os.getenv("AMAZON_SP_SANDBOX", "false"),
+        },
+        "endpoint": _AMAZON_SP_BASE,
+        "token_test": None,
+        "token_error": None,
+    }
+    try:
+        token = await _get_amazon_access_token()
+        result["token_test"] = f"OK — token starts with {token[:20]}..."
+    except Exception as e:
+        result["token_error"] = str(e)
+    return result
 
 
 @app.get("/api/amazon/status")
