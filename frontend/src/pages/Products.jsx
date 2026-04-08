@@ -386,6 +386,7 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
     date_sent_to_amazon: toFormDate(initial?.date_sent_to_amazon),
   }))
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
   const [keepaLoading, setKeepaLoading] = useState(false)
   const [keepaFilled, setKeepaFilled] = useState(null)  // full Keepa response or null
   const [keepaError, setKeepaError] = useState('')
@@ -436,7 +437,8 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
   const submit = async (e) => {
     e.preventDefault()
     setSaving(true)
-    // Convert date strings to ISO and numbers
+    setSaveError('')
+    const nd = (v) => (v === '' || v == null) ? null : v  // empty string → null for optional dates
     const data = {
       ...form,
       quantity: Number(form.quantity) || 0,
@@ -447,8 +449,18 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
       total_bought: Number(form.total_bought) || 0,
       estimated_sales: Number(form.estimated_sales) || 0,
       num_sellers: Number(form.num_sellers) || 0,
+      date_found: nd(form.date_found),
+      date_purchased: nd(form.date_purchased),
+      arrived_at_prep: nd(form.arrived_at_prep),
+      date_sent_to_amazon: nd(form.date_sent_to_amazon),
     }
-    try { await onSave(data) } finally { setSaving(false) }
+    try {
+      await onSave(data)
+    } catch (err) {
+      setSaveError(err.message || 'Save failed')
+    } finally {
+      setSaving(false)
+    }
   }
 
   const Section = ({ title, children }) => (
@@ -479,6 +491,12 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
       <label htmlFor={k} className="text-sm text-gray-700">{label}</label>
     </div>
   )
+
+  // Max Buy Cost — computed before render to avoid IIFE in JSX
+  const _buyBox = Number(form.buy_box)
+  const _fee = Number(form.amazon_fee)
+  const _net = _buyBox - _fee
+  const showMaxBuy = _buyBox > 0 && _fee > 0 && _net > 0
 
   return (
     <form onSubmit={submit} className="space-y-6">
@@ -607,30 +625,25 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
         </div>
 
         {/* Max Buy Cost */}
-        {Number(form.buy_box) > 0 && Number(form.amazon_fee) > 0 && (() => {
-          const net = Number(form.buy_box) - Number(form.amazon_fee)
-          const at20 = net > 0 ? net / 1.20 : null
-          const at30 = net > 0 ? net / 1.30 : null
-          return (
-            <div className="col-span-2 bg-blue-50 border border-blue-100 rounded-lg p-3">
-              <p className="text-xs font-semibold text-blue-800 mb-2">Max Buy Cost (to hit target ROI)</p>
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <p className="text-xs text-blue-600">Break-even</p>
-                  <p className="font-bold text-sm text-blue-900">{fmtCurrency(net)}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-blue-600">@ 20% ROI</p>
-                  <p className="font-bold text-sm text-blue-900">{at20 ? fmtCurrency(at20) : '—'}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-blue-600">@ 30% ROI</p>
-                  <p className="font-bold text-sm text-blue-900">{at30 ? fmtCurrency(at30) : '—'}</p>
-                </div>
+        {showMaxBuy && (
+          <div className="col-span-2 bg-blue-50 border border-blue-100 rounded-lg p-3">
+            <p className="text-xs font-semibold text-blue-800 mb-2">Max Buy Cost (to hit target ROI)</p>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <p className="text-xs text-blue-600">Break-even</p>
+                <p className="font-bold text-sm text-blue-900">{fmtCurrency(_net)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-blue-600">@ 20% ROI</p>
+                <p className="font-bold text-sm text-blue-900">{fmtCurrency(_net / 1.20)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-blue-600">@ 30% ROI</p>
+                <p className="font-bold text-sm text-blue-900">{fmtCurrency(_net / 1.30)}</p>
               </div>
             </div>
-          )
-        })()}
+          </div>
+        )}
       </Section>
 
       <Section title="Notes">
@@ -639,6 +652,10 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
           <textarea className="input" rows={3} value={form.notes || ''} onChange={set('notes')} />
         </div>
       </Section>
+
+      {saveError && (
+        <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">{saveError}</p>
+      )}
 
       <div className="flex justify-end gap-3 pt-2 border-t border-gray-100">
         <button type="button" className="btn-secondary" onClick={onClose}>Cancel</button>
