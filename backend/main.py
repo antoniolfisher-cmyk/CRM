@@ -60,6 +60,24 @@ try:
             _conn.commit()
     except Exception:
         pass
+    # Repricer strategies — migrate old schema to new Aura-style columns
+    try:
+        if "repricer_strategies" in _inspector.get_table_names():
+            _cols = [c["name"] for c in _inspector.get_columns("repricer_strategies")]
+            with engine.connect() as _conn:
+                for _col, _ddl in [
+                    ("target",         "VARCHAR"),
+                    ("compete_action", "VARCHAR DEFAULT 'beat_pct'"),
+                    ("compete_value",  "REAL"),
+                    ("winning_action", "VARCHAR DEFAULT 'raise_pct'"),
+                    ("winning_value",  "REAL"),
+                    ("profit_floor",   "REAL"),
+                ]:
+                    if _col not in _cols:
+                        _conn.execute(text(f"ALTER TABLE repricer_strategies ADD COLUMN {_col} {_ddl}"))
+                _conn.commit()
+    except Exception:
+        pass
 except Exception:
     pass
 

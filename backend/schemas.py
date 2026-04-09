@@ -267,12 +267,15 @@ class ProductOut(ProductBase):
 class RepricerStrategyBase(BaseModel):
     name: str
     description: Optional[str] = None
-    strategy_type: str = "match_lowest"
+    strategy_type: str = "buy_box"          # maven|buy_box|featured_merchants|lowest_price|custom
+    target: Optional[str] = None            # buy_box_winner|featured_merchants|lowest_price
+    compete_action: Optional[str] = "beat_pct"   # match|beat_pct|beat_amt
+    compete_value: Optional[float] = None   # fraction (0.01=1%) or dollar amt
+    winning_action: Optional[str] = "raise_pct"  # maintain|raise_pct|raise_amt|raise_to_max
+    winning_value: Optional[float] = None   # fraction or dollar amt
     min_price: Optional[float] = None
     max_price: Optional[float] = None
-    beat_by_pct: Optional[float] = None
-    beat_by_amt: Optional[float] = None
-    target_roi: Optional[float] = None
+    profit_floor: Optional[float] = None
     is_active: bool = True
     is_default: bool = False
     notes: Optional[str] = None

@@ -210,20 +210,29 @@ class RepricerStrategy(Base):
     name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
 
-    # strategy_type: match_lowest | beat_lowest_pct | beat_lowest_amt | buy_box | target_roi | manual
-    strategy_type = Column(String, nullable=False, default="match_lowest")
+    # strategy_type: maven | buy_box | featured_merchants | lowest_price | custom
+    strategy_type = Column(String, nullable=False, default="buy_box")
 
-    # Price floor / ceiling applied to every reprice action
-    min_price = Column(Float, nullable=True)
-    max_price = Column(Float, nullable=True)
+    # Who to compete against (rule-based only)
+    # auto-set for buy_box/featured_merchants/lowest_price; user-set for custom
+    target = Column(String, nullable=True)   # buy_box_winner | featured_merchants | lowest_price
 
-    # Type-specific parameters
-    beat_by_pct = Column(Float, nullable=True)   # fraction, e.g. 0.01 = 1%
-    beat_by_amt = Column(Float, nullable=True)   # dollars, e.g. 0.10
-    target_roi  = Column(Float, nullable=True)   # fraction, e.g. 0.20 = 20%
+    # How to compete: match | beat_pct | beat_amt
+    compete_action = Column(String, nullable=True, default="beat_pct")
+    compete_value  = Column(Float, nullable=True)   # pct as fraction (0.01=1%) or dollar amt
+
+    # What to do when already winning the Buy Box
+    # maintain | raise_pct | raise_amt | raise_to_max
+    winning_action = Column(String, nullable=True, default="raise_pct")
+    winning_value  = Column(Float, nullable=True)   # pct as fraction or dollar amt
+
+    # Price limits (all optional, apply to every action)
+    min_price    = Column(Float, nullable=True)
+    max_price    = Column(Float, nullable=True)
+    profit_floor = Column(Float, nullable=True)   # min $ profit per unit
 
     is_active  = Column(Boolean, default=True)
-    is_default = Column(Boolean, default=False)  # one default allowed
+    is_default = Column(Boolean, default=False)
     notes = Column(Text, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
