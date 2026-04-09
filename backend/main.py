@@ -63,9 +63,29 @@ try:
             ]:
                 if _col not in _cols:
                     _conn.execute(text(f"ALTER TABLE products ADD COLUMN {_col} {_ddl}"))
-            # Backfill: existing products (NULL status) are already approved inventory
+            # Backfill NULLs (SQLite path)
             _conn.execute(text("UPDATE products SET status = 'approved' WHERE status IS NULL"))
             _conn.commit()
+    except Exception:
+        pass
+    # One-time migration: approve all pre-workflow sourcing products
+    # PostgreSQL sets DEFAULT value on existing rows (not NULL), so we track this separately
+    try:
+        with engine.connect() as _conn:
+            _conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS _migration_flags (name TEXT PRIMARY KEY)"
+            ))
+            already = _conn.execute(text(
+                "SELECT 1 FROM _migration_flags WHERE name = 'approve_existing_sourcing'"
+            )).fetchone()
+            if not already:
+                _conn.execute(text(
+                    "UPDATE products SET status = 'approved' WHERE status = 'sourcing' OR status IS NULL"
+                ))
+                _conn.execute(text(
+                    "INSERT INTO _migration_flags (name) VALUES ('approve_existing_sourcing')"
+                ))
+                _conn.commit()
     except Exception:
         pass
     # Repricer strategies — migrate old schema to new Aura-style columns
@@ -1349,6 +1369,16 @@ def reject_product(
     p.status = "sourcing"
     db.commit()
     return {"status": "sourcing"}
+
+
+@app.post("/api/admin/approve-all-sourcing")
+def approve_all_sourcing(db: Session = Depends(get_db), current: dict = Depends(require_admin)):
+    """One-time migration: move all sourcing products to approved inventory."""
+    updated = db.query(models.Product).filter(
+        models.Product.status.in_(["sourcing", None])
+    ).update({"status": "approved"}, synchronize_session=False)
+    db.commit()
+    return {"approved": updated}
 
 
 # ─── Keepa Integration ────────────────────────────────────────────────────────
