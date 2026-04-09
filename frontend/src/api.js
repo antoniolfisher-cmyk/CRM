@@ -84,6 +84,12 @@ export const api = {
   checkAmazonUngated: (id) => req('POST', `/products/${id}/check-ungated`),
   checkAmazonUngatedAsin: (asin) => req('GET', `/amazon/check-asin/${asin}`),
 
+  // Repricer strategies (admin only)
+  getRepricerStrategies: () => req('GET', '/repricer/strategies'),
+  createRepricerStrategy: (data) => req('POST', '/repricer/strategies', data),
+  updateRepricerStrategy: (id, data) => req('PUT', `/repricer/strategies/${id}`, data),
+  deleteRepricerStrategy: (id) => req('DELETE', `/repricer/strategies/${id}`),
+
   // Notifications (admin only)
   getNotificationStatus: () => req('GET', '/notifications/status'),
   sendTestEmail: () => req('POST', '/notifications/test', {}),

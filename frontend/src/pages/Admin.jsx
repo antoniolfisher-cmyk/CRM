@@ -232,6 +232,7 @@ function DownloadIcon() {
 
 export default function Admin() {
   const { user: currentUser } = useAuth()
+  const [activeTab, setActiveTab] = useState('users')
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
@@ -309,11 +310,42 @@ export default function Admin() {
   }
 
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="space-y-6 max-w-4xl">
+      <div>
+        <h1 className="text-2xl font-bold text-gray-900">Admin</h1>
+        <p className="text-gray-500 text-sm mt-1">Users, repricing strategies, and notification settings</p>
+      </div>
+
+      {/* ── Tab bar ── */}
+      <div className="border-b border-gray-200">
+        <nav className="flex gap-1">
+          {[
+            { key: 'users',    label: 'Users & Notifications' },
+            { key: 'repricer', label: 'Repricer' },
+          ].map(t => (
+            <button
+              key={t.key}
+              onClick={() => setActiveTab(t.key)}
+              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === t.key
+                  ? 'border-blue-600 text-blue-700'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      {activeTab === 'repricer' && <RepricerTab />}
+
+      {activeTab === 'users' && <>
+
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">User Management</h1>
-          <p className="text-gray-500 text-sm mt-1">Manage users, roles, and email notifications</p>
+          <h2 className="text-lg font-semibold text-gray-900">User Management</h2>
+          <p className="text-gray-500 text-sm mt-0.5">Manage users, roles, and email notifications</p>
         </div>
         <button className="btn-primary" onClick={() => { setEditing(null); setShowForm(true) }}>
           <PlusIcon /> Add User
@@ -448,9 +480,293 @@ export default function Admin() {
           <UserForm initial={editing} onSave={handleSave} onClose={() => { setShowForm(false); setEditing(null) }} isSelf={editing?.username === currentUser?.username} />
         </Modal>
       )}
+
+      </>}
     </div>
   )
 }
+
+// ─── Repricer Tab ─────────────────────────────────────────────────────────────
+
+const STRATEGY_TYPES = [
+  { value: 'match_lowest',     label: 'Match Lowest Price',       desc: 'Always match the lowest competing offer' },
+  { value: 'beat_lowest_pct',  label: 'Beat Lowest by %',         desc: 'Undercut the lowest price by a percentage' },
+  { value: 'beat_lowest_amt',  label: 'Beat Lowest by Amount',    desc: 'Undercut the lowest price by a fixed dollar amount' },
+  { value: 'buy_box',          label: 'Target Buy Box',           desc: 'Price to win or share the Buy Box' },
+  { value: 'target_roi',       label: 'Target ROI',               desc: 'Price based on a target return on investment' },
+  { value: 'manual',           label: 'Manual Only',              desc: 'No automatic repricing — prices are set manually' },
+]
+
+const TYPE_COLORS = {
+  match_lowest:    'bg-blue-100 text-blue-800',
+  beat_lowest_pct: 'bg-purple-100 text-purple-800',
+  beat_lowest_amt: 'bg-purple-100 text-purple-800',
+  buy_box:         'bg-green-100 text-green-700',
+  target_roi:      'bg-amber-100 text-amber-800',
+  manual:          'bg-gray-100 text-gray-600',
+}
+
+function strategyTypeLabel(type) {
+  return STRATEGY_TYPES.find(t => t.value === type)?.label || type
+}
+
+function RepricerTab() {
+  const [strategies, setStrategies] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [showForm, setShowForm] = useState(false)
+  const [editing, setEditing] = useState(null)
+  const [error, setError] = useState('')
+
+  const load = async () => {
+    setLoading(true)
+    try { setStrategies(await api.getRepricerStrategies()) }
+    catch (e) { setError(e.message) }
+    finally { setLoading(false) }
+  }
+
+  useEffect(() => { load() }, [])
+
+  const handleDelete = async (s) => {
+    if (!confirm(`Delete strategy "${s.name}"?`)) return
+    try { await api.deleteRepricerStrategy(s.id); load() }
+    catch (e) { setError(e.message) }
+  }
+
+  const handleToggleActive = async (s) => {
+    try { await api.updateRepricerStrategy(s.id, { is_active: !s.is_active }); load() }
+    catch (e) { setError(e.message) }
+  }
+
+  const handleSave = async (data) => {
+    if (editing) { await api.updateRepricerStrategy(editing.id, data) }
+    else { await api.createRepricerStrategy(data) }
+    setShowForm(false); setEditing(null); load()
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900">Repricing Strategies</h2>
+          <p className="text-sm text-gray-500 mt-0.5">Define rules that control how your inventory is priced on Amazon</p>
+        </div>
+        <button className="btn-primary" onClick={() => { setEditing(null); setShowForm(true) }}>
+          <PlusIcon /> New Strategy
+        </button>
+      </div>
+
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm flex justify-between">
+          {error}<button onClick={() => setError('')} className="text-red-400 hover:text-red-600">✕</button>
+        </div>
+      )}
+
+      {/* Strategy cards */}
+      {loading && <p className="text-gray-400 text-sm py-6 text-center">Loading...</p>}
+
+      {!loading && strategies.length === 0 && (
+        <div className="card p-10 text-center">
+          <p className="text-gray-400 mb-3">No repricing strategies yet</p>
+          <button className="btn-primary" onClick={() => setShowForm(true)}>Create your first strategy</button>
+        </div>
+      )}
+
+      <div className="space-y-3">
+        {strategies.map(s => (
+          <div key={s.id} className={`card p-4 border-l-4 transition-opacity ${s.is_active ? 'border-blue-500' : 'border-gray-200 opacity-60'}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-semibold text-gray-900">{s.name}</span>
+                  {s.is_default && <span className="badge bg-blue-100 text-blue-700">Default</span>}
+                  <span className={`badge ${TYPE_COLORS[s.strategy_type] || 'bg-gray-100 text-gray-600'}`}>
+                    {strategyTypeLabel(s.strategy_type)}
+                  </span>
+                  <span className={`badge ${s.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-400'}`}>
+                    {s.is_active ? 'Active' : 'Inactive'}
+                  </span>
+                </div>
+                {s.description && <p className="text-sm text-gray-500 mt-1">{s.description}</p>}
+
+                {/* Strategy parameters */}
+                <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs text-gray-600">
+                  {s.min_price != null && <span>Min: <strong>${s.min_price.toFixed(2)}</strong></span>}
+                  {s.max_price != null && <span>Max: <strong>${s.max_price.toFixed(2)}</strong></span>}
+                  {s.beat_by_pct != null && <span>Beat by: <strong>{(s.beat_by_pct * 100).toFixed(1)}%</strong></span>}
+                  {s.beat_by_amt != null && <span>Beat by: <strong>${s.beat_by_amt.toFixed(2)}</strong></span>}
+                  {s.target_roi != null && <span>Target ROI: <strong>{(s.target_roi * 100).toFixed(0)}%</strong></span>}
+                </div>
+                {s.notes && <p className="text-xs text-gray-400 mt-1 italic">{s.notes}</p>}
+              </div>
+
+              <div className="flex gap-1 shrink-0">
+                <button
+                  className={`btn-ghost py-1 px-2 text-xs ${s.is_active ? 'text-amber-600 hover:bg-amber-50' : 'text-green-600 hover:bg-green-50'}`}
+                  onClick={() => handleToggleActive(s)}
+                >
+                  {s.is_active ? 'Disable' : 'Enable'}
+                </button>
+                <button className="btn-ghost py-1 px-2 text-xs" onClick={() => { setEditing(s); setShowForm(true) }}>Edit</button>
+                <button className="btn-ghost py-1 px-2 text-xs text-red-500 hover:bg-red-50" onClick={() => handleDelete(s)}>Delete</button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Legend */}
+      <div className="card p-4">
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Strategy Types</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {STRATEGY_TYPES.map(t => (
+            <div key={t.value} className="flex gap-2 text-sm">
+              <span className={`badge shrink-0 ${TYPE_COLORS[t.value]}`}>{t.label}</span>
+              <span className="text-gray-500 text-xs leading-tight">{t.desc}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {showForm && (
+        <Modal
+          title={editing ? `Edit: ${editing.name}` : 'New Repricing Strategy'}
+          onClose={() => { setShowForm(false); setEditing(null) }}
+        >
+          <StrategyForm initial={editing} onSave={handleSave} onClose={() => { setShowForm(false); setEditing(null) }} />
+        </Modal>
+      )}
+    </div>
+  )
+}
+
+function StrategyForm({ initial, onSave, onClose }) {
+  const [form, setForm] = useState({
+    name: initial?.name || '',
+    description: initial?.description || '',
+    strategy_type: initial?.strategy_type || 'match_lowest',
+    min_price: initial?.min_price ?? '',
+    max_price: initial?.max_price ?? '',
+    beat_by_pct: initial?.beat_by_pct != null ? (initial.beat_by_pct * 100).toFixed(2) : '',
+    beat_by_amt: initial?.beat_by_amt ?? '',
+    target_roi: initial?.target_roi != null ? (initial.target_roi * 100).toFixed(0) : '',
+    is_active: initial?.is_active ?? true,
+    is_default: initial?.is_default ?? false,
+    notes: initial?.notes || '',
+  })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const set = (k) => (e) =>
+    setForm(f => ({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }))
+
+  const submit = async (e) => {
+    e.preventDefault(); setError('')
+    if (!form.name.trim()) { setError('Strategy name is required'); return }
+    setSaving(true)
+    const nn = (v) => (v === '' || v == null) ? null : Number(v)
+    const data = {
+      name: form.name.trim(),
+      description: form.description || null,
+      strategy_type: form.strategy_type,
+      min_price: nn(form.min_price),
+      max_price: nn(form.max_price),
+      beat_by_pct: form.strategy_type === 'beat_lowest_pct' && form.beat_by_pct !== '' ? Number(form.beat_by_pct) / 100 : null,
+      beat_by_amt: form.strategy_type === 'beat_lowest_amt' ? nn(form.beat_by_amt) : null,
+      target_roi: form.strategy_type === 'target_roi' && form.target_roi !== '' ? Number(form.target_roi) / 100 : null,
+      is_active: form.is_active,
+      is_default: form.is_default,
+      notes: form.notes || null,
+    }
+    try { await onSave(data) }
+    catch (err) { setError(err.message); setSaving(false) }
+  }
+
+  const type = form.strategy_type
+
+  return (
+    <form onSubmit={submit} className="space-y-5">
+      {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm">{error}</div>}
+
+      <div>
+        <label className="label">Strategy Name *</label>
+        <input className="input" required value={form.name} onChange={set('name')} placeholder="e.g. Aggressive Buy Box" />
+      </div>
+
+      <div>
+        <label className="label">Description</label>
+        <input className="input" value={form.description} onChange={set('description')} placeholder="Optional short description" />
+      </div>
+
+      <div>
+        <label className="label">Strategy Type *</label>
+        <select className="input" value={form.strategy_type} onChange={set('strategy_type')}>
+          {STRATEGY_TYPES.map(t => (
+            <option key={t.value} value={t.value}>{t.label} — {t.desc}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Type-specific params */}
+      {type === 'beat_lowest_pct' && (
+        <div>
+          <label className="label">Beat By (%)</label>
+          <input className="input" type="number" step="0.1" min="0" value={form.beat_by_pct} onChange={set('beat_by_pct')} placeholder="e.g. 1.0 for 1%" />
+          <p className="text-xs text-gray-400 mt-1">Price will be set this percentage below the lowest competing price</p>
+        </div>
+      )}
+      {type === 'beat_lowest_amt' && (
+        <div>
+          <label className="label">Beat By ($)</label>
+          <input className="input" type="number" step="0.01" min="0" value={form.beat_by_amt} onChange={set('beat_by_amt')} placeholder="e.g. 0.10" />
+          <p className="text-xs text-gray-400 mt-1">Price will be set this amount below the lowest competing price</p>
+        </div>
+      )}
+      {type === 'target_roi' && (
+        <div>
+          <label className="label">Target ROI (%)</label>
+          <input className="input" type="number" step="1" min="0" value={form.target_roi} onChange={set('target_roi')} placeholder="e.g. 20 for 20%" />
+          <p className="text-xs text-gray-400 mt-1">Price is calculated from buy cost + fees to hit this ROI</p>
+        </div>
+      )}
+
+      {/* Price limits — applies to all types */}
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="label">Min Price ($) — Floor</label>
+          <input className="input" type="number" step="0.01" min="0" value={form.min_price} onChange={set('min_price')} placeholder="No floor" />
+        </div>
+        <div>
+          <label className="label">Max Price ($) — Ceiling</label>
+          <input className="input" type="number" step="0.01" min="0" value={form.max_price} onChange={set('max_price')} placeholder="No ceiling" />
+        </div>
+      </div>
+
+      <div>
+        <label className="label">Notes</label>
+        <textarea className="input" rows={2} value={form.notes} onChange={set('notes')} placeholder="Optional notes about when/why to use this strategy" />
+      </div>
+
+      <div className="flex gap-6">
+        <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="checkbox" checked={form.is_active} onChange={set('is_active')} className="rounded" />
+          Active
+        </label>
+        <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="checkbox" checked={form.is_default} onChange={set('is_default')} className="rounded" />
+          Set as default strategy
+        </label>
+      </div>
+
+      <div className="flex justify-end gap-3 pt-2 border-t border-gray-100">
+        <button type="button" className="btn-secondary" onClick={onClose}>Cancel</button>
+        <button type="submit" className="btn-primary" disabled={saving}>
+          {saving ? 'Saving...' : initial ? 'Save Changes' : 'Create Strategy'}
+        </button>
+      </div>
+    </form>
+  )
+}
+
 
 function UserForm({ initial, onSave, onClose, isSelf }) {
   const [form, setForm] = useState({

@@ -203,6 +203,33 @@ class TimeEntry(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class RepricerStrategy(Base):
+    __tablename__ = "repricer_strategies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+
+    # strategy_type: match_lowest | beat_lowest_pct | beat_lowest_amt | buy_box | target_roi | manual
+    strategy_type = Column(String, nullable=False, default="match_lowest")
+
+    # Price floor / ceiling applied to every reprice action
+    min_price = Column(Float, nullable=True)
+    max_price = Column(Float, nullable=True)
+
+    # Type-specific parameters
+    beat_by_pct = Column(Float, nullable=True)   # fraction, e.g. 0.01 = 1%
+    beat_by_amt = Column(Float, nullable=True)   # dollars, e.g. 0.10
+    target_roi  = Column(Float, nullable=True)   # fraction, e.g. 0.20 = 20%
+
+    is_active  = Column(Boolean, default=True)
+    is_default = Column(Boolean, default=False)  # one default allowed
+    notes = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
 class Product(Base):
     __tablename__ = "products"
 

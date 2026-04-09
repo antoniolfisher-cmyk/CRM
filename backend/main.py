@@ -211,6 +211,52 @@ def set_my_email(body: dict, db: Session = Depends(get_db), current: dict = Depe
     return {"email": user.email, "notify_email": user.notify_email}
 
 
+# ─── Repricer Strategies ──────────────────────────────────────────────────────
+
+@app.get("/api/repricer/strategies", response_model=List[schemas.RepricerStrategyOut])
+def list_repricer_strategies(db: Session = Depends(get_db), current: dict = Depends(require_admin)):
+    return db.query(models.RepricerStrategy).order_by(models.RepricerStrategy.created_at).all()
+
+
+@app.post("/api/repricer/strategies", response_model=schemas.RepricerStrategyOut, status_code=201)
+def create_repricer_strategy(data: schemas.RepricerStrategyCreate, db: Session = Depends(get_db), current: dict = Depends(require_admin)):
+    if data.is_default:
+        # clear any existing default
+        db.query(models.RepricerStrategy).filter(models.RepricerStrategy.is_default == True).update({"is_default": False})
+    s = models.RepricerStrategy(**data.model_dump())
+    db.add(s)
+    db.commit()
+    db.refresh(s)
+    return s
+
+
+@app.put("/api/repricer/strategies/{strategy_id}", response_model=schemas.RepricerStrategyOut)
+def update_repricer_strategy(strategy_id: int, data: schemas.RepricerStrategyUpdate, db: Session = Depends(get_db), current: dict = Depends(require_admin)):
+    s = db.query(models.RepricerStrategy).filter(models.RepricerStrategy.id == strategy_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+    update = data.model_dump(exclude_unset=True)
+    if update.get("is_default"):
+        db.query(models.RepricerStrategy).filter(
+            models.RepricerStrategy.is_default == True,
+            models.RepricerStrategy.id != strategy_id
+        ).update({"is_default": False})
+    for k, v in update.items():
+        setattr(s, k, v)
+    db.commit()
+    db.refresh(s)
+    return s
+
+
+@app.delete("/api/repricer/strategies/{strategy_id}", status_code=204)
+def delete_repricer_strategy(strategy_id: int, db: Session = Depends(get_db), current: dict = Depends(require_admin)):
+    s = db.query(models.RepricerStrategy).filter(models.RepricerStrategy.id == strategy_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+    db.delete(s)
+    db.commit()
+
+
 @app.get("/api/notifications/status")
 def notification_status(db: Session = Depends(get_db), current: dict = Depends(require_admin)):
     user = db.query(models.User).filter(models.User.username == current["sub"]).first()

@@ -263,6 +263,41 @@ class ProductOut(ProductBase):
         from_attributes = True
 
 
+# Repricer strategy schemas
+class RepricerStrategyBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    strategy_type: str = "match_lowest"
+    min_price: Optional[float] = None
+    max_price: Optional[float] = None
+    beat_by_pct: Optional[float] = None
+    beat_by_amt: Optional[float] = None
+    target_roi: Optional[float] = None
+    is_active: bool = True
+    is_default: bool = False
+    notes: Optional[str] = None
+
+
+class RepricerStrategyCreate(RepricerStrategyBase):
+    pass
+
+
+class RepricerStrategyUpdate(RepricerStrategyBase):
+    name: Optional[str] = None
+    strategy_type: Optional[str] = None
+    is_active: Optional[bool] = None
+    is_default: Optional[bool] = None
+
+
+class RepricerStrategyOut(RepricerStrategyBase):
+    id: int
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
 # Account email
 class AccountEmailSend(BaseModel):
     to: str
