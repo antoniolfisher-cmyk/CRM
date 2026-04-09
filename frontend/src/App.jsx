@@ -8,6 +8,7 @@ import FollowUps from './pages/FollowUps'
 import Orders from './pages/Orders'
 import Admin from './pages/Admin'
 import Products from './pages/Products'
+import Inventory from './pages/Inventory'
 import TimeClock from './pages/TimeClock'
 
 export default function App() {
@@ -44,8 +45,9 @@ function PrivateRoute() {
         <Route path="/accounts" element={<Accounts />} />
         <Route path="/follow-ups" element={<FollowUps />} />
         <Route path="/orders" element={<Orders />} />
-        <Route path="/inventory" element={<Products />} />
-        <Route path="/products" element={<Navigate to="/inventory" replace />} />
+        <Route path="/sourcing" element={<Products />} />
+        <Route path="/inventory" element={<Inventory />} />
+        <Route path="/products" element={<Navigate to="/sourcing" replace />} />
         <Route path="/timeclock" element={<TimeClock />} />
         <Route
           path="/admin"
