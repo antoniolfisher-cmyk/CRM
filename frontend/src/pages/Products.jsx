@@ -67,6 +67,12 @@ const COLS = [
   { key: 'buy_box',           label: 'Buy Box',              width: 'w-24', render: (v) => fmtCurrency(v) },
   { key: 'keepa_bsr',        label: 'BSR',                  width: 'w-24', render: (v) => v ? `#${Number(v).toLocaleString()}` : '—' },
   { key: 'keepa_category',   label: 'Category',             width: 'w-36', render: (v) => <span className="text-xs text-gray-500 truncate block max-w-[9rem]">{v || '—'}</span> },
+  { key: 'aria_suggested_price', label: '✦ Aria Price',     width: 'w-28', render: (v, r) => v ? (
+    <div>
+      <span className={`font-semibold text-sm ${v > (r.buy_box || 0) ? 'text-amber-600' : 'text-violet-700'}`}>{fmtCurrency(v)}</span>
+      {r.buy_box > 0 && <span className="text-xs text-gray-400 block">{v < r.buy_box ? `↓${fmtCurrency(r.buy_box - v)}` : v > r.buy_box ? `↑${fmtCurrency(v - r.buy_box)}` : '= buy box'}</span>}
+    </div>
+  ) : <span className="text-xs text-gray-300">—</span> },
   { key: 'profit',            label: 'Profit',               width: 'w-24', render: (v) => (
     <span className={Number(v) >= 0 ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold'}>{fmtCurrency(v)}</span>
   )},
@@ -100,6 +106,8 @@ export default function Products() {
   const [syncResult, setSyncResult] = useState(null)
   const [keepaSyncingId, setKeepaSyncingId] = useState(null)
   const [ungatingId, setUngatingId] = useState(null)
+  const [ariaConfigured, setAriaConfigured] = useState(false)
+  const [ariaRunningId, setAriaRunningId] = useState(null)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -114,6 +122,7 @@ export default function Products() {
     api.getAuraStatus().then(r => setAuraConfigured(r.configured)).catch(() => {})
     api.keepaStatus().then(r => setKeepaConfigured(r.configured)).catch(() => {})
     api.amazonStatus().then(r => setAmazonConfigured(r.configured)).catch(() => {})
+    api.ariaStatus().then(r => setAriaConfigured(r.configured)).catch(() => {})
   }, [load])
 
   const handleDelete = async (id) => {
@@ -176,6 +185,17 @@ export default function Products() {
     } catch (err) {
       alert(`Ungated check failed: ${err.message}`)
     } finally { setUngatingId(null) }
+  }
+
+  const handleAriaRunOne = async (productId, e) => {
+    e.stopPropagation()
+    setAriaRunningId(productId)
+    try {
+      const updated = await api.ariaRunOne(productId)
+      setProducts(prev => prev.map(p => p.id === productId ? updated : p))
+    } catch (err) {
+      alert(`Aria repricing failed: ${err.message}`)
+    } finally { setAriaRunningId(null) }
   }
 
   const totalSpent = products.reduce((s, p) => s + (p.money_spent || 0), 0)
@@ -316,6 +336,16 @@ export default function Products() {
                           title="Check gating status in Amazon Seller Central"
                         >
                           {ungatingId === p.id ? '⏳' : p.ungated ? '✓ Ungated' : '? Gate'}
+                        </button>
+                      )}
+                      {ariaConfigured && p.buy_box > 0 && (
+                        <button
+                          className="btn-ghost py-1 px-2 text-xs text-violet-600 hover:bg-violet-50 flex items-center gap-1"
+                          onClick={(e) => handleAriaRunOne(p.id, e)}
+                          disabled={ariaRunningId === p.id}
+                          title={p.aria_suggested_price ? `Aria: ${fmtCurrency(p.aria_suggested_price)} — click to refresh` : 'Run Aria AI Repricer'}
+                        >
+                          {ariaRunningId === p.id ? '⏳' : '✦'}
                         </button>
                       )}
                       {auraConfigured && p.asin && (

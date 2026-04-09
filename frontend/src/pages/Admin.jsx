@@ -492,12 +492,12 @@ export default function Admin() {
 const STRATEGY_CATALOG = {
   ai: [
     {
-      value: 'maven',
-      label: 'Maven',
+      value: 'aria',
+      label: 'Aria',
       badge: 'AI',
       badgeColor: 'bg-violet-100 text-violet-800',
       icon: '✦',
-      desc: 'Aura AI learns from your competition to find the optimal price, balancing sales velocity and profit margin. It builds a profile for each competitor and updates prices based on their behavior.',
+      desc: 'Aria AI analyzes your competition, sales velocity, and cost structure to find the optimal price — balancing Buy Box wins with healthy profit margins automatically.',
       recommended: true,
     },
   ],
@@ -637,6 +637,9 @@ function RepricerTab() {
   const [picking, setPicking] = useState(false)  // show type picker before form
   const [pickedType, setPickedType] = useState(null)
   const [error, setError] = useState('')
+  const [ariaConfigured, setAriaConfigured] = useState(false)
+  const [ariaRunning, setAriaRunning] = useState(false)
+  const [ariaResult, setAriaResult] = useState(null)
 
   const load = async () => {
     setLoading(true)
@@ -645,7 +648,19 @@ function RepricerTab() {
     finally { setLoading(false) }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    api.ariaStatus().then(r => setAriaConfigured(r.configured)).catch(() => {})
+  }, [])
+
+  const handleAriaRunAll = async () => {
+    setAriaRunning(true); setAriaResult(null)
+    try {
+      const r = await api.ariaRunAll()
+      setAriaResult(r)
+    } catch (e) { setError(e.message) }
+    finally { setAriaRunning(false) }
+  }
 
   const handleDelete = async (s) => {
     if (!confirm(`Delete strategy "${s.name}"?`)) return
@@ -685,6 +700,42 @@ function RepricerTab() {
         </div>
       )}
 
+      {/* ── Aria status card ── */}
+      <div className={`card p-4 border-l-4 ${ariaConfigured ? 'border-violet-500' : 'border-gray-300'}`}>
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">✦</span>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-gray-900">Aria AI Repricer</span>
+                <span className={`badge ${ariaConfigured ? 'bg-violet-100 text-violet-700' : 'bg-gray-100 text-gray-500'}`}>
+                  {ariaConfigured ? 'Ready' : 'Not Configured'}
+                </span>
+              </div>
+              <p className="text-xs text-gray-500 mt-0.5">
+                {ariaConfigured
+                  ? 'Aria will analyze market data and suggest optimal prices for all products with a buy box price.'
+                  : 'Add ANTHROPIC_API_KEY to your environment variables to enable Aria.'}
+              </p>
+            </div>
+          </div>
+          <div className="flex gap-2 items-center">
+            {ariaResult && (
+              <span className="text-xs text-gray-500">
+                Last run: {ariaResult.repriced} repriced · {ariaResult.errors} errors
+              </span>
+            )}
+            <button
+              className="btn-primary flex items-center gap-2"
+              onClick={handleAriaRunAll}
+              disabled={!ariaConfigured || ariaRunning}
+            >
+              {ariaRunning ? '⏳ Running...' : '✦ Run Aria on All Products'}
+            </button>
+          </div>
+        </div>
+      </div>
+
       {loading && <p className="text-gray-400 text-sm py-6 text-center">Loading...</p>}
 
       {!loading && strategies.length === 0 && (
@@ -715,14 +766,14 @@ function RepricerTab() {
 
                     {/* Parameters summary */}
                     <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs text-gray-500">
-                      {s.compete_action && s.strategy_type !== 'maven' && (
+                      {s.compete_action && s.strategy_type !== 'aria' && (
                         <span>
                           {COMPETE_ACTIONS.find(a => a.value === s.compete_action)?.label}
                           {s.compete_value != null && s.compete_action === 'beat_pct' && `: ${(s.compete_value * 100).toFixed(2)}%`}
                           {s.compete_value != null && s.compete_action === 'beat_amt' && `: $${s.compete_value.toFixed(2)}`}
                         </span>
                       )}
-                      {s.winning_action && s.strategy_type !== 'maven' && (
+                      {s.winning_action && s.strategy_type !== 'aria' && (
                         <span>When winning: {WINNING_ACTIONS.find(a => a.value === s.winning_action)?.label}
                           {s.winning_value != null && s.winning_action === 'raise_pct' && ` ${(s.winning_value * 100).toFixed(2)}%`}
                           {s.winning_value != null && s.winning_action === 'raise_amt' && ` $${s.winning_value.toFixed(2)}`}
@@ -781,7 +832,7 @@ function RepricerTab() {
 function StrategyForm({ initial, strategyType, onSave, onClose }) {
   const type = strategyType || initial?.strategy_type || 'buy_box'
   const meta = strategyMeta(type)
-  const isAI = type === 'maven'
+  const isAI = type === 'aria'
   const isCustom = type === 'custom'
 
   // Default target based on strategy type

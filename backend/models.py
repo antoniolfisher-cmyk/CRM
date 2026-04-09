@@ -293,3 +293,8 @@ class Product(Base):
     keepa_bsr = Column(Integer, nullable=True)          # Best Seller Rank
     keepa_category = Column(String, nullable=True)      # Amazon category name
     keepa_last_synced = Column(DateTime(timezone=True), nullable=True)
+
+    # Aria AI Repricer
+    aria_suggested_price = Column(Float, nullable=True)
+    aria_suggested_at = Column(DateTime(timezone=True), nullable=True)
+    aria_reasoning = Column(Text, nullable=True)

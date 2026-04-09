@@ -90,6 +90,11 @@ export const api = {
   updateRepricerStrategy: (id, data) => req('PUT', `/repricer/strategies/${id}`, data),
   deleteRepricerStrategy: (id) => req('DELETE', `/repricer/strategies/${id}`),
 
+  // Aria AI Repricer
+  ariaStatus: () => req('GET', '/repricer/aria/status'),
+  ariaRunOne: (productId) => req('POST', `/repricer/aria/run/${productId}`, {}),
+  ariaRunAll: () => req('POST', '/repricer/aria/run-all', {}),
+
   // Notifications (admin only)
   getNotificationStatus: () => req('GET', '/notifications/status'),
   sendTestEmail: () => req('POST', '/notifications/test', {}),

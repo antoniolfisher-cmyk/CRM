@@ -244,6 +244,9 @@ class ProductBase(BaseModel):
     keepa_bsr: Optional[int] = None
     keepa_category: Optional[str] = None
     keepa_last_synced: Optional[datetime] = None
+    aria_suggested_price: Optional[float] = None
+    aria_suggested_at: Optional[datetime] = None
+    aria_reasoning: Optional[str] = None
 
 
 class ProductCreate(ProductBase):
