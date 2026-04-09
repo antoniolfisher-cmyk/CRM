@@ -181,9 +181,20 @@ export default function Products() {
     setUngatingId(productId)
     try {
       const result = await api.checkAmazonUngated(productId)
-      setProducts(prev => prev.map(p =>
-        p.id === productId ? { ...p, ungated: result.ungated } : p
-      ))
+      setProducts(prev => prev.map(p => {
+        if (p.id !== productId) return p
+        if (!result.ungated) {
+          const reasons = (result.restrictions || []).flatMap(r => r.reasons || [])
+          const msg = reasons.map(r => r.message).filter(Boolean).join('\n')
+          const approvalLink = reasons.flatMap(r => r.links || []).find(l => l.resource)
+          let info = `⚠ Gated — approval required`
+          if (p.ungating_quantity) info += `\nUnits needed to ungate: ${p.ungating_quantity}`
+          if (msg) info += `\n\n${msg}`
+          if (approvalLink) info += `\n\nApproval: ${approvalLink.resource}`
+          alert(info)
+        }
+        return { ...p, ungated: result.ungated }
+      }))
     } catch (err) {
       alert(`Ungated check failed: ${err.message}`)
     } finally { setUngatingId(null) }
@@ -461,6 +472,7 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
   const [keepaFilled, setKeepaFilled] = useState(null)  // full Keepa response or null
   const [keepaError, setKeepaError] = useState('')
   const [ungatingStatus, setUngatingStatus] = useState(null)  // null | 'loading' | true | false
+  const [ungatingRestrictions, setUngatingRestrictions] = useState([])
 
   // Auto-calculate financials whenever inputs change
   useEffect(() => {
@@ -491,7 +503,8 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
           estimated_sales: data.estimated_sales    ?? f.estimated_sales,
         }))
         setKeepaFilled(data)
-        setUngatingStatus(null)  // reset ungating when ASIN changes
+        setUngatingStatus(null)
+        setUngatingRestrictions([])  // reset ungating when ASIN changes
       } catch (e) {
         setKeepaError(e.message)
       } finally {
@@ -620,11 +633,13 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
                         return
                       }
                       setUngatingStatus('loading')
+                      setUngatingRestrictions([])
                       try {
                         const r = initial?.id
                           ? await api.checkAmazonUngated(initial.id)
                           : await api.checkAmazonUngatedAsin(asin)
                         setUngatingStatus(r.ungated)
+                        setUngatingRestrictions(r.restrictions || [])
                         setForm(f => ({ ...f, ungated: r.ungated }))
                       } catch (e) {
                         setUngatingStatus(null)
@@ -635,7 +650,24 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
                     {ungatingStatus === 'loading' ? '⏳ Checking...' : '🔍 Check Ungating (Seller Central)'}
                   </button>
                   {ungatingStatus === true && <span className="text-xs text-green-700 font-medium">✓ Approved to sell</span>}
-                  {ungatingStatus === false && <span className="text-xs text-amber-700 font-medium">⚠ Gated — approval required</span>}
+                  {ungatingStatus === false && (
+                    <div className="text-xs text-amber-700 space-y-0.5">
+                      <div className="font-medium">⚠ Gated — approval required</div>
+                      {Number(form.ungating_quantity) > 0 && (
+                        <div className="text-gray-600">Units needed to ungate: <strong>{form.ungating_quantity}</strong></div>
+                      )}
+                      {ungatingRestrictions.flatMap(r => r.reasons || []).map((reason, i) => (
+                        <div key={i} className="text-gray-500">
+                          {reason.message}
+                          {reason.links?.[0] && (
+                            <a href={reason.links[0].resource} target="_blank" rel="noreferrer" className="ml-1 text-blue-600 underline">
+                              {reason.links[0].title || 'Request Approval'} →
+                            </a>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
