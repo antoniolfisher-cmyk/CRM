@@ -1416,9 +1416,31 @@ def _keepa_fba_fees(kp: dict, buy_box_price: float | None):
     product.keepa_last_synced = datetime.now(_tz.utc)
 
 
+def _keepa_configured() -> bool:
+    return bool(os.getenv("KEEPA_API_KEY", "").strip())
+
+
+async def _keepa_fetch_single(asin: str):
+    """Fetch Keepa data for one ASIN. Returns the product dict or None."""
+    api_key = os.getenv("KEEPA_API_KEY", "").strip()
+    if not api_key:
+        return None
+    url = f"https://api.keepa.com/product?key={api_key}&domain={_KEEPA_DOMAIN}&asin={asin}&stats=90"
+    import httpx as _httpx
+    async with _httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(url)
+    if resp.status_code != 200:
+        return None
+    data = resp.json()
+    if data.get("error"):
+        return None
+    products_data = data.get("products") or []
+    return products_data[0] if products_data else None
+
+
 @app.get("/api/keepa/status")
 def keepa_status_endpoint(current: dict = Depends(require_auth)):
-    return {"configured": bool(os.getenv("KEEPA_API_KEY", "").strip())}
+    return {"configured": _keepa_configured()}
 
 
 @app.get("/api/keepa/lookup/{asin}")
@@ -1646,6 +1668,120 @@ async def amazon_test():
 @app.get("/api/amazon/status")
 def amazon_status(current: dict = Depends(require_auth)):
     return {"configured": _amazon_sp_configured()}
+
+
+async def _fetch_fba_inventory() -> list:
+    """
+    Fetch all FBA inventory summaries from SP-API, handling pagination.
+    Returns list of dicts with asin, product_name, seller_sku, quantity.
+    """
+    import httpx as _httpx
+    access_token = await _get_amazon_access_token()
+    items = []
+    next_token = None
+
+    async with _httpx.AsyncClient(timeout=30) as client:
+        while True:
+            params = {
+                "granularityType": "Marketplace",
+                "granularityId":   _AMAZON_MKT_ID,
+                "marketplaceIds":  _AMAZON_MKT_ID,
+                "details":         "true",
+            }
+            if next_token:
+                params["nextToken"] = next_token
+
+            resp = await client.get(
+                f"{_AMAZON_SP_BASE}/fba/inventory/v1/summaries",
+                params=params,
+                headers={"x-amz-access-token": access_token},
+            )
+            if resp.status_code == 403:
+                raise HTTPException(403, "Amazon SP-API access denied — check Seller Central permissions include FBA Inventory")
+            if resp.status_code != 200:
+                raise HTTPException(502, f"Amazon SP-API error {resp.status_code}: {resp.text[:300]}")
+
+            body = resp.json().get("payload", {})
+            for s in body.get("inventorySummaries", []):
+                qty = s.get("totalQuantity") or 0
+                if qty == 0:
+                    # also try nested fulfillableQuantity
+                    qty = (s.get("inventoryDetails") or {}).get("fulfillableQuantity", 0)
+                items.append({
+                    "asin":         s.get("asin", "").upper(),
+                    "product_name": s.get("productName") or s.get("sellerSku") or s.get("asin", ""),
+                    "seller_sku":   s.get("sellerSku", ""),
+                    "quantity":     qty,
+                    "condition":    s.get("condition", ""),
+                })
+            next_token = body.get("nextToken")
+            if not next_token:
+                break
+
+    return items
+
+
+@app.get("/api/amazon/inventory")
+async def get_amazon_inventory(current: dict = Depends(require_auth)):
+    """Preview what's in FBA inventory before importing."""
+    if not _amazon_sp_configured():
+        raise HTTPException(503, "Amazon SP-API credentials are not configured")
+    items = await _fetch_fba_inventory()
+    return {"count": len(items), "items": items}
+
+
+@app.post("/api/amazon/inventory/import")
+async def import_amazon_inventory(db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    """
+    Import FBA inventory into the CRM products table.
+    - Existing products (matched by ASIN): quantity updated.
+    - New ASINs: new product record created; Keepa data fetched if configured.
+    """
+    if not _amazon_sp_configured():
+        raise HTTPException(503, "Amazon SP-API credentials are not configured")
+
+    items = await _fetch_fba_inventory()
+    created = updated = skipped = 0
+
+    for item in items:
+        asin = item["asin"]
+        if not asin:
+            skipped += 1
+            continue
+
+        existing = db.query(models.Product).filter(models.Product.asin == asin).first()
+
+        if existing:
+            existing.quantity = item["quantity"]
+            updated += 1
+        else:
+            name = item["product_name"] or asin
+            p = models.Product(
+                asin=asin,
+                product_name=name,
+                quantity=item["quantity"],
+                order_number=item["seller_sku"] or None,
+                created_by=current["sub"],
+            )
+            # Enrich with Keepa if configured
+            if _keepa_configured():
+                try:
+                    kp = await _keepa_fetch_single(asin)
+                    if kp:
+                        _parse_keepa_product(kp, p)
+                except Exception:
+                    pass
+            db.add(p)
+            created += 1
+
+    db.commit()
+    return {
+        "imported": created + updated,
+        "created":  created,
+        "updated":  updated,
+        "skipped":  skipped,
+        "total":    len(items),
+    }
 
 
 @app.get("/api/amazon/check-asin/{asin}")

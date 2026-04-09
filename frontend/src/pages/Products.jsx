@@ -108,6 +108,8 @@ export default function Products() {
   const [ungatingId, setUngatingId] = useState(null)
   const [ariaConfigured, setAriaConfigured] = useState(false)
   const [ariaRunningId, setAriaRunningId] = useState(null)
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState(null)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -198,6 +200,18 @@ export default function Products() {
     } finally { setAriaRunningId(null) }
   }
 
+  const handleImportAmazon = async () => {
+    if (!confirm('Import FBA inventory from Amazon? New ASINs will be added as products. Existing ASINs will have their quantity updated.')) return
+    setImporting(true); setImportResult(null)
+    try {
+      const r = await api.importAmazonInventory()
+      setImportResult(r)
+      load()
+    } catch (e) {
+      setImportResult({ error: e.message })
+    } finally { setImporting(false) }
+  }
+
   const totalSpent = products.reduce((s, p) => s + (p.money_spent || 0), 0)
   const totalProfit = products.reduce((s, p) => s + ((p.profit || 0) * (p.quantity || 0)), 0)
   const replenishCount = products.filter((p) => p.replenish).length
@@ -209,7 +223,18 @@ export default function Products() {
           <h1 className="text-2xl font-bold text-gray-900">Products</h1>
           <p className="text-gray-500 text-sm mt-1">{products.length} products tracked</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
+          {amazonConfigured && (
+            <button
+              className="btn-secondary flex items-center gap-2"
+              onClick={handleImportAmazon}
+              disabled={importing}
+              title="Pull your FBA inventory from Amazon Seller Central"
+            >
+              <AmazonIcon />
+              {importing ? 'Importing...' : 'Import from Amazon'}
+            </button>
+          )}
           {auraConfigured && (
             <button className="btn-secondary flex items-center gap-2" onClick={handleSyncAll} disabled={syncing}>
               <AuraIcon />
@@ -221,6 +246,21 @@ export default function Products() {
           </button>
         </div>
       </div>
+
+      {/* Import result banner */}
+      {importResult && (
+        <div className={`rounded-lg p-4 text-sm ${importResult.error ? 'bg-red-50 border border-red-200' : 'bg-green-50 border border-green-200'}`}>
+          {importResult.error ? (
+            <p className="text-red-700">Import failed: {importResult.error}</p>
+          ) : (
+            <p className="text-green-800 font-medium">
+              Import complete — {importResult.created} new products added · {importResult.updated} quantities updated · {importResult.skipped} skipped
+              {importResult.total > 0 && <span className="font-normal text-green-700"> ({importResult.total} total FBA items found)</span>}
+            </p>
+          )}
+          <button className="text-xs underline mt-1 opacity-60" onClick={() => setImportResult(null)}>dismiss</button>
+        </div>
+      )}
 
       {/* Aura not configured banner */}
       {!auraConfigured && (
@@ -699,6 +739,14 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
 
 function PlusIcon() {
   return <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
+}
+
+function AmazonIcon() {
+  return (
+    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+      <path d="M13.958 10.09c0 1.232.029 2.256-.591 3.351-.502.891-1.301 1.438-2.186 1.438-1.214 0-1.922-.924-1.922-2.292 0-2.692 2.415-3.182 4.699-3.182v.685zm3.186 7.706a.661.661 0 01-.77.074c-1.081-.898-1.276-1.313-1.87-2.169-1.785 1.82-3.048 2.365-5.363 2.365-2.737 0-4.869-1.69-4.869-5.073 0-2.642 1.43-4.44 3.464-5.32 1.765-.779 4.226-.917 6.107-1.131v-.421c0-.779.06-1.7-.396-2.373-.397-.6-1.157-.849-1.826-.849-1.239 0-2.345.636-2.617 1.955-.056.295-.271.585-.57.601l-3.203-.345c-.268-.06-.566-.276-.488-.686C5.581 2.508 8.725 1.5 11.547 1.5c1.44 0 3.318.383 4.453 1.472 1.44 1.344 1.301 3.137 1.301 5.089v4.608c0 1.385.577 1.994 1.117 2.742.192.268.232.59-.01.789-.606.505-1.683 1.44-2.275 1.966l.011-.37zm3.059 2.437c-2.898 2.043-7.107 3.127-10.728 3.127-5.073 0-9.64-1.877-13.092-4.998-.271-.245-.029-.579.299-.388 3.73 2.169 8.342 3.471 13.104 3.471 3.213 0 6.748-.666 10.001-2.053.49-.211.902.321.416.841z"/>
+    </svg>
+  )
 }
 
 function KeepaIcon({ spinning = false }) {
