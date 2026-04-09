@@ -93,7 +93,7 @@ export const api = {
   // Aria AI Repricer
   ariaStatus: () => req('GET', '/repricer/aria/status'),
   ariaRunOne: (productId) => req('POST', `/repricer/aria/run/${productId}`, {}),
-  ariaRunAll: () => req('POST', '/repricer/aria/run-all', {}),
+  ariaRunAll: (force = true) => req('POST', `/repricer/aria/run-all?force=${force}`, {}),
 
   // Notifications (admin only)
   getNotificationStatus: () => req('GET', '/notifications/status'),

@@ -298,3 +298,4 @@ class Product(Base):
     aria_suggested_price = Column(Float, nullable=True)
     aria_suggested_at = Column(DateTime(timezone=True), nullable=True)
     aria_reasoning = Column(Text, nullable=True)
+    aria_last_buy_box = Column(Float, nullable=True)   # buy_box at time of last Aria run (smart trigger)

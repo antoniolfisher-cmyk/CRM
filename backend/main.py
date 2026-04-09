@@ -16,6 +16,7 @@ from auth import (
 )
 from notifications import start_scheduler, stop_scheduler, send_daily_digests, send_email, build_digest_html, _smtp_configured
 import aura as aura_client
+import aria_repricer
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -57,6 +58,7 @@ try:
                 ("aria_suggested_price", "REAL"),
                 ("aria_suggested_at", "DATETIME"),
                 ("aria_reasoning", "TEXT"),
+                ("aria_last_buy_box", "REAL"),
             ]:
                 if _col not in _cols:
                     _conn.execute(text(f"ALTER TABLE products ADD COLUMN {_col} {_ddl}"))
@@ -234,132 +236,37 @@ def set_my_email(body: dict, db: Session = Depends(get_db), current: dict = Depe
 
 # ─── Aria AI Repricer ─────────────────────────────────────────────────────────
 
-def _aria_configured() -> bool:
-    return bool(os.getenv("ANTHROPIC_API_KEY", "").strip())
-
-
-async def _aria_price_product(product: models.Product, strategy: models.RepricerStrategy | None) -> dict:
-    """Call Claude to get an optimal price for a product. Returns {price, reasoning}."""
-    import anthropic, json
-
-    buy_cost = product.buy_cost or 0
-    amazon_fee = product.amazon_fee or 0
-    buy_box = product.buy_box or 0
-    breakeven = buy_cost + amazon_fee
-
-    min_price = (strategy.min_price if strategy else None) or round(breakeven * 1.05, 2)
-    max_price = (strategy.max_price if strategy else None) or round(buy_box * 1.15, 2)
-    profit_floor = (strategy.profit_floor if strategy else None) or 0
-
-    prompt = f"""You are Aria, an expert Amazon FBA repricing AI. Your job is to recommend the optimal listing price for a product to balance winning the Buy Box with maintaining healthy profit margins.
-
-PRODUCT: {product.product_name}
-ASIN: {product.asin or 'N/A'}
-
-MARKET DATA:
-- Current Buy Box Price: ${buy_box:.2f}
-- Number of Competing Sellers: {product.num_sellers or 'Unknown'}
-- Best Seller Rank: {'#' + f'{product.keepa_bsr:,}' if product.keepa_bsr else 'Unknown'}{f' in {product.keepa_category}' if product.keepa_category else ''}
-- Estimated Monthly Sales: {int(product.estimated_sales) if product.estimated_sales else 'Unknown'} units/mo
-
-COST STRUCTURE:
-- Your Buy Cost: ${buy_cost:.2f}
-- Amazon Fees: ${amazon_fee:.2f}
-- Break-even Price: ${breakeven:.2f}
-
-PRICING CONSTRAINTS:
-- Minimum Price (floor): ${min_price:.2f}
-- Maximum Price (ceiling): ${max_price:.2f}
-- Minimum Profit Required: ${profit_floor:.2f}/unit
-
-GOAL: Recommend a price that wins or shares the Buy Box while keeping profit above the floor. Consider competition level and sales velocity in your reasoning.
-
-Respond with ONLY valid JSON (no markdown):
-{{"price": 29.99, "reasoning": "One concise sentence explaining your pricing decision."}}"""
-
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-    msg = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=120,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = msg.content[0].text.strip()
-    # strip any accidental markdown fences
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    data = json.loads(raw.strip())
-    price = float(data["price"])
-    # enforce constraints
-    price = max(price, min_price)
-    if max_price:
-        price = min(price, max_price)
-    price = round(price, 2)
-    return {"price": price, "reasoning": data.get("reasoning", "")}
-
-
 @app.get("/api/repricer/aria/status")
 def aria_status(current: dict = Depends(require_auth)):
-    return {"configured": _aria_configured()}
+    return {"configured": aria_repricer.aria_configured()}
 
 
 @app.post("/api/repricer/aria/run/{product_id}", response_model=schemas.ProductOut)
 async def aria_run_one(product_id: int, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
-    if not _aria_configured():
+    if not aria_repricer.aria_configured():
         raise HTTPException(503, "ANTHROPIC_API_KEY is not configured")
     product = db.query(models.Product).filter(models.Product.id == product_id).first()
     if not product:
         raise HTTPException(404, "Product not found")
-    if not product.asin and not product.buy_box:
+    if not product.buy_box:
         raise HTTPException(400, "Product needs a Buy Box price to reprice")
-
-    strategy = db.query(models.RepricerStrategy).filter(
-        models.RepricerStrategy.strategy_type == "aria",
-        models.RepricerStrategy.is_active == True,
-    ).first()
-    if not strategy:
-        strategy = db.query(models.RepricerStrategy).filter(
-            models.RepricerStrategy.is_default == True,
-            models.RepricerStrategy.is_active == True,
-        ).first()
-
-    result = await _aria_price_product(product, strategy)
+    strategy = aria_repricer._get_strategy(db)
+    result = await aria_repricer.price_product(product, strategy)
     product.aria_suggested_price = result["price"]
-    product.aria_suggested_at = datetime.utcnow()
-    product.aria_reasoning = result["reasoning"]
+    product.aria_suggested_at    = datetime.utcnow()
+    product.aria_reasoning       = result["reasoning"]
+    product.aria_last_buy_box    = product.buy_box
     db.commit()
     db.refresh(product)
     return product
 
 
 @app.post("/api/repricer/aria/run-all")
-async def aria_run_all(db: Session = Depends(get_db), current: dict = Depends(require_admin)):
-    if not _aria_configured():
+async def aria_run_all(force: bool = False, db: Session = Depends(get_db), current: dict = Depends(require_admin)):
+    if not aria_repricer.aria_configured():
         raise HTTPException(503, "ANTHROPIC_API_KEY is not configured")
-
-    products = db.query(models.Product).filter(
-        models.Product.buy_box > 0,
-        models.Product.buy_cost > 0,
-    ).all()
-
-    strategy = db.query(models.RepricerStrategy).filter(
-        models.RepricerStrategy.strategy_type == "aria",
-        models.RepricerStrategy.is_active == True,
-    ).first()
-
-    results = []
-    for p in products:
-        try:
-            r = await _aria_price_product(p, strategy)
-            p.aria_suggested_price = r["price"]
-            p.aria_suggested_at = datetime.utcnow()
-            p.aria_reasoning = r["reasoning"]
-            results.append({"id": p.id, "name": p.product_name, "price": r["price"], "reasoning": r["reasoning"]})
-        except Exception as e:
-            results.append({"id": p.id, "name": p.product_name, "error": str(e)})
-    db.commit()
-    return {"repriced": len([r for r in results if "price" in r]), "errors": len([r for r in results if "error" in r]), "results": results}
+    result = await aria_repricer.run_all_async(force=force)
+    return result
 
 
 # ─── Repricer Strategies ──────────────────────────────────────────────────────

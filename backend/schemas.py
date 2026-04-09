@@ -247,6 +247,7 @@ class ProductBase(BaseModel):
     aria_suggested_price: Optional[float] = None
     aria_suggested_at: Optional[datetime] = None
     aria_reasoning: Optional[str] = None
+    aria_last_buy_box: Optional[float] = None
 
 
 class ProductCreate(ProductBase):

@@ -24,6 +24,7 @@ from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from database import SessionLocal
 import models
 
@@ -450,6 +451,20 @@ def start_scheduler():
         id="auto_followups",
         replace_existing=True,
     )
+
+    # Aria AI Repricer — every 6 hours, smart-triggered (skips unchanged buy boxes)
+    try:
+        from aria_repricer import scheduled_reprice as aria_reprice
+        _scheduler.add_job(
+            aria_reprice,
+            IntervalTrigger(hours=6),
+            id="aria_reprice",
+            replace_existing=True,
+        )
+        log.info("Aria repricer scheduled every 6 hours")
+    except Exception as _e:
+        log.warning("Aria repricer scheduler not loaded: %s", _e)
+
     _scheduler.start()
     log.info("Notification scheduler started — digests at %02d:00 UTC", NOTIFY_HOUR)
 

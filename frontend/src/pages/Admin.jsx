@@ -722,7 +722,7 @@ function RepricerTab() {
           <div className="flex gap-2 items-center">
             {ariaResult && (
               <span className="text-xs text-gray-500">
-                Last run: {ariaResult.repriced} repriced · {ariaResult.errors} errors
+                Last run: {ariaResult.repriced} repriced · {ariaResult.skipped ?? 0} skipped · {ariaResult.errors} errors
               </span>
             )}
             <button
