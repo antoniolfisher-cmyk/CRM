@@ -6,8 +6,7 @@ const nav = [
   { to: '/accounts', label: 'Accounts', icon: BuildingIcon },
   { to: '/follow-ups', label: 'Follow-Ups', icon: CalendarIcon },
   { to: '/orders', label: 'Orders', icon: BoxIcon },
-  { to: '/products', label: 'Products', icon: TagIcon },
-  { to: '/inventory', label: 'Inventory', icon: InventoryIcon },
+  { to: '/inventory', label: 'Current Inventory', icon: InventoryIcon },
   { to: '/timeclock', label: 'Time Clock', icon: ClockIcon },
 ]
 

@@ -231,7 +231,7 @@ export default function Products() {
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Products</h1>
+          <h1 className="text-2xl font-bold text-gray-900">Current Inventory</h1>
           <p className="text-gray-500 text-sm mt-1">{products.length} products tracked</p>
         </div>
         <div className="flex gap-2 flex-wrap">
