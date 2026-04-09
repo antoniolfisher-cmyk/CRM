@@ -294,6 +294,9 @@ class Product(Base):
     keepa_category = Column(String, nullable=True)      # Amazon category name
     keepa_last_synced = Column(DateTime(timezone=True), nullable=True)
 
+    # Approval workflow
+    status = Column(String, default='sourcing')  # sourcing | pending | approved
+
     # Aria AI Repricer
     aria_suggested_price = Column(Float, nullable=True)
     aria_suggested_at = Column(DateTime(timezone=True), nullable=True)

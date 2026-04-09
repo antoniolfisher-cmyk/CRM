@@ -117,7 +117,7 @@ export default function Inventory() {
 
   const load = useCallback(() => {
     setLoading(true)
-    const params = {}
+    const params = { status: 'approved' }
     if (search) params.search = search
     api.getProducts(params).then(setProducts).finally(() => setLoading(false))
   }, [search])

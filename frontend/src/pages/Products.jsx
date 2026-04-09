@@ -106,6 +106,7 @@ export default function Products() {
   const [syncResult, setSyncResult] = useState(null)
   const [keepaSyncingId, setKeepaSyncingId] = useState(null)
   const [ungatingId, setUngatingId] = useState(null)
+  const [submittingId, setSubmittingId] = useState(null)
   const [ariaConfigured, setAriaConfigured] = useState(false)
   const [ariaRunningId, setAriaRunningId] = useState(null)
   const [importing, setImporting] = useState(false)
@@ -113,7 +114,7 @@ export default function Products() {
 
   const load = useCallback(() => {
     setLoading(true)
-    const params = {}
+    const params = { status: 'sourcing' }
     if (search) params.search = search
     if (filterReplenish !== '') params.replenish = filterReplenish
     api.getProducts(params).then(setProducts).finally(() => setLoading(false))
@@ -198,6 +199,18 @@ export default function Products() {
     } catch (err) {
       alert(`Ungated check failed: ${err.message}`)
     } finally { setUngatingId(null) }
+  }
+
+  const handleSubmitForApproval = async (productId, e) => {
+    e.stopPropagation()
+    if (!confirm('Send this product to admin for approval?')) return
+    setSubmittingId(productId)
+    try {
+      await api.submitProduct(productId)
+      setProducts(prev => prev.filter(p => p.id !== productId))
+    } catch (err) {
+      alert(`Submit failed: ${err.message}`)
+    } finally { setSubmittingId(null) }
   }
 
   const handleAriaRunOne = async (productId, e) => {
@@ -409,6 +422,14 @@ export default function Products() {
                           {syncingId === p.id ? '...' : <AuraIcon />}
                         </button>
                       )}
+                      <button
+                        className="btn-ghost py-1 px-2 text-xs text-emerald-600 hover:bg-emerald-50 disabled:opacity-50"
+                        onClick={(e) => handleSubmitForApproval(p.id, e)}
+                        disabled={submittingId === p.id}
+                        title="Send to admin for approval"
+                      >
+                        {submittingId === p.id ? '...' : '→ Send to Admin'}
+                      </button>
                       <button className="btn-ghost py-1 px-2 text-xs" onClick={() => { setEditing(p); setShowForm(true) }}>Edit</button>
                       <button className="btn-ghost py-1 px-2 text-xs text-red-500 hover:bg-red-50" onClick={() => handleDelete(p.id)}>Del</button>
                     </div>

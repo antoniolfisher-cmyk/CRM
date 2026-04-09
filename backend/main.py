@@ -59,9 +59,12 @@ try:
                 ("aria_suggested_at", "DATETIME"),
                 ("aria_reasoning", "TEXT"),
                 ("aria_last_buy_box", "REAL"),
+                ("status", "TEXT DEFAULT 'sourcing'"),
             ]:
                 if _col not in _cols:
                     _conn.execute(text(f"ALTER TABLE products ADD COLUMN {_col} {_ddl}"))
+            # Backfill: existing products (NULL status) are already approved inventory
+            _conn.execute(text("UPDATE products SET status = 'approved' WHERE status IS NULL"))
             _conn.commit()
     except Exception:
         pass
@@ -1240,6 +1243,7 @@ def list_products(
     search: Optional[str] = None,
     replenish: Optional[bool] = None,
     ungated: Optional[bool] = None,
+    status: Optional[str] = None,
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
 ):
@@ -1256,6 +1260,8 @@ def list_products(
         q = q.filter(models.Product.replenish == replenish)
     if ungated is not None:
         q = q.filter(models.Product.ungated == ungated)
+    if status is not None:
+        q = q.filter(models.Product.status == status)
     return q.order_by(models.Product.created_at.desc()).all()
 
 
@@ -1298,6 +1304,51 @@ def delete_product(product_id: int, db: Session = Depends(get_db), current: dict
     _check_owner(p, current)
     db.delete(p)
     db.commit()
+
+
+# ─── Product Approval Workflow ────────────────────────────────────────────────
+
+@app.post("/api/products/{product_id}/submit")
+def submit_product_for_approval(
+    product_id: int,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_auth),
+):
+    p = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if not p:
+        raise HTTPException(404, "Product not found")
+    _check_owner(p, current)
+    p.status = "pending"
+    db.commit()
+    return {"status": "pending"}
+
+
+@app.post("/api/products/{product_id}/approve")
+def approve_product(
+    product_id: int,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_admin),
+):
+    p = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if not p:
+        raise HTTPException(404, "Product not found")
+    p.status = "approved"
+    db.commit()
+    return {"status": "approved"}
+
+
+@app.post("/api/products/{product_id}/reject")
+def reject_product(
+    product_id: int,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_admin),
+):
+    p = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if not p:
+        raise HTTPException(404, "Product not found")
+    p.status = "sourcing"
+    db.commit()
+    return {"status": "sourcing"}
 
 
 # ─── Keepa Integration ────────────────────────────────────────────────────────

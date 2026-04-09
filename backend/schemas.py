@@ -248,6 +248,7 @@ class ProductBase(BaseModel):
     aria_suggested_at: Optional[datetime] = None
     aria_reasoning: Optional[str] = None
     aria_last_buy_box: Optional[float] = None
+    status: Optional[str] = 'sourcing'   # sourcing | pending | approved
 
 
 class ProductCreate(ProductBase):

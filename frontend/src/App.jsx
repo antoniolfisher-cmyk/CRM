@@ -9,6 +9,7 @@ import Orders from './pages/Orders'
 import Admin from './pages/Admin'
 import Products from './pages/Products'
 import Inventory from './pages/Inventory'
+import Approvals from './pages/Approvals'
 import TimeClock from './pages/TimeClock'
 
 export default function App() {
@@ -49,6 +50,10 @@ function PrivateRoute() {
         <Route path="/inventory" element={<Inventory />} />
         <Route path="/products" element={<Navigate to="/sourcing" replace />} />
         <Route path="/timeclock" element={<TimeClock />} />
+        <Route
+          path="/approvals"
+          element={isAdmin ? <Approvals /> : <Navigate to="/" replace />}
+        />
         <Route
           path="/admin"
           element={isAdmin ? <Admin /> : <Navigate to="/" replace />}
