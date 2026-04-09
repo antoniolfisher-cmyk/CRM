@@ -10,6 +10,7 @@ import Admin from './pages/Admin'
 import Products from './pages/Products'
 import Inventory from './pages/Inventory'
 import Approvals from './pages/Approvals'
+import Repricer from './pages/Repricer'
 import TimeClock from './pages/TimeClock'
 
 export default function App() {
@@ -53,6 +54,10 @@ function PrivateRoute() {
         <Route
           path="/approvals"
           element={isAdmin ? <Approvals /> : <Navigate to="/" replace />}
+        />
+        <Route
+          path="/repricer"
+          element={isAdmin ? <Repricer /> : <Navigate to="/" replace />}
         />
         <Route
           path="/admin"
