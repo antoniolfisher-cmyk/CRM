@@ -451,7 +451,6 @@ export default function Admin() {
         </Modal>
       )}
 
-      </>}
     </div>
   )
 }
