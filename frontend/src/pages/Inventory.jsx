@@ -52,10 +52,7 @@ function SyncIcon({ spinning }) {
   )
 }
 
-function KeepaStatusCard({ status, onBulkSync, bulkLoading, bulkResult }) {
-  const { user } = useAuth()
-  const isAdmin = user?.role === 'admin'
-
+function KeepaStatusCard({ status, onBulkSync, bulkLoading, bulkResult, isAdmin }) {
   if (!status) return null
 
   if (!status.configured) {
@@ -84,10 +81,10 @@ function KeepaStatusCard({ status, onBulkSync, bulkLoading, bulkResult }) {
       {isAdmin && (
         <div className="flex items-center gap-3">
           {bulkResult && (
-            <span className="text-xs text-gray-500">
+            <span className={`text-sm font-medium ${bulkResult.errors?.length ? 'text-red-600' : 'text-green-600'}`}>
               {bulkResult.errors?.length
                 ? `⚠ ${bulkResult.errors[0]}`
-                : `✓ ${bulkResult.refreshed} synced${bulkResult.skipped ? `, ${bulkResult.skipped} skipped` : ''}`}
+                : `✓ ${bulkResult.refreshed} ASINs synced`}
             </span>
           )}
           <button
@@ -105,6 +102,7 @@ function KeepaStatusCard({ status, onBulkSync, bulkLoading, bulkResult }) {
 }
 
 export default function Inventory() {
+  const { isAdmin } = useAuth()
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -156,9 +154,13 @@ export default function Inventory() {
     try {
       const result = await api.keepaBulkRefresh()
       setBulkResult(result)
-      load() // reload all products to show updated data
+      if (result.errors?.length) {
+        alert(`Sync completed with errors:\n${result.errors.join('\n')}`)
+      }
+      load()
     } catch (e) {
       setBulkResult({ errors: [e.message], refreshed: 0, skipped: 0 })
+      alert(`Sync failed: ${e.message}`)
     } finally {
       setBulkLoading(false)
     }
@@ -177,6 +179,7 @@ export default function Inventory() {
         onBulkSync={handleBulkSync}
         bulkLoading={bulkLoading}
         bulkResult={bulkResult}
+        isAdmin={isAdmin}
       />
 
       {/* ── KPI strip ── */}
