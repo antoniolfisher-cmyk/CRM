@@ -1613,6 +1613,17 @@ async def keepa_refresh_one(
     async with _httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(url)
 
+    if resp.status_code == 429:
+        try:
+            kd = resp.json()
+            refill_secs = kd.get("refillIn", 0)
+            refill_hrs = round(refill_secs / 3600, 1)
+            tokens_left = kd.get("tokensLeft", "?")
+            raise HTTPException(429, f"Keepa token limit reached (tokensLeft: {tokens_left}). Tokens refill in ~{refill_hrs}h.")
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(429, "Keepa token limit reached. Please wait before syncing again.")
     if resp.status_code != 200:
         raise HTTPException(502, f"Keepa returned {resp.status_code}: {resp.text[:200]}")
 
@@ -1667,6 +1678,16 @@ async def keepa_bulk_refresh(
                 f"?key={api_key}&domain={_KEEPA_DOMAIN}&asin={','.join(batch)}&stats=90"
             )
             resp = await client.get(url)
+            if resp.status_code == 429:
+                try:
+                    kd = resp.json()
+                    refill_secs = kd.get("refillIn", 0)
+                    refill_hrs = round(refill_secs / 3600, 1)
+                    tokens_left = kd.get("tokensLeft", "?")
+                except Exception:
+                    refill_hrs, tokens_left = "?", "?"
+                errors.append(f"Keepa token limit reached (tokensLeft: {tokens_left}, refills in ~{refill_hrs}h) — sync stopped early")
+                break  # no point hammering more batches
             if resp.status_code != 200:
                 errors.append(f"Keepa {resp.status_code} on batch {i // 100 + 1}")
                 continue
