@@ -699,8 +699,8 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
         <Field label="Purchase Link" k="purchase_link" span={2} />
       </Section>
 
-      {keepaFilled && (keepaFilled.num_fba_sellers != null || keepaFilled.fba_high != null || (keepaFilled.fba_history?.length > 1)) && (
-        <MarketAnalysis data={keepaFilled} />
+      {keepaFilled && (
+        <MarketAnalysis data={keepaFilled} asin={(form.asin || '').trim().toUpperCase()} />
       )}
 
       <Section title="Purchase & Timeline">
@@ -782,39 +782,14 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
 
 // ─── market analysis (shown after Keepa load) ────────────────────────────────
 
-function MiniSparkline({ data, valueKey = 'price', color = '#3b82f6', invert = false, id }) {
-  const W = 400, H = 56
-  if (!data || data.length < 2) return null
-  const vals = data.map(d => d[valueKey] ?? 0)
-  const min = Math.min(...vals)
-  const max = Math.max(...vals)
-  const range = max - min || 1
-  const pts = data.map((d, i) => {
-    const x = (i / (data.length - 1)) * W
-    const rawY = (vals[i] - min) / range
-    const y = invert ? rawY * H : (1 - rawY) * H
-    return { x: x.toFixed(1), y: y.toFixed(1) }
-  })
-  const lineStr = pts.map(p => `${p.x},${p.y}`).join(' ')
-  const areaStr = `M0,${H} ` + pts.map(p => `L${p.x},${p.y}`).join(' ') + ` L${W},${H} Z`
-  const gradId = `sg-${id || valueKey}`
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full rounded" style={{ height: 56 }} preserveAspectRatio="none">
-      <defs>
-        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.25" />
-          <stop offset="100%" stopColor={color} stopOpacity="0.02" />
-        </linearGradient>
-      </defs>
-      <path d={areaStr} fill={`url(#${gradId})`} />
-      <polyline points={lineStr} fill="none" stroke={color} strokeWidth="1.5" />
-    </svg>
-  )
-}
-
-function MarketAnalysis({ data }) {
+function MarketAnalysis({ data, asin }) {
   const hasPrices = data.fba_high != null || data.fbm_high != null
   const fmtP = (v) => v != null ? fmtCurrency(v) : '—'
+  // Keepa public chart image — shows price history + sales rank, same as Amazon page embed
+  const keepaChartUrl = asin
+    ? `https://graph.keepa.com/pricehistory.png?asin=${asin}&domain=1&salesrank=1&bb=1&new=1&fbafba=1&range=90`
+    : null
+
   return (
     <div>
       <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 pb-1 border-b border-gray-100">
@@ -822,7 +797,7 @@ function MarketAnalysis({ data }) {
       </h3>
       <div className="space-y-4">
         {/* Seller counts */}
-        <div className="flex gap-8">
+        <div className="flex gap-8 flex-wrap">
           <div>
             <p className="text-xs text-gray-500">FBA Sellers</p>
             <p className="text-2xl font-bold text-blue-700 mt-0.5">{data.num_fba_sellers ?? '—'}</p>
@@ -851,8 +826,8 @@ function MarketAnalysis({ data }) {
             </thead>
             <tbody>
               {[
-                { label: 'Highest', fba: data.fba_high, fbm: data.fbm_high },
-                { label: 'Lowest',  fba: data.fba_low,  fbm: data.fbm_low },
+                { label: 'Highest', fba: data.fba_high,   fbm: data.fbm_high },
+                { label: 'Lowest',  fba: data.fba_low,    fbm: data.fbm_low },
                 { label: 'Median',  fba: data.fba_median, fbm: data.fbm_median, bold: true },
               ].map(row => (
                 <tr key={row.label} className="border-t border-gray-100">
@@ -865,28 +840,27 @@ function MarketAnalysis({ data }) {
           </table>
         )}
 
-        {/* Charts */}
-        {data.fba_history?.length > 1 && (
+        {/* Keepa price history chart — same visual as embedded on Amazon product pages */}
+        {keepaChartUrl && (
           <div>
-            <p className="text-xs text-gray-500 mb-1">FBA Buy Box Price History</p>
-            <div className="bg-gray-50 rounded-lg p-2">
-              <MiniSparkline data={data.fba_history} valueKey="price" color="#3b82f6" id="fba" />
-              <div className="flex justify-between text-xs text-gray-400 mt-1 px-1">
-                <span>{data.fba_history[0]?.date?.slice(0, 10)}</span>
-                <span>{data.fba_history[data.fba_history.length - 1]?.date?.slice(0, 10)}</span>
-              </div>
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-xs text-gray-500">Price History &amp; Sales Rank (90 days)</p>
+              <a
+                href={`https://www.keepa.com/#!product/1-${asin}`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs text-blue-600 hover:underline"
+              >
+                Open in Keepa →
+              </a>
             </div>
-          </div>
-        )}
-        {data.bsr_history?.length > 1 && (
-          <div>
-            <p className="text-xs text-gray-500 mb-1">BSR History <span className="text-gray-400">(lower is better)</span></p>
-            <div className="bg-gray-50 rounded-lg p-2">
-              <MiniSparkline data={data.bsr_history} valueKey="value" color="#8b5cf6" invert id="bsr" />
-              <div className="flex justify-between text-xs text-gray-400 mt-1 px-1">
-                <span>{data.bsr_history[0]?.date?.slice(0, 10)}</span>
-                <span>{data.bsr_history[data.bsr_history.length - 1]?.date?.slice(0, 10)}</span>
-              </div>
+            <div className="rounded-lg overflow-hidden border border-gray-100 bg-white">
+              <img
+                src={keepaChartUrl}
+                alt="Keepa price history chart"
+                className="w-full"
+                loading="lazy"
+              />
             </div>
           </div>
         )}
