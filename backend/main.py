@@ -2103,6 +2103,43 @@ async def amazon_inventory_sync_now(current: dict = Depends(require_auth)):
         raise HTTPException(502, str(e))
 
 
+@app.post("/api/support/chat")
+async def support_chat(body: dict, current: dict = Depends(require_auth)):
+    """AI support assistant powered by Claude."""
+    import anthropic as _anthropic
+    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(503, "ANTHROPIC_API_KEY is not configured")
+
+    messages = body.get("messages") or []
+    if not messages:
+        raise HTTPException(400, "messages required")
+
+    client = _anthropic.Anthropic(api_key=api_key)
+    result = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=1024,
+        system="""You are the built-in support assistant for Delight Shoppe Distribution Suite — a wholesale CRM platform for Amazon FBA sellers.
+
+You help users with the platform's features:
+- **Dashboard**: repricer performance stats (price updates, buy box %, units sold)
+- **Accounts**: wholesale supplier/buyer accounts, contacts, email threads, pipeline stages
+- **Follow-Ups**: task scheduling and pipeline management
+- **Orders**: purchase order tracking
+- **Sourcing**: adding new products to research — ASIN lookup pulls Keepa data (BSR, buy box price, FBA/FBM sellers, price history chart), auto-checks Amazon ungating, auto-fills product name and fees
+- **Current Inventory**: live FBA inventory synced from Amazon hourly, tabs by stage (In Stock, In Transit, At Prep, At Amazon, Out of Stock), click any row to open detail drawer
+- **Repricer**: Aria AI repricer sets prices per strategy; Aura repricer integration
+- **Time Clock**: clock in/out with notes, admin can view reports
+- **Support**: this page
+
+Integrations: Keepa API, Amazon SP-API (inventory sync, ungating), Aura Repricer, SMTP email.
+
+Be concise, friendly, and specific. If you don't know something about their specific setup, say so.""",
+        messages=messages,
+    )
+    return {"response": result.content[0].text}
+
+
 @app.get("/api/amazon/check-asin/{asin}")
 async def check_asin_ungated(asin: str, current: dict = Depends(require_auth)):
     """Check gating status for any ASIN directly — no saved product required."""

@@ -572,8 +572,24 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
           estimated_sales: data.estimated_sales    ?? f.estimated_sales,
         }))
         setKeepaFilled(data)
-        setUngatingStatus(null)
-        setUngatingRestrictions([])  // reset ungating when ASIN changes
+        // Auto-check ungating as soon as ASIN is confirmed
+        if (amazonConfigured) {
+          setUngatingStatus('loading')
+          setUngatingRestrictions([])
+          try {
+            const r = initial?.id
+              ? await api.checkAmazonUngated(initial.id)
+              : await api.checkAmazonUngatedAsin(asin)
+            setUngatingStatus(r.ungated)
+            setUngatingRestrictions(r.restrictions || [])
+            setForm(f => ({ ...f, ungated: r.ungated }))
+          } catch {
+            setUngatingStatus(null)
+          }
+        } else {
+          setUngatingStatus(null)
+          setUngatingRestrictions([])
+        }
       } catch (e) {
         setKeepaError(e.message)
       } finally {
@@ -581,7 +597,7 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
       }
     }, 700)
     return () => { clearTimeout(timer); setKeepaLoading(false) }
-  }, [form.asin, keepaConfigured])
+  }, [form.asin, keepaConfigured, amazonConfigured, initial?.id])
 
   const set = (k) => (e) =>
     setForm((f) => ({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }))

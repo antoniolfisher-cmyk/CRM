@@ -126,6 +126,9 @@ export const api = {
     return req('GET', `/timeclock/report${qs ? '?' + qs : ''}`)
   },
 
+  // Support
+  supportChat: (messages) => req('POST', '/support/chat', { messages }),
+
   // Orders
   getOrders: (params = {}) => {
     const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v)).toString()
