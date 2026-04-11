@@ -492,11 +492,8 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
   const [ungatingStatus, setUngatingStatus] = useState(null)  // null | 'loading' | true | false
   const [ungatingRestrictions, setUngatingRestrictions] = useState([])
 
-  // Auto-calculate financials whenever inputs change
-  useEffect(() => {
-    const calc = calcFinancials(form)
-    setForm((f) => ({ ...f, ...calc }))
-  }, [form.quantity, form.buy_cost, form.amazon_fee, form.buy_box])
+  // Derived financials — computed inline, no effect needed (avoids scroll-reset bug)
+  const _calc = calcFinancials(form)
 
   // Auto-fetch Keepa data when a valid ASIN is entered
   useEffect(() => {
@@ -543,6 +540,7 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
     const nd = (v) => (v === '' || v == null) ? null : v  // empty string → null for optional dates
     const data = {
       ...form,
+      ..._calc,  // include freshly computed derived values
       quantity: Number(form.quantity) || 0,
       buy_cost: Number(form.buy_cost) || 0,
       amazon_fee: Number(form.amazon_fee) || 0,
@@ -738,11 +736,11 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
         {/* Calculated read-only */}
         <div className="col-span-2 grid grid-cols-4 gap-3 bg-gray-50 rounded-lg p-3">
           {[
-            { label: 'Money Spent', val: fmtCurrency(form.money_spent) },
-            { label: 'Total Cost/unit', val: fmtCurrency(form.total_cost) },
-            { label: 'Profit/unit', val: fmtCurrency(form.profit), color: Number(form.profit) >= 0 ? 'text-green-600' : 'text-red-600' },
-            { label: 'Profit Margin', val: pct(form.profit_margin), color: Number(form.profit_margin) >= 0 ? 'text-green-600' : 'text-red-600' },
-            { label: 'R.O.I.', val: pct(form.roi), color: Number(form.roi) >= 0 ? 'text-green-600' : 'text-red-600' },
+            { label: 'Money Spent', val: fmtCurrency(_calc.money_spent) },
+            { label: 'Total Cost/unit', val: fmtCurrency(_calc.total_cost) },
+            { label: 'Profit/unit', val: fmtCurrency(_calc.profit), color: _calc.profit >= 0 ? 'text-green-600' : 'text-red-600' },
+            { label: 'Profit Margin', val: pct(_calc.profit_margin), color: _calc.profit_margin >= 0 ? 'text-green-600' : 'text-red-600' },
+            { label: 'R.O.I.', val: pct(_calc.roi), color: _calc.roi >= 0 ? 'text-green-600' : 'text-red-600' },
           ].map(({ label, val, color = 'text-gray-900' }) => (
             <div key={label}>
               <p className="text-xs text-gray-500">{label}</p>
