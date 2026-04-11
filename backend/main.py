@@ -1703,8 +1703,10 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth)):
         fbm_high = _p(12, max90)
         fbm_median = _p(12, avg90)
 
-    # Overall median from avg90 buy box
-    overall_median = _p(7, avg90) or _p(1, avg90)
+    # Overall 90-day stats from buy box history
+    overall_median  = _p(7, avg90) or _p(1, avg90)
+    overall_90_high = _p(7, max90) or _p(1, max90)
+    overall_90_low  = _p(7, min90) or _p(1, min90)
 
     # ── Price history chart (csv[7] = FBA buy box, csv[12] = FBM) ────────────
     _KEEPA_EPOCH = datetime(2011, 1, 1)
@@ -1799,6 +1801,8 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth)):
         "fbm_high":          fbm_high,
         "fbm_median":        fbm_median,
         "median_price":      overall_median,
+        "price_90_high":     overall_90_high,
+        "price_90_low":      overall_90_low,
         # Chart data
         "fba_history":       fba_history,
         "fbm_history":       fbm_history,

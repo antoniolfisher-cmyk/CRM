@@ -821,10 +821,26 @@ function MarketAnalysis({ data, asin }) {
               <p className="text-xs text-gray-400 mt-1">FBA/FBM breakdown requires Keepa offer data (check plan)</p>
             </div>
           )}
-          {data.median_price != null && (
-            <div>
-              <p className="text-xs text-gray-500">Overall Median</p>
-              <p className="text-2xl font-bold text-violet-700 mt-0.5">{fmtCurrency(data.median_price)}</p>
+          {(data.price_90_high != null || data.median_price != null || data.price_90_low != null) && (
+            <div className="flex gap-6 border-l border-gray-200 pl-6">
+              {data.price_90_high != null && (
+                <div>
+                  <p className="text-xs text-gray-500">90d High</p>
+                  <p className="text-2xl font-bold text-green-600 mt-0.5">{fmtCurrency(data.price_90_high)}</p>
+                </div>
+              )}
+              {data.median_price != null && (
+                <div>
+                  <p className="text-xs text-gray-500">90d Median</p>
+                  <p className="text-2xl font-bold text-violet-700 mt-0.5">{fmtCurrency(data.median_price)}</p>
+                </div>
+              )}
+              {data.price_90_low != null && (
+                <div>
+                  <p className="text-xs text-gray-500">90d Low</p>
+                  <p className="text-2xl font-bold text-red-500 mt-0.5">{fmtCurrency(data.price_90_low)}</p>
+                </div>
+              )}
             </div>
           )}
         </div>
