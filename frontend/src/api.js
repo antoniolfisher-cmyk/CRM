@@ -19,8 +19,8 @@ async function req(method, path, body) {
     return
   }
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || 'Request failed')
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `Request failed (${res.status})`)
   }
   if (res.status === 204) return null
   return res.json()
