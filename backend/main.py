@@ -1453,6 +1453,9 @@ def _keepa_fba_fees(kp: dict, buy_box_price: float | None):
         combined = None
 
     return fulfillment, referral, combined
+
+
+def _parse_keepa_product(kp: dict, product) -> None:
     """Write Keepa API data into a Product ORM instance (no commit)."""
     from datetime import timezone as _tz
     stats = kp.get("stats") or {}
