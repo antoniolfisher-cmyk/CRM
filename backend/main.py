@@ -1657,20 +1657,27 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth)):
     fba_fulfillment, referral_fee, amazon_fee = _keepa_fba_fees(kp, buy_box_price)
 
     # ── FBA / FBM offer breakdown ──────────────────────────────────────────────
+    # Keepa condition codes: 0=New, 1=Used-LikeNew, 2=Used-VeryGood, ...
     offers = kp.get("offers") or []
     fba_prices = []
     fbm_prices = []
+    num_fba = 0
+    num_fbm = 0
     for o in offers:
-        if o.get("condition") != 1:  # 1 = New
+        if o.get("condition") != 0:  # 0 = New
             continue
-        price_cents = o.get("price") or 0
-        if price_cents <= 0:
-            continue
-        price_dollars = round(price_cents / 100, 2)
-        if o.get("isFBA"):
-            fba_prices.append(price_dollars)
+        is_fba = bool(o.get("isFBA"))
+        if is_fba:
+            num_fba += 1
         else:
-            fbm_prices.append(price_dollars)
+            num_fbm += 1
+        price_cents = o.get("price") or 0
+        if price_cents > 0:
+            price_dollars = round(price_cents / 100, 2)
+            if is_fba:
+                fba_prices.append(price_dollars)
+            else:
+                fbm_prices.append(price_dollars)
 
     def _range(prices):
         if not prices:
@@ -1734,8 +1741,8 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth)):
         "bsr":               _p(3, cur) and int(_p(3, cur)) if _p(3, cur) else None,
         "category":          category,
         "num_sellers":       kp.get("newCount"),
-        "num_fba_sellers":   len(fba_prices) or None,
-        "num_fbm_sellers":   len(fbm_prices) or None,
+        "num_fba_sellers":   num_fba or None,
+        "num_fbm_sellers":   num_fbm or None,
         "estimated_sales":   kp.get("monthlySold"),
         "fba_fulfillment_fee": fba_fulfillment,
         "referral_fee":      referral_fee,
