@@ -1703,17 +1703,6 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth)):
         fbm_high = _p(12, max90)
         fbm_median = _p(12, avg90)
 
-    # Overall 90-day stats — derive high/low from the FBA price history we already have
-    # (more reliable than stats arrays which may lack data at index 7)
-    overall_median  = _p(7, avg90) or _p(1, avg90)
-    if fba_history:
-        _hist_prices    = [p["price"] for p in fba_history]
-        overall_90_high = round(max(_hist_prices), 2)
-        overall_90_low  = round(min(_hist_prices), 2)
-    else:
-        overall_90_high = _p(7, max90) or _p(1, max90)
-        overall_90_low  = _p(7, min90) or _p(1, min90)
-
     # ── Price history chart (csv[7] = FBA buy box, csv[12] = FBM) ────────────
     _KEEPA_EPOCH = datetime(2011, 1, 1)
 
@@ -1744,6 +1733,16 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth)):
             bsr_points.append({"date": dt.strftime("%b %-d"), "rank": int(r)})
         i += 2
     bsr_history = bsr_points[-50:]
+
+    # Overall 90-day stats — derive high/low from fba_history (same data as chart)
+    overall_median  = _p(7, avg90) or _p(1, avg90)
+    if fba_history:
+        _hist_prices    = [p["price"] for p in fba_history]
+        overall_90_high = round(max(_hist_prices), 2)
+        overall_90_low  = round(min(_hist_prices), 2)
+    else:
+        overall_90_high = _p(7, max90) or _p(1, max90)
+        overall_90_low  = _p(7, min90) or _p(1, min90)
 
     # ── Amazon SP-API offer counts (FBA vs FBM) ────────────────────────────────
     # Overrides Keepa offer counts which are limited to 20 and require a paid plan
