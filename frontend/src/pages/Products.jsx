@@ -569,18 +569,31 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
     </div>
   )
 
-  const Field = ({ label, k, type = 'text', span = 1, readOnly = false, placeholder = '' }) => (
+  const Field = ({ label, k, type = 'text', span = 1, readOnly = false, placeholder = '', isLink = false }) => (
     <div className={span === 2 ? 'col-span-2' : ''}>
       <label className="label">{label}</label>
-      <input
-        className={`input ${readOnly ? 'bg-gray-50 text-gray-500 cursor-default' : ''}`}
-        type={type}
-        value={form[k] ?? ''}
-        onChange={readOnly ? undefined : set(k)}
-        readOnly={readOnly}
-        placeholder={placeholder}
-        step={type === 'number' ? '0.01' : undefined}
-      />
+      <div className={isLink ? 'flex gap-1.5' : ''}>
+        <input
+          className={`input ${readOnly ? 'bg-gray-50 text-gray-500 cursor-default' : ''}`}
+          type={type}
+          value={form[k] ?? ''}
+          onChange={readOnly ? undefined : set(k)}
+          readOnly={readOnly}
+          placeholder={placeholder}
+          step={type === 'number' ? '0.01' : undefined}
+        />
+        {isLink && form[k] && (
+          <a
+            href={form[k]}
+            target="_blank"
+            rel="noreferrer"
+            className="shrink-0 flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-blue-600 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 transition-colors"
+            title="Open link"
+          >
+            Open ↗
+          </a>
+        )}
+      </div>
     </div>
   )
 
@@ -696,8 +709,8 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
           )}
         </div>
         <Field label="VA Finder" k="va_finder" placeholder="Who found this?" />
-        <Field label="Amazon URL" k="amazon_url" span={2} />
-        <Field label="Purchase Link" k="purchase_link" span={2} />
+        <Field label="Amazon URL" k="amazon_url" span={2} isLink />
+        <Field label="Purchase Link" k="purchase_link" span={2} isLink />
       </Section>
 
       {keepaFilled && (

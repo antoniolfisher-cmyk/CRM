@@ -1713,7 +1713,7 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth)):
         i = 0
         while i + 1 < len(csv_arr):
             t, p = csv_arr[i], csv_arr[i + 1]
-            if t is not None and p is not None and p > 0:
+            if t is not None and p is not None and 0 < p < 1_000_000:  # 0–$9,999 sanity cap
                 dt = _KEEPA_EPOCH + timedelta(minutes=int(t))
                 points.append({"date": dt.strftime("%b %-d"), "price": round(p / 100, 2)})
             i += 2
