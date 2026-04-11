@@ -1659,18 +1659,25 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth)):
     # ── FBA / FBM offer breakdown ──────────────────────────────────────────────
     # Keepa condition codes: 0=New, 1=Used-LikeNew, 2=Used-VeryGood, ...
     offers = kp.get("offers") or []
+    log.info("Keepa offers for %s: total=%d conditions=%s isFBA=%s",
+             asin, len(offers),
+             [o.get("condition") for o in offers[:5]],
+             [o.get("isFBA") for o in offers[:5]])
     fba_prices = []
     fbm_prices = []
     num_fba = 0
     num_fbm = 0
     for o in offers:
-        if o.get("condition") != 0:  # 0 = New
-            continue
         is_fba = bool(o.get("isFBA"))
+        cond = o.get("condition")
+        # Count all offers for FBA/FBM totals (some Keepa accounts omit condition)
         if is_fba:
             num_fba += 1
         else:
             num_fbm += 1
+        # Only collect prices for new condition (0=New)
+        if cond != 0:
+            continue
         price_cents = o.get("price") or 0
         if price_cents > 0:
             price_dollars = round(price_cents / 100, 2)
@@ -1741,8 +1748,9 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth)):
         "bsr":               _p(3, cur) and int(_p(3, cur)) if _p(3, cur) else None,
         "category":          category,
         "num_sellers":       kp.get("newCount"),
-        "num_fba_sellers":   num_fba or None,
-        "num_fbm_sellers":   num_fbm or None,
+        "num_fba_sellers":   num_fba if offers else None,
+        "num_fbm_sellers":   num_fbm if offers else None,
+        "offers_available":  len(offers) > 0,
         "estimated_sales":   kp.get("monthlySold"),
         "fba_fulfillment_fee": fba_fulfillment,
         "referral_fee":      referral_fee,

@@ -797,15 +797,29 @@ function MarketAnalysis({ data, asin }) {
       </h3>
       <div className="space-y-4">
         {/* Seller counts */}
-        <div className="flex gap-8 flex-wrap">
-          <div>
-            <p className="text-xs text-gray-500">FBA Sellers</p>
-            <p className="text-2xl font-bold text-blue-700 mt-0.5">{data.num_fba_sellers ?? '—'}</p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-500">FBM Sellers</p>
-            <p className="text-2xl font-bold text-gray-700 mt-0.5">{data.num_fbm_sellers ?? '—'}</p>
-          </div>
+        <div className="flex gap-8 flex-wrap items-end">
+          {data.offers_available ? (
+            <>
+              <div>
+                <p className="text-xs text-gray-500">FBA Sellers</p>
+                <p className="text-2xl font-bold text-blue-700 mt-0.5">{data.num_fba_sellers ?? 0}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">FBM Sellers</p>
+                <p className="text-2xl font-bold text-gray-700 mt-0.5">{data.num_fbm_sellers ?? 0}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Total Offers</p>
+                <p className="text-2xl font-bold text-gray-500 mt-0.5">{(data.num_fba_sellers ?? 0) + (data.num_fbm_sellers ?? 0)}</p>
+              </div>
+            </>
+          ) : (
+            <div>
+              <p className="text-xs text-gray-500">Total New Sellers</p>
+              <p className="text-2xl font-bold text-gray-700 mt-0.5">{data.num_sellers ?? '—'}</p>
+              <p className="text-xs text-gray-400 mt-1">FBA/FBM breakdown requires Keepa offer data (check plan)</p>
+            </div>
+          )}
           {data.median_price != null && (
             <div>
               <p className="text-xs text-gray-500">Overall Median</p>
