@@ -465,6 +465,19 @@ def start_scheduler():
     except Exception as _e:
         log.warning("Aria repricer scheduler not loaded: %s", _e)
 
+    # Amazon FBA Inventory Sync — every 1 hour
+    try:
+        from amazon_sync import scheduled_sync as amazon_sync_job
+        _scheduler.add_job(
+            amazon_sync_job,
+            IntervalTrigger(hours=1),
+            id="amazon_inventory_sync",
+            replace_existing=True,
+        )
+        log.info("Amazon inventory sync scheduled every 1 hour")
+    except Exception as _e:
+        log.warning("Amazon inventory sync scheduler not loaded: %s", _e)
+
     _scheduler.start()
     log.info("Notification scheduler started — digests at %02d:00 UTC", NOTIFY_HOUR)
 

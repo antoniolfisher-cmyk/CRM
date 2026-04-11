@@ -1905,57 +1905,45 @@ async def get_amazon_inventory(current: dict = Depends(require_auth)):
 
 
 @app.post("/api/amazon/inventory/import")
-async def import_amazon_inventory(db: Session = Depends(get_db), current: dict = Depends(require_auth)):
-    """
-    Import FBA inventory into the CRM products table.
-    - Existing products (matched by ASIN): quantity updated.
-    - New ASINs: new product record created; Keepa data fetched if configured.
-    """
-    if not _amazon_sp_configured():
+async def import_amazon_inventory(current: dict = Depends(require_auth)):
+    """Import FBA inventory — delegates to amazon_sync module."""
+    import amazon_sync
+    if not amazon_sync.configured():
         raise HTTPException(503, "Amazon SP-API credentials are not configured")
+    try:
+        result = await amazon_sync.run_sync()
+        return {
+            "imported": result["created"] + result["updated"],
+            "created":  result["created"],
+            "updated":  result["updated"],
+            "skipped":  result["skipped"],
+        }
+    except Exception as e:
+        raise HTTPException(502, str(e))
 
-    items = await _fetch_fba_inventory()
-    created = updated = skipped = 0
 
-    for item in items:
-        asin = item["asin"]
-        if not asin:
-            skipped += 1
-            continue
-
-        existing = db.query(models.Product).filter(models.Product.asin == asin).first()
-
-        if existing:
-            existing.quantity = item["quantity"]
-            updated += 1
-        else:
-            name = item["product_name"] or asin
-            p = models.Product(
-                asin=asin,
-                product_name=name,
-                quantity=item["quantity"],
-                order_number=item["seller_sku"] or None,
-                created_by=current["sub"],
-            )
-            # Enrich with Keepa if configured
-            if _keepa_configured():
-                try:
-                    kp = await _keepa_fetch_single(asin)
-                    if kp:
-                        _parse_keepa_product(kp, p)
-                except Exception:
-                    pass
-            db.add(p)
-            created += 1
-
-    db.commit()
+@app.get("/api/amazon/inventory/sync-status")
+def amazon_inventory_sync_status(current: dict = Depends(require_auth)):
+    """Return last sync timestamp and result for display on the Inventory page."""
+    import amazon_sync
     return {
-        "imported": created + updated,
-        "created":  created,
-        "updated":  updated,
-        "skipped":  skipped,
-        "total":    len(items),
+        "configured": amazon_sync.configured(),
+        **amazon_sync.get_sync_state(),
     }
+
+
+@app.post("/api/amazon/inventory/sync-now")
+async def amazon_inventory_sync_now(current: dict = Depends(require_auth)):
+    """Manually trigger an immediate Amazon inventory sync."""
+    import amazon_sync
+    if not amazon_sync.configured():
+        raise HTTPException(503, "Amazon SP-API credentials are not configured")
+    if amazon_sync.get_sync_state().get("running"):
+        raise HTTPException(409, "Sync already in progress")
+    try:
+        return await amazon_sync.run_sync()
+    except Exception as e:
+        raise HTTPException(502, str(e))
 
 
 @app.get("/api/amazon/check-asin/{asin}")

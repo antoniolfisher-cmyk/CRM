@@ -52,6 +52,72 @@ function SyncIcon({ spinning }) {
   )
 }
 
+function fmtAgo(isoStr) {
+  if (!isoStr) return null
+  const d = new Date(isoStr)
+  const diffMin = Math.floor((Date.now() - d) / 60000)
+  if (diffMin < 1) return 'just now'
+  if (diffMin < 60) return `${diffMin}m ago`
+  const diffH = Math.floor(diffMin / 60)
+  if (diffH < 24) return `${diffH}h ago`
+  return `${Math.floor(diffH / 24)}d ago`
+}
+
+function AmazonSyncCard({ status, onSync, syncing }) {
+  if (!status) return null
+
+  if (!status.configured) {
+    return (
+      <div className="card p-4 border-l-4 border-amber-400 bg-amber-50">
+        <p className="font-semibold text-amber-900 text-sm">Amazon SP-API not connected</p>
+        <p className="text-xs text-amber-700 mt-0.5">
+          Add <code className="bg-amber-100 px-1 rounded">AMAZON_LWA_CLIENT_ID</code>,{' '}
+          <code className="bg-amber-100 px-1 rounded">AMAZON_LWA_CLIENT_SECRET</code>,{' '}
+          <code className="bg-amber-100 px-1 rounded">AMAZON_SP_REFRESH_TOKEN</code>, and{' '}
+          <code className="bg-amber-100 px-1 rounded">AMAZON_SELLER_ID</code> in Railway Variables
+          to enable hourly automatic inventory sync.
+        </p>
+      </div>
+    )
+  }
+
+  const ago = fmtAgo(status.last_sync_at)
+  const hasError = Boolean(status.error)
+
+  return (
+    <div className={`card p-4 flex flex-wrap items-center justify-between gap-3 ${hasError ? 'border-l-4 border-red-400' : ''}`}>
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-2">
+          <span className={`w-2 h-2 rounded-full ${hasError ? 'bg-red-500' : 'bg-green-500'}`} />
+          <span className="text-sm font-medium text-gray-800">Amazon FBA Sync</span>
+          <span className="text-xs text-gray-400">— refreshes inventory quantities every hour</span>
+        </div>
+        {ago && !hasError && (
+          <div className="flex items-center gap-3 text-xs text-gray-500">
+            <span>Last sync: <span className="font-medium text-gray-700">{ago}</span></span>
+            {status.updated > 0 && <span className="text-green-600">↑ {status.updated} updated</span>}
+            {status.created > 0 && <span className="text-blue-600">+ {status.created} new</span>}
+          </div>
+        )}
+        {hasError && (
+          <span className="text-xs text-red-600 font-medium">Last error: {status.error}</span>
+        )}
+        {status.running && (
+          <span className="text-xs text-blue-600 animate-pulse">Syncing…</span>
+        )}
+      </div>
+      <button
+        onClick={onSync}
+        disabled={syncing || status.running}
+        className="btn-secondary text-sm flex items-center gap-1.5"
+      >
+        <SyncIcon spinning={syncing || status.running} />
+        {syncing || status.running ? 'Syncing…' : 'Sync Now'}
+      </button>
+    </div>
+  )
+}
+
 function KeepaStatusCard({ status, onBulkSync, bulkLoading, bulkResult, isAdmin }) {
   if (!status) return null
 
@@ -112,6 +178,8 @@ export default function Inventory() {
   const [syncingIds, setSyncingIds] = useState(new Set())
   const [bulkLoading, setBulkLoading] = useState(false)
   const [bulkResult, setBulkResult] = useState(null)
+  const [amazonSyncStatus, setAmazonSyncStatus] = useState(null)
+  const [amazonSyncing, setAmazonSyncing] = useState(false)
   // aria_strategy_id per product (local optimistic state)
   const [strategyMap, setStrategyMap] = useState({})
 
@@ -121,16 +189,25 @@ export default function Inventory() {
     if (search) params.search = search
     api.getProducts(params).then(prods => {
       setProducts(prods)
-      // seed strategyMap from server data
       const m = {}
       prods.forEach(p => { m[p.id] = p.aria_strategy_id ?? '' })
       setStrategyMap(m)
     }).finally(() => setLoading(false))
   }, [search])
 
+  const loadAmazonSyncStatus = useCallback(() => {
+    api.amazonInventorySyncStatus().then(setAmazonSyncStatus).catch(() => {})
+  }, [])
+
   useEffect(() => { load() }, [load])
   useEffect(() => { api.keepaStatus().then(setKeepaStatus).catch(() => {}) }, [])
   useEffect(() => { api.getRepricerStrategies().then(setStrategies).catch(() => {}) }, [])
+  useEffect(() => {
+    loadAmazonSyncStatus()
+    // Poll sync status every 60 seconds
+    const id = setInterval(loadAmazonSyncStatus, 60000)
+    return () => clearInterval(id)
+  }, [loadAmazonSyncStatus])
 
   // Apply client-side filters
   const filtered = products.filter(p => {
@@ -174,6 +251,20 @@ export default function Inventory() {
     }
   }
 
+  const handleAmazonSync = async () => {
+    setAmazonSyncing(true)
+    try {
+      const result = await api.amazonInventorySyncNow()
+      setAmazonSyncStatus(s => ({ ...s, ...result, last_sync_at: new Date().toISOString() }))
+      load()
+    } catch (e) {
+      alert(`Amazon sync failed: ${e.message}`)
+    } finally {
+      setAmazonSyncing(false)
+      loadAmazonSyncStatus()
+    }
+  }
+
   const handleStrategyChange = async (productId, value) => {
     const strategyId = value === '' ? null : Number(value)
     // optimistic update
@@ -193,6 +284,13 @@ export default function Inventory() {
         <h1 className="text-2xl font-bold text-gray-900">Current Inventory</h1>
         <p className="text-gray-500 text-sm mt-1">Pipeline view of all approved inventory</p>
       </div>
+
+      {/* ── Amazon Inventory Sync status ── */}
+      <AmazonSyncCard
+        status={amazonSyncStatus}
+        onSync={handleAmazonSync}
+        syncing={amazonSyncing}
+      />
 
       {/* ── Keepa status ── */}
       <KeepaStatusCard

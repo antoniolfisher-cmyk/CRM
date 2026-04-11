@@ -90,6 +90,8 @@ export const api = {
   checkAmazonUngatedAsin: (asin) => req('GET', `/amazon/check-asin/${asin}`),
   getAmazonInventory: () => req('GET', '/amazon/inventory'),
   importAmazonInventory: () => req('POST', '/amazon/inventory/import', {}),
+  amazonInventorySyncStatus: () => req('GET', '/amazon/inventory/sync-status'),
+  amazonInventorySyncNow: () => req('POST', '/amazon/inventory/sync-now', {}),
 
   // Repricer strategies (admin only)
   getRepricerStrategies: () => req('GET', '/repricer/strategies'),
