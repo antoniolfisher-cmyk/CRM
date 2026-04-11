@@ -1,21 +1,21 @@
 import { useState, useEffect, useCallback } from 'react'
 import { api } from '../api'
 import { useAuth } from '../context/AuthContext'
-import { formatDate, fmtCurrency } from '../utils'
+import { fmtCurrency } from '../utils'
 
 // Pipeline stage for a product
 function getStage(p) {
   if (p.date_sent_to_amazon) return 'amazon'
   if (p.arrived_at_prep) return 'prep'
   if (p.date_purchased) return 'ordered'
-  return 'sourced'
+  return 'instock'
 }
 
 const STAGES = [
-  { key: 'sourced',  label: 'Sourced',             color: 'bg-gray-100 text-gray-700',   dot: 'bg-gray-400' },
-  { key: 'ordered',  label: 'Ordered / In Transit', color: 'bg-amber-100 text-amber-700', dot: 'bg-amber-400' },
-  { key: 'prep',     label: 'At Prep Center',        color: 'bg-blue-100 text-blue-700',   dot: 'bg-blue-500' },
-  { key: 'amazon',   label: 'Sent to Amazon (FBA)',  color: 'bg-green-100 text-green-700', dot: 'bg-green-500' },
+  { key: 'instock',  label: 'In Stock',              color: 'bg-gray-100 text-gray-700',   dot: 'bg-gray-400' },
+  { key: 'ordered',  label: 'Ordered / In Transit',  color: 'bg-amber-100 text-amber-700', dot: 'bg-amber-400' },
+  { key: 'prep',     label: 'At Prep Center',         color: 'bg-blue-100 text-blue-700',   dot: 'bg-blue-500' },
+  { key: 'amazon',   label: 'Sent to Amazon (FBA)',   color: 'bg-green-100 text-green-700', dot: 'bg-green-500' },
 ]
 
 function num(v, dec = 0) {
@@ -104,37 +104,45 @@ function KeepaStatusCard({ status, onBulkSync, bulkLoading, bulkResult, isAdmin 
 export default function Inventory() {
   const { isAdmin } = useAuth()
   const [products, setProducts] = useState([])
+  const [strategies, setStrategies] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [stageFilter, setStageFilter] = useState('all')
-  const [replenishOnly, setReplenishOnly] = useState(false)
   const [keepaStatus, setKeepaStatus] = useState(null)
   const [syncingIds, setSyncingIds] = useState(new Set())
   const [bulkLoading, setBulkLoading] = useState(false)
   const [bulkResult, setBulkResult] = useState(null)
+  // aria_strategy_id per product (local optimistic state)
+  const [strategyMap, setStrategyMap] = useState({})
 
   const load = useCallback(() => {
     setLoading(true)
     const params = { status: 'approved' }
     if (search) params.search = search
-    api.getProducts(params).then(setProducts).finally(() => setLoading(false))
+    api.getProducts(params).then(prods => {
+      setProducts(prods)
+      // seed strategyMap from server data
+      const m = {}
+      prods.forEach(p => { m[p.id] = p.aria_strategy_id ?? '' })
+      setStrategyMap(m)
+    }).finally(() => setLoading(false))
   }, [search])
 
   useEffect(() => { load() }, [load])
   useEffect(() => { api.keepaStatus().then(setKeepaStatus).catch(() => {}) }, [])
+  useEffect(() => { api.getRepricerStrategies().then(setStrategies).catch(() => {}) }, [])
 
   // Apply client-side filters
   const filtered = products.filter(p => {
     if (stageFilter !== 'all' && getStage(p) !== stageFilter) return false
-    if (replenishOnly && !p.replenish) return false
     return true
   })
 
-  // KPIs across all products (not filtered)
+  // KPIs
   const totalUnits = products.reduce((s, p) => s + (Number(p.quantity) || 0), 0)
   const totalSpent = products.reduce((s, p) => s + (Number(p.money_spent) || 0), 0)
   const stageCounts = Object.fromEntries(STAGES.map(s => [s.key, products.filter(p => getStage(p) === s.key).length]))
-  const replenishCount = products.filter(p => p.replenish).length
+  const ariaCount = products.filter(p => p.aria_strategy_id).length
 
   const handleSyncOne = async (productId) => {
     setSyncingIds(prev => new Set(prev).add(productId))
@@ -166,11 +174,24 @@ export default function Inventory() {
     }
   }
 
+  const handleStrategyChange = async (productId, value) => {
+    const strategyId = value === '' ? null : Number(value)
+    // optimistic update
+    setStrategyMap(prev => ({ ...prev, [productId]: value }))
+    try {
+      await api.setProductStrategy(productId, strategyId)
+    } catch (e) {
+      alert(`Failed to update strategy: ${e.message}`)
+      // revert
+      setStrategyMap(prev => ({ ...prev, [productId]: products.find(p => p.id === productId)?.aria_strategy_id ?? '' }))
+    }
+  }
+
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">Inventory</h1>
-        <p className="text-gray-500 text-sm mt-1">Pipeline view of all purchased inventory</p>
+        <h1 className="text-2xl font-bold text-gray-900">Current Inventory</h1>
+        <p className="text-gray-500 text-sm mt-1">Pipeline view of all approved inventory</p>
       </div>
 
       {/* ── Keepa status ── */}
@@ -197,8 +218,8 @@ export default function Inventory() {
           <p className="text-2xl font-bold text-gray-900 mt-1">{fmtCurrency(totalSpent)}</p>
         </div>
         <div className="card p-4">
-          <p className="text-xs text-gray-500 uppercase tracking-wide">Needs Replenish</p>
-          <p className="text-2xl font-bold text-blue-600 mt-1">{replenishCount}</p>
+          <p className="text-xs text-gray-500 uppercase tracking-wide">Aria Managed</p>
+          <p className="text-2xl font-bold text-purple-600 mt-1">{ariaCount}</p>
         </div>
       </div>
 
@@ -243,15 +264,6 @@ export default function Inventory() {
           value={search}
           onChange={e => setSearch(e.target.value)}
         />
-        <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={replenishOnly}
-            onChange={e => setReplenishOnly(e.target.checked)}
-            className="rounded"
-          />
-          Replenish only
-        </label>
         <span className="text-sm text-gray-400 ml-auto">{filtered.length} items</span>
       </div>
 
@@ -271,7 +283,7 @@ export default function Inventory() {
                 <th className="text-left px-4 py-3 font-medium text-gray-600 bg-blue-50"># Sellers</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">ROI</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Profit/unit</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Replenish</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600 bg-purple-50">Aria Strategy</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Ungated</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600 bg-blue-50">Keepa</th>
               </tr>
@@ -290,6 +302,7 @@ export default function Inventory() {
                 const isSyncing = syncingIds.has(p.id)
                 const hasAsin = Boolean(p.asin)
                 const synced = fmtSynced(p.keepa_last_synced)
+                const currentStrategy = strategyMap[p.id] ?? ''
                 return (
                   <tr key={p.id} className="hover:bg-gray-50">
                     <td className="px-4 py-3">
@@ -338,11 +351,21 @@ export default function Inventory() {
                         {p.profit != null && p.profit !== 0 ? fmtCurrency(profitVal) : '—'}
                       </span>
                     </td>
-                    <td className="px-4 py-3">
-                      {p.replenish
-                        ? <span className="badge bg-blue-100 text-blue-700">Yes</span>
-                        : <span className="text-gray-300 text-xs">No</span>}
+
+                    {/* ── Aria Strategy dropdown ── */}
+                    <td className="px-4 py-3 bg-purple-50/40">
+                      <select
+                        value={currentStrategy}
+                        onChange={e => handleStrategyChange(p.id, e.target.value)}
+                        className="text-xs border border-gray-200 rounded px-2 py-1 bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-purple-400 max-w-[140px]"
+                      >
+                        <option value="">— None —</option>
+                        {strategies.map(s => (
+                          <option key={s.id} value={s.id}>{s.name}</option>
+                        ))}
+                      </select>
                     </td>
+
                     <td className="px-4 py-3">
                       {p.ungated
                         ? <span className="badge bg-green-100 text-green-700">Yes</span>

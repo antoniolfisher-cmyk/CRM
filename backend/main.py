@@ -60,6 +60,7 @@ try:
                 ("aria_reasoning", "TEXT"),
                 ("aria_last_buy_box", "REAL"),
                 ("status", "TEXT DEFAULT 'sourcing'"),
+                ("aria_strategy_id", "INTEGER"),
             ]:
                 if _col not in _cols:
                     _conn.execute(text(f"ALTER TABLE products ADD COLUMN {_col} {_ddl}"))
@@ -1416,6 +1417,27 @@ def reject_product(
     p.status = "sourcing"
     db.commit()
     return {"status": "sourcing"}
+
+
+@app.put("/api/products/{product_id}/strategy")
+def set_product_strategy(
+    product_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_auth),
+):
+    """Assign (or clear) a repricer strategy for a single product."""
+    p = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if not p:
+        raise HTTPException(404, "Product not found")
+    strategy_id = body.get("strategy_id")  # None to clear
+    if strategy_id is not None:
+        exists = db.query(models.RepricerStrategy).filter(models.RepricerStrategy.id == strategy_id).first()
+        if not exists:
+            raise HTTPException(404, "Strategy not found")
+    p.aria_strategy_id = strategy_id
+    db.commit()
+    return {"aria_strategy_id": strategy_id}
 
 
 @app.post("/api/admin/approve-all-sourcing")

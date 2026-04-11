@@ -80,6 +80,7 @@ export const api = {
   submitProduct: (id) => req('POST', `/products/${id}/submit`, {}),
   approveProduct: (id) => req('POST', `/products/${id}/approve`, {}),
   rejectProduct: (id) => req('POST', `/products/${id}/reject`, {}),
+  setProductStrategy: (id, strategyId) => req('PUT', `/products/${id}/strategy`, { strategy_id: strategyId }),
   keepaStatus: () => req('GET', '/keepa/status'),
   keepaLookup: (asin) => req('GET', `/keepa/lookup/${asin}`),
   keepaRefreshOne: (id) => req('POST', `/products/${id}/keepa-refresh`),
