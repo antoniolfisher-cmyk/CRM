@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, createContext, useContext } from 'react'
 import { api } from '../api'
 import Modal from '../components/Modal'
 import { formatDate, fmtCurrency } from '../utils'
@@ -460,6 +460,59 @@ export default function Products() {
   )
 }
 
+// ─── form helpers (defined outside ProductForm so their refs stay stable) ────
+
+const FormCtx = createContext({})
+
+function Section({ title, children }) {
+  return (
+    <div>
+      <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 pb-1 border-b border-gray-100">{title}</h3>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-3">{children}</div>
+    </div>
+  )
+}
+
+function Field({ label, k, type = 'text', span = 1, readOnly = false, placeholder = '', isLink = false }) {
+  const { form, set } = useContext(FormCtx)
+  return (
+    <div className={span === 2 ? 'col-span-2' : ''}>
+      <label className="label">{label}</label>
+      <div className={isLink ? 'flex gap-1.5' : ''}>
+        <input
+          className={`input ${readOnly ? 'bg-gray-50 text-gray-500 cursor-default' : ''}`}
+          type={type}
+          value={form[k] ?? ''}
+          onChange={readOnly ? undefined : set(k)}
+          readOnly={readOnly}
+          placeholder={placeholder}
+          step={type === 'number' ? '0.01' : undefined}
+        />
+        {isLink && form[k] && (
+          <a
+            href={form[k]}
+            target="_blank"
+            rel="noreferrer"
+            className="shrink-0 flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-blue-600 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 transition-colors"
+          >
+            Open ↗
+          </a>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function Check({ label, k }) {
+  const { form, set } = useContext(FormCtx)
+  return (
+    <div className="flex items-center gap-2 mt-1">
+      <input type="checkbox" id={k} checked={!!form[k]} onChange={set(k)} className="rounded" />
+      <label htmlFor={k} className="text-sm text-gray-700">{label}</label>
+    </div>
+  )
+}
+
 // ─── form ─────────────────────────────────────────────────────────────────────
 
 const EMPTY = {
@@ -560,48 +613,6 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
     }
   }
 
-  const Section = ({ title, children }) => (
-    <div>
-      <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 pb-1 border-b border-gray-100">{title}</h3>
-      <div className="grid grid-cols-2 gap-x-4 gap-y-3">{children}</div>
-    </div>
-  )
-
-  const Field = ({ label, k, type = 'text', span = 1, readOnly = false, placeholder = '', isLink = false }) => (
-    <div className={span === 2 ? 'col-span-2' : ''}>
-      <label className="label">{label}</label>
-      <div className={isLink ? 'flex gap-1.5' : ''}>
-        <input
-          className={`input ${readOnly ? 'bg-gray-50 text-gray-500 cursor-default' : ''}`}
-          type={type}
-          value={form[k] ?? ''}
-          onChange={readOnly ? undefined : set(k)}
-          readOnly={readOnly}
-          placeholder={placeholder}
-          step={type === 'number' ? '0.01' : undefined}
-        />
-        {isLink && form[k] && (
-          <a
-            href={form[k]}
-            target="_blank"
-            rel="noreferrer"
-            className="shrink-0 flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-blue-600 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 transition-colors"
-            title="Open link"
-          >
-            Open ↗
-          </a>
-        )}
-      </div>
-    </div>
-  )
-
-  const Check = ({ label, k }) => (
-    <div className="flex items-center gap-2 mt-1">
-      <input type="checkbox" id={k} checked={!!form[k]} onChange={set(k)} className="rounded" />
-      <label htmlFor={k} className="text-sm text-gray-700">{label}</label>
-    </div>
-  )
-
   // Max Buy Cost — computed before render to avoid IIFE in JSX
   const _buyBox = Number(form.buy_box)
   const _fee = Number(form.amazon_fee)
@@ -609,6 +620,7 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
   const showMaxBuy = _buyBox > 0 && _fee > 0 && _net > 0
 
   return (
+    <FormCtx.Provider value={{ form, set }}>
     <form onSubmit={submit} className="space-y-6">
 
       <Section title="Product Info">
@@ -789,6 +801,7 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
         </button>
       </div>
     </form>
+    </FormCtx.Provider>
   )
 }
 
