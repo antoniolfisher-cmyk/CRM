@@ -1659,10 +1659,6 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth)):
     # ── FBA / FBM offer breakdown ──────────────────────────────────────────────
     # Keepa condition codes: 0=New, 1=Used-LikeNew, 2=Used-VeryGood, ...
     offers = kp.get("offers") or []
-    log.info("Keepa offers for %s: total=%d conditions=%s isFBA=%s",
-             asin, len(offers),
-             [o.get("condition") for o in offers[:5]],
-             [o.get("isFBA") for o in offers[:5]])
     fba_prices = []
     fbm_prices = []
     num_fba = 0
@@ -1741,16 +1737,55 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth)):
         i += 2
     bsr_history = bsr_points[-50:]
 
+    # ── Amazon SP-API offer counts (FBA vs FBM) ────────────────────────────────
+    # Overrides Keepa offer counts which are limited to 20 and require a paid plan
+    sp_fba = num_fba if offers else None
+    sp_fbm = num_fbm if offers else None
+    sp_total = None
+    if _amazon_sp_configured():
+        try:
+            sp_token = await _get_amazon_access_token()
+            import httpx as _httpx
+            async with _httpx.AsyncClient(timeout=15) as _c:
+                _r = await _c.get(
+                    f"{_AMAZON_SP_BASE}/products/pricing/v0/items/{asin}/offers",
+                    headers={"x-amz-access-token": sp_token},
+                    params={
+                        "MarketplaceId": _AMAZON_MKT_ID,
+                        "ItemCondition": "New",
+                        "CustomerType":  "Consumer",
+                    },
+                )
+            if _r.status_code == 200:
+                _summary = (_r.json().get("payload") or {}).get("Summary") or {}
+                _num_offers = _summary.get("NumberOfOffers") or []
+                sp_fba = next(
+                    (o["OfferCount"] for o in _num_offers
+                     if o.get("fulfillmentChannel") == "Amazon" and o.get("condition") == "new"),
+                    0,
+                )
+                sp_fbm = next(
+                    (o["OfferCount"] for o in _num_offers
+                     if o.get("fulfillmentChannel") == "Merchant" and o.get("condition") == "new"),
+                    0,
+                )
+                sp_total = _summary.get("TotalOfferCount")
+        except Exception:
+            pass  # Fall back to Keepa offer counts
+
+    amazon_url = f"https://www.amazon.com/dp/{asin}"
+
     return {
         "asin":              asin,
         "title":             (kp.get("title") or "").strip(),
         "buy_box":           buy_box_price,
         "bsr":               _p(3, cur) and int(_p(3, cur)) if _p(3, cur) else None,
         "category":          category,
-        "num_sellers":       kp.get("newCount"),
-        "num_fba_sellers":   num_fba if offers else None,
-        "num_fbm_sellers":   num_fbm if offers else None,
-        "offers_available":  len(offers) > 0,
+        "amazon_url":        amazon_url,
+        "num_sellers":       sp_total or kp.get("newCount"),
+        "num_fba_sellers":   sp_fba,
+        "num_fbm_sellers":   sp_fbm,
+        "offers_available":  sp_fba is not None or len(offers) > 0,
         "estimated_sales":   kp.get("monthlySold"),
         "fba_fulfillment_fee": fba_fulfillment,
         "referral_fee":      referral_fee,

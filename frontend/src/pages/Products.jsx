@@ -515,6 +515,7 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
         setForm(f => ({
           ...f,
           product_name:    f.product_name || data.title || f.product_name,
+          amazon_url:      f.amazon_url || data.amazon_url || f.amazon_url,
           buy_box:         data.buy_box          ?? f.buy_box,
           amazon_fee:      data.amazon_fee        ?? f.amazon_fee,
           num_sellers:     data.num_sellers        ?? f.num_sellers,
