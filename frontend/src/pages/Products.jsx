@@ -464,10 +464,9 @@ export default function Products() {
 
 const EMPTY = {
   product_name: '', asin: '', amazon_url: '', purchase_link: '',
-  date_found: '', va_finder: '', date_purchased: '', order_number: '',
-  quantity: '', buy_cost: '', arrived_at_prep: '', date_sent_to_amazon: '',
-  amazon_tracking_number: '', ungated: false, ungating_quantity: '',
-  total_bought: '', replenish: false, amazon_fee: '', buy_box: '',
+  date_found: '', va_finder: '', date_purchased: '',
+  quantity: '', buy_cost: '', ungated: false, ungating_quantity: '',
+  replenish: false, amazon_fee: '', buy_box: '',
   estimated_sales: '', num_sellers: '', notes: '',
   // calculated — shown read-only
   money_spent: 0, total_cost: 0, profit: 0, profit_margin: 0, roi: 0,
@@ -484,8 +483,6 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
     ...initial,
     date_found: toFormDate(initial?.date_found),
     date_purchased: toFormDate(initial?.date_purchased),
-    arrived_at_prep: toFormDate(initial?.arrived_at_prep),
-    date_sent_to_amazon: toFormDate(initial?.date_sent_to_amazon),
   }))
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
@@ -550,13 +547,10 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
       amazon_fee: Number(form.amazon_fee) || 0,
       buy_box: Number(form.buy_box) || 0,
       ungating_quantity: Number(form.ungating_quantity) || 0,
-      total_bought: Number(form.total_bought) || 0,
       estimated_sales: Number(form.estimated_sales) || 0,
       num_sellers: Number(form.num_sellers) || 0,
       date_found: nd(form.date_found),
       date_purchased: nd(form.date_purchased),
-      arrived_at_prep: nd(form.arrived_at_prep),
-      date_sent_to_amazon: nd(form.date_sent_to_amazon),
     }
     try {
       await onSave(data)
@@ -705,18 +699,14 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
         <Field label="Purchase Link" k="purchase_link" span={2} />
       </Section>
 
+      {keepaFilled && (keepaFilled.num_fba_sellers != null || keepaFilled.fba_high != null || (keepaFilled.fba_history?.length > 1)) && (
+        <MarketAnalysis data={keepaFilled} />
+      )}
+
       <Section title="Purchase & Timeline">
         <Field label="Date Found" k="date_found" type="date" />
         <Field label="Date Purchased" k="date_purchased" type="date" />
-        <Field label="Order Number" k="order_number" />
-        <Field label="Arrived at Prep" k="arrived_at_prep" type="date" />
-        <Field label="Date Sent to Amazon" k="date_sent_to_amazon" type="date" />
-        <Field label="Amazon Tracking #" k="amazon_tracking_number" />
-      </Section>
-
-      <Section title="Inventory">
-        <Field label="Quantity Ordered" k="quantity" type="number" />
-        <Field label="Total Bought (lifetime)" k="total_bought" type="number" />
+        <Field label="Quantity" k="quantity" type="number" />
         <Field label="Ungating Quantity" k="ungating_quantity" type="number" />
         <div className="flex gap-6 col-span-2 mt-1">
           <Check label="Ungated" k="ungated" />
@@ -787,6 +777,121 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
         </button>
       </div>
     </form>
+  )
+}
+
+// ─── market analysis (shown after Keepa load) ────────────────────────────────
+
+function MiniSparkline({ data, valueKey = 'price', color = '#3b82f6', invert = false, id }) {
+  const W = 400, H = 56
+  if (!data || data.length < 2) return null
+  const vals = data.map(d => d[valueKey] ?? 0)
+  const min = Math.min(...vals)
+  const max = Math.max(...vals)
+  const range = max - min || 1
+  const pts = data.map((d, i) => {
+    const x = (i / (data.length - 1)) * W
+    const rawY = (vals[i] - min) / range
+    const y = invert ? rawY * H : (1 - rawY) * H
+    return { x: x.toFixed(1), y: y.toFixed(1) }
+  })
+  const lineStr = pts.map(p => `${p.x},${p.y}`).join(' ')
+  const areaStr = `M0,${H} ` + pts.map(p => `L${p.x},${p.y}`).join(' ') + ` L${W},${H} Z`
+  const gradId = `sg-${id || valueKey}`
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full rounded" style={{ height: 56 }} preserveAspectRatio="none">
+      <defs>
+        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity="0.25" />
+          <stop offset="100%" stopColor={color} stopOpacity="0.02" />
+        </linearGradient>
+      </defs>
+      <path d={areaStr} fill={`url(#${gradId})`} />
+      <polyline points={lineStr} fill="none" stroke={color} strokeWidth="1.5" />
+    </svg>
+  )
+}
+
+function MarketAnalysis({ data }) {
+  const hasPrices = data.fba_high != null || data.fbm_high != null
+  const fmtP = (v) => v != null ? fmtCurrency(v) : '—'
+  return (
+    <div>
+      <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 pb-1 border-b border-gray-100">
+        Market Analysis
+      </h3>
+      <div className="space-y-4">
+        {/* Seller counts */}
+        <div className="flex gap-8">
+          <div>
+            <p className="text-xs text-gray-500">FBA Sellers</p>
+            <p className="text-2xl font-bold text-blue-700 mt-0.5">{data.num_fba_sellers ?? '—'}</p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-500">FBM Sellers</p>
+            <p className="text-2xl font-bold text-gray-700 mt-0.5">{data.num_fbm_sellers ?? '—'}</p>
+          </div>
+          {data.median_price != null && (
+            <div>
+              <p className="text-xs text-gray-500">Overall Median</p>
+              <p className="text-2xl font-bold text-violet-700 mt-0.5">{fmtCurrency(data.median_price)}</p>
+            </div>
+          )}
+        </div>
+
+        {/* Price table */}
+        {hasPrices && (
+          <table className="text-xs w-full border border-gray-100 rounded overflow-hidden">
+            <thead>
+              <tr className="bg-gray-50 border-b border-gray-100">
+                <th className="px-3 py-2 text-left text-gray-400 font-medium w-20"></th>
+                <th className="px-3 py-2 text-center text-blue-700 font-semibold">FBA</th>
+                <th className="px-3 py-2 text-center text-gray-600 font-semibold">FBM</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                { label: 'Highest', fba: data.fba_high, fbm: data.fbm_high },
+                { label: 'Lowest',  fba: data.fba_low,  fbm: data.fbm_low },
+                { label: 'Median',  fba: data.fba_median, fbm: data.fbm_median, bold: true },
+              ].map(row => (
+                <tr key={row.label} className="border-t border-gray-100">
+                  <td className="px-3 py-2 text-gray-500 font-medium">{row.label}</td>
+                  <td className={`px-3 py-2 text-center ${row.bold ? 'font-bold text-blue-700' : 'font-semibold text-gray-800'}`}>{fmtP(row.fba)}</td>
+                  <td className={`px-3 py-2 text-center ${row.bold ? 'font-bold text-violet-700' : 'font-semibold text-gray-800'}`}>{fmtP(row.fbm)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+
+        {/* Charts */}
+        {data.fba_history?.length > 1 && (
+          <div>
+            <p className="text-xs text-gray-500 mb-1">FBA Buy Box Price History</p>
+            <div className="bg-gray-50 rounded-lg p-2">
+              <MiniSparkline data={data.fba_history} valueKey="price" color="#3b82f6" id="fba" />
+              <div className="flex justify-between text-xs text-gray-400 mt-1 px-1">
+                <span>{data.fba_history[0]?.date?.slice(0, 10)}</span>
+                <span>{data.fba_history[data.fba_history.length - 1]?.date?.slice(0, 10)}</span>
+              </div>
+            </div>
+          </div>
+        )}
+        {data.bsr_history?.length > 1 && (
+          <div>
+            <p className="text-xs text-gray-500 mb-1">BSR History <span className="text-gray-400">(lower is better)</span></p>
+            <div className="bg-gray-50 rounded-lg p-2">
+              <MiniSparkline data={data.bsr_history} valueKey="value" color="#8b5cf6" invert id="bsr" />
+              <div className="flex justify-between text-xs text-gray-400 mt-1 px-1">
+                <span>{data.bsr_history[0]?.date?.slice(0, 10)}</span>
+                <span>{data.bsr_history[data.bsr_history.length - 1]?.date?.slice(0, 10)}</span>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
 

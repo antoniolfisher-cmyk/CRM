@@ -1598,7 +1598,7 @@ def keepa_status_endpoint(current: dict = Depends(require_auth)):
 
 @app.get("/api/keepa/lookup/{asin}")
 async def keepa_lookup(asin: str, current: dict = Depends(require_auth)):
-    """Fetch Keepa data for a single ASIN without requiring a saved product."""
+    """Fetch rich Keepa data for a single ASIN — FBA/FBM prices, seller counts, price history."""
     api_key = os.getenv("KEEPA_API_KEY", "").strip()
     if not api_key:
         raise HTTPException(503, "KEEPA_API_KEY is not configured")
@@ -1607,14 +1607,24 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth)):
     if len(asin) != 10:
         raise HTTPException(400, "ASIN must be 10 characters")
 
+    # Add offers=20 to get FBA vs FBM seller breakdown
     url = (
         f"https://api.keepa.com/product"
-        f"?key={api_key}&domain={_KEEPA_DOMAIN}&asin={asin}&stats=90"
+        f"?key={api_key}&domain={_KEEPA_DOMAIN}&asin={asin}&stats=90&offers=20"
     )
     import httpx as _httpx
     async with _httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(url)
 
+    if resp.status_code == 429:
+        try:
+            kd = resp.json()
+            refill_secs = kd.get("refillIn", 0)
+            raise HTTPException(429, f"Keepa token limit reached. Refills in ~{round(refill_secs/3600,1)}h.")
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(429, "Keepa token limit reached.")
     if resp.status_code != 200:
         raise HTTPException(502, f"Keepa returned {resp.status_code}")
 
@@ -1628,33 +1638,121 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth)):
 
     kp = products_data[0]
     stats = kp.get("stats") or {}
-    cur = stats.get("current") or []
+    cur    = stats.get("current") or []
+    min90  = stats.get("min90")   or []
+    max90  = stats.get("max90")   or []
+    avg90  = stats.get("avg90")   or []
 
-    def _rank(idx):
-        if idx < len(cur) and cur[idx] is not None and cur[idx] > 0:
-            return int(cur[idx])
+    def _p(idx, arr):
+        """Price cents → dollars, or None."""
+        if idx < len(arr) and arr[idx] is not None and arr[idx] > 0:
+            return round(arr[idx] / 100, 2)
         return None
 
+    # Category
     cat_tree = kp.get("categoryTree") or []
-    category = ""
-    if cat_tree:
-        category = (cat_tree[-1].get("name") or cat_tree[0].get("name") or "").strip()
+    category = (cat_tree[-1].get("name") or cat_tree[0].get("name") or "").strip() if cat_tree else ""
 
     buy_box_price = _keepa_buy_box(kp)
     fba_fulfillment, referral_fee, amazon_fee = _keepa_fba_fees(kp, buy_box_price)
 
+    # ── FBA / FBM offer breakdown ──────────────────────────────────────────────
+    offers = kp.get("offers") or []
+    fba_prices = []
+    fbm_prices = []
+    for o in offers:
+        if o.get("condition") != 1:  # 1 = New
+            continue
+        price_cents = o.get("price") or 0
+        if price_cents <= 0:
+            continue
+        price_dollars = round(price_cents / 100, 2)
+        if o.get("isFBA"):
+            fba_prices.append(price_dollars)
+        else:
+            fbm_prices.append(price_dollars)
+
+    def _range(prices):
+        if not prices:
+            return None, None, None
+        s = sorted(prices)
+        mid = len(s) // 2
+        median = (s[mid - 1] + s[mid]) / 2 if len(s) % 2 == 0 else s[mid]
+        return round(min(s), 2), round(max(s), 2), round(median, 2)
+
+    fba_low, fba_high, fba_median = _range(fba_prices)
+    fbm_low, fbm_high, fbm_median = _range(fbm_prices)
+
+    # Fall back to stats arrays when no offer data
+    if fba_low is None:
+        fba_low  = _p(7, min90) or _p(11, min90)
+        fba_high = _p(7, max90) or _p(11, max90)
+        fba_median = _p(7, avg90) or _p(11, avg90)
+    if fbm_low is None:
+        fbm_low  = _p(12, min90)
+        fbm_high = _p(12, max90)
+        fbm_median = _p(12, avg90)
+
+    # Overall median from avg90 buy box
+    overall_median = _p(7, avg90) or _p(1, avg90)
+
+    # ── Price history chart (csv[7] = FBA buy box, csv[12] = FBM) ────────────
+    _KEEPA_EPOCH = datetime(2011, 1, 1)
+
+    def _csv_to_points(csv_arr, max_pts=50):
+        points = []
+        if not csv_arr:
+            return points
+        i = 0
+        while i + 1 < len(csv_arr):
+            t, p = csv_arr[i], csv_arr[i + 1]
+            if t is not None and p is not None and p > 0:
+                dt = _KEEPA_EPOCH + timedelta(minutes=int(t))
+                points.append({"date": dt.strftime("%b %-d"), "price": round(p / 100, 2)})
+            i += 2
+        return points[-max_pts:]
+
+    csv = kp.get("csv") or []
+    fba_history = _csv_to_points(csv[7]  if len(csv) > 7  else [])
+    fbm_history = _csv_to_points(csv[12] if len(csv) > 12 else [])
+    # BSR history
+    bsr_history_raw = csv[3] if len(csv) > 3 else []
+    bsr_points = []
+    i = 0
+    while i + 1 < len(bsr_history_raw):
+        t, r = bsr_history_raw[i], bsr_history_raw[i + 1]
+        if t is not None and r is not None and r > 0:
+            dt = _KEEPA_EPOCH + timedelta(minutes=int(t))
+            bsr_points.append({"date": dt.strftime("%b %-d"), "rank": int(r)})
+        i += 2
+    bsr_history = bsr_points[-50:]
+
     return {
-        "asin": asin,
-        "title": (kp.get("title") or "").strip(),
-        "buy_box": buy_box_price,
-        "bsr": _rank(3),
-        "category": category,
-        "num_sellers": kp.get("newCount"),
-        "estimated_sales": kp.get("monthlySold"),
+        "asin":              asin,
+        "title":             (kp.get("title") or "").strip(),
+        "buy_box":           buy_box_price,
+        "bsr":               _p(3, cur) and int(_p(3, cur)) if _p(3, cur) else None,
+        "category":          category,
+        "num_sellers":       kp.get("newCount"),
+        "num_fba_sellers":   len(fba_prices) or None,
+        "num_fbm_sellers":   len(fbm_prices) or None,
+        "estimated_sales":   kp.get("monthlySold"),
         "fba_fulfillment_fee": fba_fulfillment,
-        "referral_fee": referral_fee,
-        "amazon_fee": amazon_fee,
-        "tokens_left": data.get("tokensLeft"),
+        "referral_fee":      referral_fee,
+        "amazon_fee":        amazon_fee,
+        "tokens_left":       data.get("tokensLeft"),
+        # Price ranges
+        "fba_low":           fba_low,
+        "fba_high":          fba_high,
+        "fba_median":        fba_median,
+        "fbm_low":           fbm_low,
+        "fbm_high":          fbm_high,
+        "fbm_median":        fbm_median,
+        "median_price":      overall_median,
+        # Chart data
+        "fba_history":       fba_history,
+        "fbm_history":       fbm_history,
+        "bsr_history":       bsr_history,
     }
 
 
