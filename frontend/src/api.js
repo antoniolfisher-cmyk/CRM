@@ -29,6 +29,7 @@ async function req(method, path, body) {
 export const api = {
   // Dashboard
   getDashboard: () => req('GET', '/dashboard'),
+  getRepricerStats: () => req('GET', '/dashboard/repricer-stats'),
 
   // Accounts
   getAccounts: (params = {}) => {

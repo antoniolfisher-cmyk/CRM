@@ -13,6 +13,7 @@ export default function FollowUps() {
   const [searchParams] = useSearchParams()
   const [followUps, setFollowUps] = useState([])
   const [accounts, setAccounts] = useState([])
+  const [dashStats, setDashStats] = useState(null)
   const [loading, setLoading] = useState(true)
   const [filterStatus, setFilterStatus] = useState(searchParams.get('status') || '')
   const [filterType, setFilterType] = useState('')
@@ -36,6 +37,7 @@ export default function FollowUps() {
   useEffect(() => {
     load()
     api.getAccounts().then(setAccounts)
+    api.getDashboard().then(setDashStats)
   }, [load])
 
   const handleComplete = async (fu) => {
@@ -98,6 +100,38 @@ export default function FollowUps() {
           <PlusIcon /> Schedule Follow-Up
         </button>
       </div>
+
+      {/* Quick-view tiles */}
+      {dashStats && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="card">
+            <div className="px-5 py-3 border-b border-gray-100">
+              <h2 className="font-semibold text-gray-800 text-sm">Upcoming Follow-Ups</h2>
+            </div>
+            <div className="divide-y divide-gray-50">
+              {dashStats.upcoming_follow_ups.length === 0 && (
+                <p className="px-5 py-6 text-center text-gray-400 text-sm">No upcoming follow-ups</p>
+              )}
+              {dashStats.upcoming_follow_ups.slice(0, 5).map((fu) => (
+                <QuickRow key={fu.id} fu={fu} />
+              ))}
+            </div>
+          </div>
+          <div className="card">
+            <div className="px-5 py-3 border-b border-gray-100">
+              <h2 className="font-semibold text-gray-800 text-sm">Recently Completed</h2>
+            </div>
+            <div className="divide-y divide-gray-50">
+              {dashStats.recent_follow_ups.length === 0 && (
+                <p className="px-5 py-6 text-center text-gray-400 text-sm">No completed follow-ups</p>
+              )}
+              {dashStats.recent_follow_ups.slice(0, 5).map((fu) => (
+                <QuickRow key={fu.id} fu={fu} completed />
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="flex flex-wrap gap-3 items-center">
@@ -172,6 +206,33 @@ export default function FollowUps() {
           />
         </Modal>
       )}
+    </div>
+  )
+}
+
+function QuickRow({ fu, completed }) {
+  const overdue = !completed && isOverdue(fu.due_date) && fu.status === 'pending'
+  return (
+    <div className="px-5 py-3 hover:bg-gray-50 transition-colors">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-gray-900 truncate">{fu.subject}</p>
+          <p className="text-xs text-gray-500 mt-0.5">
+            {fu.account?.name}
+            {fu.contact && ` · ${fu.contact.first_name} ${fu.contact.last_name}`}
+          </p>
+        </div>
+        <div className="shrink-0 text-right">
+          <StatusBadge value={fu.follow_up_type} />
+          <p className={`text-xs mt-1 ${overdue ? 'text-red-600 font-medium' : 'text-gray-400'}`}>
+            {completed
+              ? `Done ${formatDate(fu.completed_date)}`
+              : overdue
+              ? `Overdue · ${formatDate(fu.due_date)}`
+              : formatDate(fu.due_date)}
+          </p>
+        </div>
+      </div>
     </div>
   )
 }

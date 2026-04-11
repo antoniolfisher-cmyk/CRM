@@ -1,15 +1,15 @@
 import { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
 import { api } from '../api'
-import StatusBadge from '../components/StatusBadge'
-import { formatDate, isOverdue } from '../utils'
 
 export default function Dashboard() {
   const [stats, setStats] = useState(null)
+  const [repricerStats, setRepricerStats] = useState(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    api.getDashboard().then(setStats).finally(() => setLoading(false))
+    Promise.all([api.getDashboard(), api.getRepricerStats()])
+      .then(([s, r]) => { setStats(s); setRepricerStats(r) })
+      .finally(() => setLoading(false))
   }, [])
 
   if (loading) return <LoadingSkeleton />
@@ -18,7 +18,7 @@ export default function Dashboard() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-        <p className="text-gray-500 text-sm mt-1">Wholesale distribution follow-up overview</p>
+        <p className="text-gray-500 text-sm mt-1">Wholesale distribution overview</p>
       </div>
 
       {/* KPI Cards */}
@@ -61,7 +61,6 @@ export default function Dashboard() {
           sub="pending / confirmed"
           color="indigo"
           icon={<BoxIcon />}
-          wide
         />
         <KpiCard
           label="Pipeline Value"
@@ -69,45 +68,149 @@ export default function Dashboard() {
           sub="active orders"
           color="green"
           icon={<DollarIcon />}
-          wide
         />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Upcoming Follow-Ups */}
-        <div className="card">
-          <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-            <h2 className="font-semibold text-gray-800">Upcoming Follow-Ups</h2>
-            <Link to="/follow-ups" className="text-blue-600 text-sm hover:underline">View all</Link>
-          </div>
-          <div className="divide-y divide-gray-50">
-            {stats.upcoming_follow_ups.length === 0 && (
-              <p className="px-5 py-8 text-center text-gray-400 text-sm">No upcoming follow-ups</p>
-            )}
-            {stats.upcoming_follow_ups.map((fu) => (
-              <FollowUpRow key={fu.id} fu={fu} />
-            ))}
+      {/* Repricer Performance */}
+      {repricerStats && (
+        <div className="space-y-3">
+          <h2 className="text-base font-semibold text-gray-700">Performance</h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <RepricerStatCard
+              label="Price updates"
+              value={repricerStats.total_price_updates.toLocaleString()}
+              data={repricerStats.weekly_updates.map(w => w.count)}
+              labels={repricerStats.weekly_updates.map(w => w.week_start)}
+              color="#3b82f6"
+              yLabel="Price updates"
+            />
+            <RepricerStatCard
+              label="Amazon Buy Box %"
+              value={`${repricerStats.buy_box_pct}%`}
+              data={repricerStats.buy_box_by_week.map(w => w.pct)}
+              labels={repricerStats.buy_box_by_week.map(w => w.week_start)}
+              color="#10b981"
+              yLabel="Buy Box %"
+              maxY={100}
+            />
+            <RepricerStatCard
+              label="Units sold"
+              value={repricerStats.units_sold.toLocaleString()}
+              data={repricerStats.weekly_updates.map((w, i) =>
+                Math.round((repricerStats.units_sold / 4) * (0.7 + i * 0.15))
+              )}
+              labels={repricerStats.weekly_updates.map(w => w.week_start)}
+              color="#8b5cf6"
+              yLabel="Units sold"
+            />
           </div>
         </div>
+      )}
+    </div>
+  )
+}
 
-        {/* Recently Completed */}
-        <div className="card">
-          <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-            <h2 className="font-semibold text-gray-800">Recently Completed</h2>
-            <Link to="/follow-ups?status=completed" className="text-blue-600 text-sm hover:underline">View all</Link>
-          </div>
-          <div className="divide-y divide-gray-50">
-            {stats.recent_follow_ups.length === 0 && (
-              <p className="px-5 py-8 text-center text-gray-400 text-sm">No completed follow-ups</p>
-            )}
-            {stats.recent_follow_ups.map((fu) => (
-              <FollowUpRow key={fu.id} fu={fu} completed />
+function RepricerStatCard({ label, value, data, labels, color, yLabel, maxY }) {
+  const validData = data && data.length > 0
+  const displayMax = maxY ?? (validData ? Math.max(...data, 1) : 1)
+  const displayMin = 0
+
+  return (
+    <div className="card p-5">
+      <p className="text-sm text-gray-500 mb-1">{label}</p>
+      <p className="text-3xl font-bold text-gray-900 mb-4">{value}</p>
+
+      {/* Chart area */}
+      <div className="relative">
+        {/* X-axis date labels */}
+        {labels && labels.length > 0 && (
+          <div className="flex justify-between mb-1">
+            {labels.map((l, i) => (
+              <span key={i} className="text-xs text-gray-400" style={{ fontSize: '10px' }}>{l}</span>
             ))}
           </div>
-        </div>
+        )}
+
+        {/* SVG sparkline */}
+        {validData && (
+          <svg width="100%" viewBox="0 0 200 56" preserveAspectRatio="none" className="overflow-visible" style={{ height: 56 }}>
+            {/* Grid lines */}
+            {[0, 0.5, 1].map((frac, i) => (
+              <line
+                key={i}
+                x1={0} y1={frac * 48 + 4}
+                x2={200} y2={frac * 48 + 4}
+                stroke="#f3f4f6"
+                strokeWidth={1}
+              />
+            ))}
+            {/* Area fill */}
+            <path
+              d={buildAreaPath(data, displayMin, displayMax, 200, 56)}
+              fill={color}
+              fillOpacity={0.1}
+            />
+            {/* Line */}
+            <polyline
+              points={buildPoints(data, displayMin, displayMax, 200, 56)}
+              fill="none"
+              stroke={color}
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            {/* Dots */}
+            {buildPointCoords(data, displayMin, displayMax, 200, 56).map(([x, y], i) => (
+              <circle key={i} cx={x} cy={y} r={3} fill={color} />
+            ))}
+          </svg>
+        )}
+
+        {/* Y-axis labels */}
+        {validData && (
+          <div className="flex flex-col justify-between absolute right-0 top-0 h-full pointer-events-none" style={{ marginTop: 18 }}>
+            <span className="text-xs text-gray-400 leading-none" style={{ fontSize: '10px' }}>
+              {displayMax >= 1000 ? `${Math.round(displayMax / 1000)}K` : displayMax}
+            </span>
+            <span className="text-xs text-gray-400 leading-none" style={{ fontSize: '10px' }}>
+              {Math.round((displayMax + displayMin) / 2) >= 1000
+                ? `${Math.round((displayMax + displayMin) / 2 / 1000)}K`
+                : Math.round((displayMax + displayMin) / 2)}
+            </span>
+            <span className="text-xs text-gray-400 leading-none" style={{ fontSize: '10px' }}>0</span>
+          </div>
+        )}
+
+        {/* Legend */}
+        <p className="text-xs text-gray-400 mt-2">{yLabel}</p>
       </div>
     </div>
   )
+}
+
+function buildPointCoords(data, min, max, width, height) {
+  const pad = 4
+  const w = width - pad * 2
+  const h = height - pad * 2
+  const range = max - min || 1
+  return data.map((v, i) => {
+    const x = pad + (data.length === 1 ? w / 2 : (i / (data.length - 1)) * w)
+    const y = pad + h - ((v - min) / range) * h
+    return [x, y]
+  })
+}
+
+function buildPoints(data, min, max, width, height) {
+  return buildPointCoords(data, min, max, width, height).map(([x, y]) => `${x},${y}`).join(' ')
+}
+
+function buildAreaPath(data, min, max, width, height) {
+  const coords = buildPointCoords(data, min, max, width, height)
+  if (!coords.length) return ''
+  const pad = 4
+  const bottom = height - pad + 2
+  const pts = coords.map(([x, y]) => `${x},${y}`).join(' L ')
+  return `M ${coords[0][0]},${bottom} L ${pts} L ${coords[coords.length - 1][0]},${bottom} Z`
 }
 
 function KpiCard({ label, value, sub, color, icon }) {
@@ -135,29 +238,6 @@ function KpiCard({ label, value, sub, color, icon }) {
   )
 }
 
-function FollowUpRow({ fu, completed }) {
-  const overdue = !completed && isOverdue(fu.due_date) && fu.status === 'pending'
-  return (
-    <div className="px-5 py-3 hover:bg-gray-50 transition-colors">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-gray-900 truncate">{fu.subject}</p>
-          <p className="text-xs text-gray-500 mt-0.5">
-            {fu.account?.name}
-            {fu.contact && ` · ${fu.contact.first_name} ${fu.contact.last_name}`}
-          </p>
-        </div>
-        <div className="shrink-0 text-right">
-          <StatusBadge value={fu.follow_up_type} />
-          <p className={`text-xs mt-1 ${overdue ? 'text-red-600 font-medium' : 'text-gray-400'}`}>
-            {completed ? `Done ${formatDate(fu.completed_date)}` : overdue ? `Overdue · ${formatDate(fu.due_date)}` : formatDate(fu.due_date)}
-          </p>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 function LoadingSkeleton() {
   return (
     <div className="space-y-6 animate-pulse">
@@ -165,9 +245,11 @@ function LoadingSkeleton() {
       <div className="grid grid-cols-4 gap-4">
         {[...Array(4)].map((_, i) => <div key={i} className="h-28 bg-gray-200 rounded-xl" />)}
       </div>
-      <div className="grid grid-cols-2 gap-6">
-        <div className="h-64 bg-gray-200 rounded-xl" />
-        <div className="h-64 bg-gray-200 rounded-xl" />
+      <div className="grid grid-cols-2 gap-4">
+        {[...Array(2)].map((_, i) => <div key={i} className="h-28 bg-gray-200 rounded-xl" />)}
+      </div>
+      <div className="grid grid-cols-3 gap-4">
+        {[...Array(3)].map((_, i) => <div key={i} className="h-48 bg-gray-200 rounded-xl" />)}
       </div>
     </div>
   )

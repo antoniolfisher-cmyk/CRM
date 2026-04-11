@@ -532,6 +532,53 @@ def get_dashboard(db: Session = Depends(get_db), _ = Depends(require_auth)):
     )
 
 
+@app.get("/api/dashboard/repricer-stats")
+def get_repricer_stats(db: Session = Depends(get_db), _ = Depends(require_auth)):
+    now = datetime.utcnow()
+
+    # Last 4 weeks of price update counts (based on aria_suggested_at)
+    weekly_updates = []
+    for i in range(3, -1, -1):
+        week_start = now - timedelta(weeks=i + 1)
+        week_end   = now - timedelta(weeks=i)
+        count = db.query(func.count(models.Product.id)).filter(
+            models.Product.aria_suggested_at >= week_start,
+            models.Product.aria_suggested_at <  week_end,
+        ).scalar() or 0
+        weekly_updates.append({"week_start": week_start.strftime("%b %-d"), "count": count})
+
+    # All-time total price updates
+    total_price_updates = db.query(func.count(models.Product.id)).filter(
+        models.Product.aria_suggested_price.isnot(None)
+    ).scalar() or 0
+
+    # Buy box % — approved products where aria price <= buy_box (we're competitive)
+    priced = db.query(models.Product).filter(
+        models.Product.status == "approved",
+        models.Product.aria_suggested_price.isnot(None),
+        models.Product.buy_box.isnot(None),
+        models.Product.buy_box > 0,
+    ).all()
+    competitive = sum(1 for p in priced if p.aria_suggested_price <= p.buy_box)
+    buy_box_pct = round(competitive / len(priced) * 100, 1) if priced else 0.0
+
+    # Weekly buy box % (4 weeks — uses current snapshot for all weeks since we don't store history)
+    buy_box_by_week = [{"week_start": w["week_start"], "pct": buy_box_pct} for w in weekly_updates]
+
+    # Units sold — sum of Keepa estimated_sales for approved products
+    units_sold = int(db.query(func.sum(models.Product.estimated_sales)).filter(
+        models.Product.status == "approved"
+    ).scalar() or 0)
+
+    return {
+        "weekly_updates": weekly_updates,
+        "total_price_updates": total_price_updates,
+        "buy_box_pct": buy_box_pct,
+        "buy_box_by_week": buy_box_by_week,
+        "units_sold": units_sold,
+    }
+
+
 # ─── Accounts ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/accounts", response_model=List[schemas.AccountSummary])
