@@ -533,6 +533,106 @@ def get_dashboard(db: Session = Depends(get_db), _ = Depends(require_auth)):
     )
 
 
+@app.get("/api/dashboard/amazon-live")
+async def get_dashboard_amazon_live(db: Session = Depends(get_db), _ = Depends(require_auth)):
+    """
+    Real-time Amazon FBA inventory snapshot for the Dashboard.
+    Hits Amazon SP-API directly; returns 503 if not configured.
+    """
+    if not _amazon_sp_configured():
+        raise HTTPException(503, "Amazon SP-API credentials are not configured")
+
+    import httpx as _httpx
+    access_token = await _get_amazon_access_token()
+
+    items = []
+    next_token = None
+    async with _httpx.AsyncClient(timeout=30) as client:
+        while True:
+            params = {
+                "granularityType": "Marketplace",
+                "granularityId":   _AMAZON_MKT_ID,
+                "marketplaceIds":  _AMAZON_MKT_ID,
+                "details":         "true",
+            }
+            if next_token:
+                params["nextToken"] = next_token
+
+            resp = await client.get(
+                f"{_AMAZON_SP_BASE}/fba/inventory/v1/summaries",
+                params=params,
+                headers={"x-amz-access-token": access_token},
+            )
+            if resp.status_code == 403:
+                raise HTTPException(403, "Amazon SP-API access denied — check Seller Central permissions include FBA Inventory")
+            if resp.status_code != 200:
+                raise HTTPException(502, f"Amazon SP-API error {resp.status_code}: {resp.text[:300]}")
+
+            body = resp.json().get("payload", {})
+            for s in body.get("inventorySummaries", []):
+                details = s.get("inventoryDetails") or {}
+                fulfillable = details.get("fulfillableQuantity") or 0
+                inbound_shipped = details.get("inboundShippedQuantity") or 0
+                inbound_receiving = details.get("inboundReceivingQuantity") or 0
+                inbound_working = details.get("inboundWorkingQuantity") or 0
+                reserved = (details.get("reservedQuantity") or {})
+                reserved_qty = (
+                    (reserved.get("pendingCustomerOrderQuantity") or 0)
+                    + (reserved.get("pendingTransshipmentQuantity") or 0)
+                    + (reserved.get("fcProcessingQuantity") or 0)
+                )
+                total = fulfillable + inbound_shipped + inbound_receiving + inbound_working
+                asin = (s.get("asin") or "").upper()
+                items.append({
+                    "asin":              asin,
+                    "product_name":      s.get("productName") or s.get("sellerSku") or asin,
+                    "seller_sku":        s.get("sellerSku", ""),
+                    "fulfillable":       fulfillable,
+                    "inbound":           inbound_shipped + inbound_receiving + inbound_working,
+                    "reserved":          reserved_qty,
+                    "total":             total,
+                })
+
+            next_token = body.get("nextToken")
+            if not next_token:
+                break
+
+    total_skus = len(items)
+    total_fulfillable = sum(i["fulfillable"] for i in items)
+    total_inbound = sum(i["inbound"] for i in items)
+    total_reserved = sum(i["reserved"] for i in items)
+    total_units = sum(i["total"] for i in items)
+
+    # Top 10 SKUs by total quantity
+    top_items = sorted(items, key=lambda x: x["total"], reverse=True)[:10]
+
+    # Pull buy-box stats from DB for approved products
+    approved_products = db.query(models.Product).filter(
+        models.Product.status == "approved"
+    ).all()
+    approved_with_bb = [p for p in approved_products if p.buy_box and p.buy_box > 0]
+    competitive = sum(
+        1 for p in approved_with_bb
+        if p.aria_suggested_price and p.aria_suggested_price <= p.buy_box
+    )
+    buy_box_pct = round(competitive / len(approved_with_bb) * 100, 1) if approved_with_bb else 0.0
+
+    from datetime import timezone
+    fetched_at = datetime.now(timezone.utc).isoformat()
+
+    return {
+        "fetched_at":        fetched_at,
+        "total_skus":        total_skus,
+        "total_units":       total_units,
+        "total_fulfillable": total_fulfillable,
+        "total_inbound":     total_inbound,
+        "total_reserved":    total_reserved,
+        "buy_box_pct":       buy_box_pct,
+        "approved_skus":     len(approved_products),
+        "top_items":         top_items,
+    }
+
+
 @app.get("/api/dashboard/repricer-stats")
 def get_repricer_stats(db: Session = Depends(get_db), _ = Depends(require_auth)):
     now = datetime.utcnow()
