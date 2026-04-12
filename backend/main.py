@@ -2368,7 +2368,7 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
             _base = _sp_base(_cred.is_sandbox)
             result = {}
 
-            async with _hx.AsyncClient(timeout=8) as _c:
+            async with _hx.AsyncClient(timeout=12) as _c:
                 # Offer counts + buy box
                 _or = await _c.get(
                     f"{_base}/products/pricing/v0/items/{asin}/offers",
@@ -2376,10 +2376,12 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
                     params={"MarketplaceId": _mkt, "ItemCondition": "New", "CustomerType": "Consumer"},
                 )
                 if _or.status_code == 200:
-                    _summary = _or.json().get("payload", {}).get("Summary", {})
+                    _payload_data = _or.json().get("payload", {})
+                    _summary      = _payload_data.get("Summary", {})
+                    _offers_list  = _payload_data.get("Offers", [])
                     _num_fba = _num_fbm = 0
                     for _o in (_summary.get("NumberOfOffers") or []):
-                        if (_o.get("condition") or "").lower() in ("new", "New"):
+                        if (_o.get("condition") or "").lower() == "new":
                             if _o.get("fulfillmentChannel") == "Amazon":
                                 _num_fba = _o.get("OfferCount", 0)
                             elif _o.get("fulfillmentChannel") == "Merchant":
@@ -2389,10 +2391,75 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
                         "num_fbm_sellers": _num_fbm,
                         "offers_available": True,
                     })
-                    _bb_item = (_summary.get("BuyBoxPrices") or [{}])[0]
-                    _bb_amt  = (_bb_item.get("LandedPrice") or _bb_item.get("ListingPrice") or {}).get("Amount")
-                    if _bb_amt:
-                        result["buy_box"] = float(_bb_amt)
+
+                    # Buy box: primary source = individual offer with IsBuyBoxWinner
+                    for _off in _offers_list:
+                        if _off.get("IsBuyBoxWinner"):
+                            _lp  = (_off.get("ListingPrice") or {}).get("Amount") or 0
+                            _shp = (_off.get("Shipping") or {}).get("Amount") or 0
+                            _bb  = float(_lp) + float(_shp)
+                            if _bb > 0:
+                                result["buy_box"] = round(_bb, 2)
+                            break
+
+                    # Buy box: fallback = BuyBoxPrices in Summary
+                    if "buy_box" not in result:
+                        for _bb_entry in (_summary.get("BuyBoxPrices") or []):
+                            if (_bb_entry.get("condition") or "").lower() == "new":
+                                _landed = (_bb_entry.get("LandedPrice") or _bb_entry.get("ListingPrice") or {})
+                                _amt    = float(_landed.get("Amount") or 0)
+                                if _amt > 0:
+                                    result["buy_box"] = round(_amt, 2)
+                                    break
+
+                    # Buy box: last fallback = LowestPrices in Summary
+                    if "buy_box" not in result:
+                        for _lp_entry in (_summary.get("LowestPrices") or []):
+                            if ((_lp_entry.get("condition") or "").lower() == "new"
+                                    and (_lp_entry.get("fulfillmentChannel") or "") == "Amazon"):
+                                _landed = (_lp_entry.get("LandedPrice") or _lp_entry.get("ListingPrice") or {})
+                                _amt    = float(_landed.get("Amount") or 0)
+                                if _amt > 0:
+                                    result["buy_box"] = round(_amt, 2)
+                                    break
+
+                # Amazon FBA fee via Fees API (uses buy box price as listing price)
+                if result.get("buy_box"):
+                    try:
+                        _fr = await _c.post(
+                            f"{_base}/products/fees/v0/items/{asin}/feesEstimate",
+                            headers={"x-amz-access-token": _tok, "Content-Type": "application/json"},
+                            json={
+                                "FeesEstimateRequest": {
+                                    "MarketplaceId":        _mkt,
+                                    "IsAmazonFulfilled":    True,
+                                    "PriceToEstimateFees": {
+                                        "ListingPrice": {"CurrencyCode": "USD", "Amount": result["buy_box"]},
+                                        "Shipping":     {"CurrencyCode": "USD", "Amount": 0},
+                                    },
+                                    "Identifier": asin,
+                                    "OptionalFulfillmentProgram": "FBA_CORE",
+                                }
+                            },
+                        )
+                        if _fr.status_code == 200:
+                            _fee_result = (_fr.json()
+                                           .get("payload", {})
+                                           .get("FeesEstimateResult", {}))
+                            _fee_est    = _fee_result.get("FeesEstimate", {})
+                            _total_fee  = float((_fee_est.get("TotalFeesEstimate") or {}).get("Amount") or 0)
+                            if _total_fee > 0:
+                                result["amazon_fee"] = round(_total_fee, 2)
+                                # Break out individual components if available
+                                for _comp in (_fee_est.get("FeeDetailList") or []):
+                                    _fname = (_comp.get("FeeType") or "").lower()
+                                    _famt  = float((_comp.get("FinalFee") or {}).get("Amount") or 0)
+                                    if "fulfillment" in _fname and _famt > 0:
+                                        result["fba_fulfillment_fee"] = round(_famt, 2)
+                                    elif "referral" in _fname and _famt > 0:
+                                        result["referral_fee"] = round(_famt, 2)
+                    except Exception:
+                        pass  # fee lookup is best-effort
 
                 # Product title + category from Catalog API
                 _cr = await _c.get(
