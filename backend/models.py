@@ -387,10 +387,27 @@ class UngateRequest(Base):
     history              = Column(Text, default="[]")
     amazon_case_id       = Column(String, nullable=True)
     notes                = Column(Text, nullable=True)
+    invoice_filename     = Column(String, nullable=True)   # attached invoice filename (no data)
     created_at           = Column(DateTime(timezone=True), server_default=func.now())
     updated_at           = Column(DateTime(timezone=True), onupdate=func.now())
 
     product = relationship("Product", back_populates="ungate_requests")
+    invoice = relationship("UngateInvoice", back_populates="request", uselist=False, cascade="all, delete-orphan")
+
+
+class UngateInvoice(Base):
+    """Invoice PDF/image stored as base64, linked to an ungating request."""
+    __tablename__ = "ungate_invoices"
+
+    id         = Column(Integer, primary_key=True)
+    req_id     = Column(Integer, ForeignKey("ungate_requests.id", ondelete="CASCADE"),
+                        nullable=False, unique=True, index=True)
+    filename   = Column(String, nullable=False)
+    data_b64   = Column(Text, nullable=False)    # base64-encoded file
+    size_bytes = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    request = relationship("UngateRequest", back_populates="invoice")
 
 
 # ─── Billing / Subscription Tracking ────────────────────────────────────────

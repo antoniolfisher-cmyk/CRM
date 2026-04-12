@@ -156,6 +156,8 @@ function RequestDetail({ request: r, onUpdate, onDelete }) {
   const [copied, setCopied]     = useState(false)
   const [submitModal, setSubmitModal] = useState(false)
   const [applyLink, setApplyLink] = useState(null)
+  const [invoiceFilename, setInvoiceFilename] = useState(r.invoice_filename || null)
+  const [invoiceUploading, setInvoiceUploading] = useState(false)
 
   // Fetch apply link from requirements when loaded
   useEffect(() => {
@@ -204,17 +206,35 @@ function RequestDetail({ request: r, onUpdate, onDelete }) {
     finally { setBusy(false) }
   }
 
-  const sendEmail = async (toEmail) => {
+  const sendEmail = async (toEmail, includeInvoice) => {
     const body   = latestDraft?.ai_response || rendered?.body || ''
     const subject = latestDraft?.subject || rendered?.subject || `Ungate Request — ${r.product_name} (${r.asin})`
     setBusy(true)
     try {
-      await api.sendUngateEmail(r.id, { to_email: toEmail, subject, body })
+      await api.sendUngateEmail(r.id, { to_email: toEmail, subject, body, include_invoice: includeInvoice })
       const updated = await api.getUngateRequest(r.id)
       onUpdate(updated)
       setSubmitModal(false)
     } catch (e) { alert(e.message) }
     finally { setBusy(false) }
+  }
+
+  const handleInvoiceUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setInvoiceUploading(true)
+    try {
+      const res = await api.uploadUngateInvoice(r.id, file)
+      setInvoiceFilename(res.filename)
+    } catch (e) { alert(`Invoice upload failed: ${e.message}`) }
+    finally { setInvoiceUploading(false); e.target.value = '' }
+  }
+
+  const handleInvoiceRemove = async () => {
+    try {
+      await api.deleteUngateInvoice(r.id)
+      setInvoiceFilename(null)
+    } catch (e) { alert(e.message) }
   }
 
   const markApproved = async () => {
@@ -332,6 +352,31 @@ function RequestDetail({ request: r, onUpdate, onDelete }) {
         </div>
       )}
 
+      {/* Invoice attachment */}
+      {r.status !== 'approved' && r.status !== 'rejected_final' && (
+        <div className="px-5 py-3 border-t border-gray-50 bg-gray-50/40">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Invoice</span>
+              {invoiceFilename ? (
+                <span className="flex items-center gap-1.5 text-xs bg-green-50 border border-green-200 text-green-800 rounded px-2 py-0.5">
+                  <span>📄</span>
+                  <span className="font-medium truncate max-w-[160px]">{invoiceFilename}</span>
+                  <button onClick={handleInvoiceRemove} className="text-red-400 hover:text-red-600 ml-0.5" title="Remove invoice">✕</button>
+                </span>
+              ) : (
+                <span className="text-xs text-gray-400">No invoice attached</span>
+              )}
+            </div>
+            <label className={`text-xs border rounded px-2 py-1 cursor-pointer transition-colors ${invoiceUploading ? 'opacity-50 cursor-not-allowed' : 'border-gray-200 text-gray-600 hover:bg-gray-100'}`}>
+              {invoiceUploading ? 'Uploading…' : invoiceFilename ? '↑ Replace' : '+ Attach Invoice'}
+              <input type="file" className="hidden" accept=".pdf,.jpg,.jpeg,.png,.gif" onChange={handleInvoiceUpload} disabled={invoiceUploading} />
+            </label>
+          </div>
+          <p className="text-xs text-gray-400 mt-1">Attach a PDF or image invoice to include as an email attachment when sending to Amazon.</p>
+        </div>
+      )}
+
       {/* Actions */}
       {r.status !== 'approved' && r.status !== 'rejected_final' && (
         <div className="px-5 py-4 border-t border-gray-100 space-y-2">
@@ -402,6 +447,7 @@ function RequestDetail({ request: r, onUpdate, onDelete }) {
           onClose={() => setSubmitModal(false)}
           onSend={sendEmail}
           busy={busy}
+          invoiceFilename={invoiceFilename}
         />
       )}
     </div>
@@ -798,8 +844,9 @@ function TemplateEditModal({ template: t, onClose, onSave }) {
 
 // ─── Submit Email Modal ───────────────────────────────────────────────────────
 
-function SubmitEmailModal({ onClose, onSend, busy }) {
-  const [toEmail, setToEmail] = useState('seller-performance@amazon.com')
+function SubmitEmailModal({ onClose, onSend, busy, invoiceFilename }) {
+  const [toEmail, setToEmail]         = useState('seller-performance@amazon.com')
+  const [includeInvoice, setInclude]  = useState(true)
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-md">
@@ -821,15 +868,32 @@ function SubmitEmailModal({ onClose, onSend, busy }) {
             />
             <p className="text-xs text-gray-400 mt-1">Common Amazon emails: seller-performance@amazon.com · brand-registry@amazon.com</p>
           </div>
+          {invoiceFilename ? (
+            <label className="flex items-center gap-3 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={includeInvoice}
+                onChange={e => setInclude(e.target.checked)}
+                className="w-4 h-4 rounded border-gray-300 text-blue-600"
+              />
+              <span className="text-sm text-gray-700">
+                Attach invoice: <span className="font-medium text-gray-900">{invoiceFilename}</span>
+              </span>
+            </label>
+          ) : (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded px-3 py-2">
+              No invoice attached — go back and attach one if Amazon requires it.
+            </p>
+          )}
         </div>
         <div className="px-5 py-4 border-t flex justify-end gap-2">
           <button onClick={onClose} className="btn-secondary">Cancel</button>
           <button
-            onClick={() => onSend(toEmail)}
+            onClick={() => onSend(toEmail, invoiceFilename ? includeInvoice : false)}
             disabled={!toEmail.trim() || busy}
             className="btn-primary disabled:opacity-50 flex items-center gap-1.5"
           >
-            {busy ? 'Sending…' : '✉ Send Email'}
+            {busy ? 'Sending…' : invoiceFilename && includeInvoice ? '✉ Send Email + Invoice' : '✉ Send Email'}
           </button>
         </div>
       </div>

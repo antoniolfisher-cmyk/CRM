@@ -321,12 +321,24 @@ async def _listings_api_fbm(seller_id: str, tenant_id, token: str, mkt_id: str, 
                 product_name = next((s.get("itemName") for s in summaries if s.get("itemName")), "")
                 seller_sku   = listing.get("sku", "")
 
-                # Quantity: prefer fulfillmentAvailability DEFAULT channel
+                # Quantity from fulfillmentAvailability — try DEFAULT/MERCHANT first, then any
                 qty = 0
                 for fa in (listing.get("fulfillmentAvailability") or []):
-                    if fa.get("fulfillmentChannelCode") in ("DEFAULT", "MERCHANT"):
+                    if fa.get("fulfillmentChannelCode") in ("DEFAULT", "MERCHANT", "MFN"):
                         qty = fa.get("quantity") or 0
-                        break
+                        if qty > 0:
+                            break
+                if qty == 0:
+                    # Fall back to any fulfillmentAvailability entry
+                    for fa in (listing.get("fulfillmentAvailability") or []):
+                        q = fa.get("quantity") or 0
+                        if q > 0:
+                            qty = q
+                            break
+                # If listing is ACTIVE but we still couldn't read qty, treat as 1
+                # (Amazon says it's live and buyable)
+                if qty == 0:
+                    qty = 1
 
                 if asin:
                     items.append({

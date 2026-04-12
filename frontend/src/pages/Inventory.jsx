@@ -641,7 +641,10 @@ export default function Inventory() {
             <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-purple-100 text-purple-700">Merchant</span>
           </div>
           <p className="text-2xl font-bold text-purple-700 mt-1">{fbmCount}</p>
-          <p className="text-xs text-gray-400 mt-0.5">active SKUs</p>
+          {fbmCount === 0
+            ? <p className="text-xs text-gray-400 mt-0.5">run Sync Now to populate</p>
+            : <p className="text-xs text-gray-400 mt-0.5">active SKUs</p>
+          }
           {channelFilter === 'FBM' && <p className="text-xs text-purple-500 mt-1">Filtered ✕ click to clear</p>}
         </div>
       </div>

@@ -181,6 +181,20 @@ export const api = {
     return req('GET', `/ungate/render-template/${num}${qs ? '?' + qs : ''}`)
   },
   sendUngateEmail: (id, data) => req('POST', `/ungate/requests/${id}/send-email`, data),
+  uploadUngateInvoice: (id, file) => {
+    const token = localStorage.getItem(TOKEN_KEY)
+    const fd = new FormData()
+    fd.append('file', file)
+    return fetch(`${BASE}/ungate/requests/${id}/invoice`, {
+      method: 'POST',
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: fd,
+    }).then(async r => {
+      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText) }
+      return r.json()
+    })
+  },
+  deleteUngateInvoice: (id) => req('DELETE', `/ungate/requests/${id}/invoice`),
 
   // Orders
   getOrders: (params = {}) => {
