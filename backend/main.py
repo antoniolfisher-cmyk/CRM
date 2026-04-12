@@ -2,7 +2,7 @@ import os
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, or_
 from typing import List, Optional
@@ -11,12 +11,13 @@ import models
 import schemas
 from database import engine, get_db
 from auth import (
-    LoginRequest, create_token, require_auth, require_admin,
-    hash_password, verify_password, ensure_bootstrap_admin,
+    LoginRequest, RegisterRequest, create_token, require_auth, require_admin,
+    hash_password, verify_password, ensure_bootstrap_admin, get_tenant_id,
 )
 from notifications import start_scheduler, stop_scheduler, send_daily_digests, send_email, build_digest_html, _smtp_configured
 import aura as aura_client
 import aria_repricer
+import stripe_billing
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -64,13 +65,11 @@ try:
             ]:
                 if _col not in _cols:
                     _conn.execute(text(f"ALTER TABLE products ADD COLUMN {_col} {_ddl}"))
-            # Backfill NULLs (SQLite path)
             _conn.execute(text("UPDATE products SET status = 'approved' WHERE status IS NULL"))
             _conn.commit()
     except Exception:
         pass
     # One-time migration: approve all pre-workflow sourcing products
-    # PostgreSQL sets DEFAULT value on existing rows (not NULL), so we track this separately
     try:
         with engine.connect() as _conn:
             _conn.execute(text(
@@ -89,7 +88,7 @@ try:
                 _conn.commit()
     except Exception:
         pass
-    # Repricer strategies — migrate old schema to new Aura-style columns
+    # Repricer strategies schema
     try:
         if "repricer_strategies" in _inspector.get_table_names():
             _cols = [c["name"] for c in _inspector.get_columns("repricer_strategies")]
@@ -107,10 +106,60 @@ try:
                 _conn.commit()
     except Exception:
         pass
+    # ── Multi-tenant migration: add tenant_id to all tables ─────────────────
+    try:
+        _TENANT_TABLES = [
+            "users", "accounts", "contacts", "follow_ups", "orders",
+            "products", "repricer_strategies", "ungate_templates",
+            "ungate_requests", "time_entries", "email_messages",
+        ]
+        for _table in _TENANT_TABLES:
+            try:
+                if _table not in _inspector.get_table_names():
+                    continue
+                _cols = [c["name"] for c in _inspector.get_columns(_table)]
+                if "tenant_id" not in _cols:
+                    with engine.connect() as _conn:
+                        _conn.execute(text(f"ALTER TABLE {_table} ADD COLUMN tenant_id INTEGER"))
+                        _conn.commit()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # Backfill tenant_id=1 on all existing rows (one-time)
+    try:
+        with engine.connect() as _conn:
+            _BF_FLAG = "backfill_tenant_id_v1"
+            _conn.execute(text("CREATE TABLE IF NOT EXISTS _migration_flags (name TEXT PRIMARY KEY)"))
+            _already = _conn.execute(text(
+                f"SELECT 1 FROM _migration_flags WHERE name = '{_BF_FLAG}'"
+            )).fetchone()
+            if not _already:
+                # Only if a tenant with id=1 will exist (bootstrap creates it)
+                for _t in ["users","accounts","contacts","follow_ups","orders",
+                           "products","repricer_strategies","ungate_templates",
+                           "ungate_requests","time_entries","email_messages"]:
+                    try:
+                        _conn.execute(text(
+                            f"UPDATE {_t} SET tenant_id = 1 WHERE tenant_id IS NULL"
+                        ))
+                    except Exception:
+                        pass
+                _conn.execute(text(f"INSERT OR IGNORE INTO _migration_flags VALUES ('{_BF_FLAG}')"))
+                _conn.commit()
+    except Exception:
+        pass
+    # order_number unique constraint relaxed for multi-tenant
+    try:
+        _cols = [c["name"] for c in _inspector.get_columns("orders")]
+        _idx  = [i["name"] for i in _inspector.get_indexes("orders")]
+        # SQLite: drop-and-recreate not needed; just leave the unique constraint
+    except Exception:
+        pass
 except Exception:
     pass
 
-# Create default admin on startup if no users exist
+# Create default admin + tenant on startup if none exist
 try:
     _startup_db = next(get_db())
     try:
@@ -120,7 +169,7 @@ try:
 except Exception as _e:
     print(f"Warning: bootstrap admin setup failed ({_e}), continuing anyway.")
 
-app = FastAPI(title="Delight Shoppe API", version="1.0.0")
+app = FastAPI(title="SellerSuite API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -150,12 +199,66 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Invalid username or password")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is disabled")
-    return {"access_token": create_token(user.username, user.role), "token_type": "bearer"}
+    tenant_id = user.tenant_id or 1
+    return {"access_token": create_token(user.username, user.role, tenant_id), "token_type": "bearer"}
+
+
+@app.post("/api/auth/register")
+def register(data: RegisterRequest, db: Session = Depends(get_db)):
+    """Create a new tenant workspace + admin user. Returns a JWT."""
+    # Validate slug uniqueness
+    slug = data.slug.lower().strip().replace(" ", "-")
+    if db.query(models.Tenant).filter_by(slug=slug).first():
+        raise HTTPException(400, "Workspace URL is already taken")
+    if db.query(models.User).filter_by(username=data.username).first():
+        raise HTTPException(400, "Username already exists")
+
+    # Create tenant
+    tenant = models.Tenant(
+        name=data.company_name,
+        slug=slug,
+        plan="starter",
+        is_active=True,
+    )
+    db.add(tenant)
+    db.flush()
+
+    # Create admin user
+    user = models.User(
+        tenant_id=tenant.id,
+        username=data.username,
+        email=data.email,
+        password_hash=hash_password(data.password),
+        role="admin",
+        is_active=True,
+    )
+    db.add(user)
+    db.commit()
+
+    token = create_token(user.username, user.role, tenant.id)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "tenant_id": tenant.id,
+        "slug": slug,
+        "needs_amazon_connect": True,
+    }
 
 
 @app.get("/api/auth/me")
-def me(payload: dict = Depends(require_auth)):
-    return {"username": payload["sub"], "role": payload["role"]}
+def me(payload: dict = Depends(require_auth), db: Session = Depends(get_db)):
+    tenant_id = payload.get("tenant_id", 1)
+    tenant    = db.query(models.Tenant).filter_by(id=tenant_id).first()
+    return {
+        "username":    payload["sub"],
+        "role":        payload["role"],
+        "tenant_id":   tenant_id,
+        "tenant_name": tenant.name if tenant else "Default",
+        "tenant_slug": tenant.slug if tenant else "default",
+        "plan":        tenant.plan if tenant else "starter",
+        "stripe_status": tenant.stripe_status if tenant else None,
+    }
+
 
 
 # ─── Debug (admin only) ───────────────────────────────────────────────────────
@@ -441,6 +544,89 @@ def me(payload: dict = Depends(require_auth)):
     return {"username": payload["sub"], "role": payload["role"]}
 
 
+# ─── Tenant info ─────────────────────────────────────────────────────────────
+
+@app.get("/api/tenant/me")
+def tenant_me(current: dict = Depends(require_auth), db: Session = Depends(get_db)):
+    tenant_id = current.get("tenant_id", 1)
+    tenant    = db.query(models.Tenant).filter_by(id=tenant_id).first()
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+    cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
+    users_count = db.query(func.count(models.User.id)).filter_by(tenant_id=tenant_id).scalar() or 0
+    return {
+        "id":                   tenant.id,
+        "name":                 tenant.name,
+        "slug":                 tenant.slug,
+        "plan":                 tenant.plan,
+        "is_active":            tenant.is_active,
+        "stripe_status":        tenant.stripe_status,
+        "stripe_customer_id":   tenant.stripe_customer_id,
+        "trial_ends_at":        tenant.trial_ends_at.isoformat() if tenant.trial_ends_at else None,
+        "amazon_connected":     bool(cred and cred.sp_refresh_token),
+        "users_count":          users_count,
+        "billing_enabled":      stripe_billing.billing_enabled(),
+        "plans":                stripe_billing.PLANS,
+    }
+
+
+@app.get("/api/tenant/users")
+def tenant_users(current: dict = Depends(require_admin), db: Session = Depends(get_db)):
+    tenant_id = current.get("tenant_id", 1)
+    users = db.query(models.User).filter_by(tenant_id=tenant_id).all()
+    return [{"id": u.id, "username": u.username, "email": u.email, "role": u.role,
+             "is_active": u.is_active, "created_at": u.created_at} for u in users]
+
+
+# ─── Billing (Stripe) ─────────────────────────────────────────────────────────
+
+@app.get("/api/billing/plans")
+def billing_plans():
+    return {
+        "enabled": stripe_billing.billing_enabled(),
+        "plans": stripe_billing.PLANS,
+    }
+
+
+@app.post("/api/billing/checkout")
+def billing_checkout(body: dict, current: dict = Depends(require_admin), db: Session = Depends(get_db)):
+    if not stripe_billing.billing_enabled():
+        raise HTTPException(503, "Billing is not configured")
+    plan = body.get("plan", "pro")
+    tenant_id = current.get("tenant_id", 1)
+    try:
+        url = stripe_billing.create_checkout_session(tenant_id, plan)
+        return {"url": url}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/billing/portal")
+def billing_portal(current: dict = Depends(require_admin), db: Session = Depends(get_db)):
+    if not stripe_billing.billing_enabled():
+        raise HTTPException(503, "Billing is not configured")
+    tenant_id = current.get("tenant_id", 1)
+    tenant    = db.query(models.Tenant).filter_by(id=tenant_id).first()
+    if not tenant or not tenant.stripe_customer_id:
+        raise HTTPException(400, "No Stripe customer found. Complete checkout first.")
+    try:
+        url = stripe_billing.create_billing_portal(tenant.stripe_customer_id)
+        return {"url": url}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/billing/webhook")
+async def billing_webhook(request: Request, db: Session = Depends(get_db)):
+    payload    = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+    try:
+        result = stripe_billing.handle_webhook(payload, sig_header, db)
+        return result
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 # ─── Ownership helpers ────────────────────────────────────────────────────────
 
 def _is_admin(current: dict) -> bool:
@@ -463,60 +649,59 @@ def _check_owner(record, current: dict):
 # ─── Dashboard ────────────────────────────────────────────────────────────────
 
 @app.get("/api/dashboard", response_model=schemas.DashboardStats)
-def get_dashboard(db: Session = Depends(get_db), _ = Depends(require_auth)):
+def get_dashboard(db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    tid = current.get("tenant_id", 1)
     now = datetime.utcnow()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    today_end = today_start + timedelta(days=1)
-    week_end = today_start + timedelta(days=7)
+    today_end   = today_start + timedelta(days=1)
+    week_end    = today_start + timedelta(days=7)
 
-    total_accounts = db.query(func.count(models.Account.id)).scalar()
-    active_accounts = db.query(func.count(models.Account.id)).filter(models.Account.status == "active").scalar()
-    prospect_accounts = db.query(func.count(models.Account.id)).filter(models.Account.status == "prospect").scalar()
+    def tq(model): return db.query(model).filter(model.tenant_id == tid)
 
-    follow_ups_due_today = db.query(func.count(models.FollowUp.id)).filter(
+    total_accounts    = tq(models.Account).count()
+    active_accounts   = tq(models.Account).filter(models.Account.status == "active").count()
+    prospect_accounts = tq(models.Account).filter(models.Account.status == "prospect").count()
+
+    follow_ups_due_today = tq(models.FollowUp).filter(
         models.FollowUp.status == "pending",
         models.FollowUp.due_date >= today_start,
         models.FollowUp.due_date < today_end,
-    ).scalar()
+    ).count()
 
-    follow_ups_overdue = db.query(func.count(models.FollowUp.id)).filter(
+    follow_ups_overdue = tq(models.FollowUp).filter(
         models.FollowUp.status == "pending",
         models.FollowUp.due_date < today_start,
-    ).scalar()
+    ).count()
 
-    follow_ups_this_week = db.query(func.count(models.FollowUp.id)).filter(
+    follow_ups_this_week = tq(models.FollowUp).filter(
         models.FollowUp.status == "pending",
         models.FollowUp.due_date >= today_start,
         models.FollowUp.due_date < week_end,
-    ).scalar()
+    ).count()
 
-    open_orders = db.query(func.count(models.Order.id)).filter(
+    open_orders = tq(models.Order).filter(
         models.Order.status.in_(["pending", "confirmed", "quote"])
-    ).scalar()
+    ).count()
 
     total_order_value = db.query(func.sum(models.Order.total)).filter(
+        models.Order.tenant_id == tid,
         models.Order.status.in_(["pending", "confirmed", "shipped"])
     ).scalar() or 0
 
     recent_follow_ups = (
-        db.query(models.FollowUp)
+        tq(models.FollowUp)
         .options(joinedload(models.FollowUp.account), joinedload(models.FollowUp.contact))
         .filter(models.FollowUp.status == "completed")
         .order_by(models.FollowUp.completed_date.desc())
-        .limit(5)
-        .all()
+        .limit(5).all()
     )
 
     upcoming_follow_ups = (
-        db.query(models.FollowUp)
+        tq(models.FollowUp)
         .options(joinedload(models.FollowUp.account), joinedload(models.FollowUp.contact))
-        .filter(
-            models.FollowUp.status == "pending",
-            models.FollowUp.due_date >= today_start,
-        )
+        .filter(models.FollowUp.status == "pending", models.FollowUp.due_date >= today_start)
         .order_by(models.FollowUp.due_date.asc())
-        .limit(10)
-        .all()
+        .limit(10).all()
     )
 
     return schemas.DashboardStats(
@@ -616,7 +801,8 @@ async def debug_amazon_orders_raw(_ = Depends(require_auth)):
 @app.get("/api/dashboard/amazon-sales")
 async def get_dashboard_amazon_sales(
     period: str = "today",
-    _ = Depends(require_auth),
+    current: dict = Depends(require_auth),
+    db: Session = Depends(get_db),
 ):
     """
     Real-time Amazon sales + payments from SP-API.
@@ -627,7 +813,9 @@ async def get_dashboard_amazon_sales(
     2. Open Orders: orders with open status, LastUpdatedAfter=30 days ago
        (separate call, no date restriction on creation)
     """
-    if not _amazon_sp_configured():
+    tenant_id = current.get("tenant_id", 1)
+    cred = _get_tenant_amazon_creds(tenant_id, db)
+    if not cred or not cred.sp_refresh_token:
         raise HTTPException(503, "Amazon SP-API credentials are not configured")
 
     from datetime import timezone
@@ -641,24 +829,21 @@ async def get_dashboard_amazon_sales(
     else:  # today
         period_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
-    created_after = period_start.strftime("%Y-%m-%dT%H:%M:%SZ")
-    # Open orders can be older — look back 60 days to catch everything unshipped
+    created_after     = period_start.strftime("%Y-%m-%dT%H:%M:%SZ")
     open_orders_since = (now - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    mkt_id            = cred.marketplace_id or _AMAZON_MKT_ID
 
-    access_token = await _get_amazon_access_token()
+    access_token = await _get_tenant_access_token(cred)
 
-    # ── 1. Sales: orders created in period (all statuses, repeated params) ──
-    # NOTE: Amazon requires OrderStatuses as REPEATED params, not comma-separated
     sales_params = [
-        ("MarketplaceIds", _AMAZON_MKT_ID),
+        ("MarketplaceIds", mkt_id),
         ("CreatedAfter", created_after),
     ]
-    # No status filter = Amazon returns all statuses; we filter in Python
     sales_orders = await _amazon_fetch_orders(access_token, sales_params)
 
     # ── 2. Open Orders: separate call, no creation-date restriction ─────────
     open_params = [
-        ("MarketplaceIds", _AMAZON_MKT_ID),
+        ("MarketplaceIds", mkt_id),
         ("LastUpdatedAfter", open_orders_since),
         ("OrderStatuses", "Pending"),
         ("OrderStatuses", "Unshipped"),
@@ -741,16 +926,19 @@ async def get_dashboard_amazon_sales(
 
 
 @app.get("/api/dashboard/amazon-live")
-async def get_dashboard_amazon_live(db: Session = Depends(get_db), _ = Depends(require_auth)):
+async def get_dashboard_amazon_live(db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     """
     Real-time Amazon FBA inventory snapshot for the Dashboard.
     Hits Amazon SP-API directly; returns 503 if not configured.
     """
-    if not _amazon_sp_configured():
+    tenant_id = current.get("tenant_id", 1)
+    cred = _get_tenant_amazon_creds(tenant_id, db)
+    if not cred or not cred.sp_refresh_token:
         raise HTTPException(503, "Amazon SP-API credentials are not configured")
 
     import httpx as _httpx
-    access_token = await _get_amazon_access_token()
+    access_token = await _get_tenant_access_token(cred)
+    mkt_id = cred.marketplace_id or _AMAZON_MKT_ID
 
     items = []
     next_token = None
@@ -758,15 +946,15 @@ async def get_dashboard_amazon_live(db: Session = Depends(get_db), _ = Depends(r
         while True:
             params = {
                 "granularityType": "Marketplace",
-                "granularityId":   _AMAZON_MKT_ID,
-                "marketplaceIds":  _AMAZON_MKT_ID,
+                "granularityId":   mkt_id,
+                "marketplaceIds":  mkt_id,
                 "details":         "true",
             }
             if next_token:
                 params["nextToken"] = next_token
 
             resp = await client.get(
-                f"{_AMAZON_SP_BASE}/fba/inventory/v1/summaries",
+                f"{_sp_base(cred.is_sandbox)}/fba/inventory/v1/summaries",
                 params=params,
                 headers={"x-amz-access-token": access_token},
             )
@@ -2552,13 +2740,19 @@ async def keepa_bulk_refresh(
 #   AMAZON_SELLER_ID          – Your Seller Central Seller ID
 #   AMAZON_MARKETPLACE_ID     – defaults to ATVPDKIKX0DER (US)
 
-_AMAZON_LWA_URL  = "https://api.amazon.com/auth/o2/token"
-_AMAZON_SP_BASE  = (
-    "https://sandbox.sellingpartnerapi-na.amazon.com"
-    if os.getenv("AMAZON_SP_SANDBOX", "").lower() in ("1", "true", "yes")
-    else "https://sellingpartnerapi-na.amazon.com"
-)
-_AMAZON_MKT_ID   = os.getenv("AMAZON_MARKETPLACE_ID", "ATVPDKIKX0DER")
+_AMAZON_LWA_URL = "https://api.amazon.com/auth/o2/token"
+
+
+def _sp_base(is_sandbox: bool = False) -> str:
+    return (
+        "https://sandbox.sellingpartnerapi-na.amazon.com"
+        if is_sandbox
+        else "https://sellingpartnerapi-na.amazon.com"
+    )
+
+# ── Legacy single-tenant helpers (kept for backwards compat) ─────────────────
+_AMAZON_SP_BASE = _sp_base(os.getenv("AMAZON_SP_SANDBOX", "").lower() in ("1", "true", "yes"))
+_AMAZON_MKT_ID  = os.getenv("AMAZON_MARKETPLACE_ID", "ATVPDKIKX0DER")
 
 
 def _amazon_sp_configured() -> bool:
@@ -2569,6 +2763,7 @@ def _amazon_sp_configured() -> bool:
 
 
 async def _get_amazon_access_token() -> str:
+    """Get access token using env-var credentials (legacy / single-tenant)."""
     import httpx as _httpx
     async with _httpx.AsyncClient(timeout=15) as client:
         resp_data = await client.post(
@@ -2585,32 +2780,218 @@ async def _get_amazon_access_token() -> str:
     return resp_data.json()["access_token"]
 
 
+# ── Multi-tenant Amazon helpers ───────────────────────────────────────────────
+
+def _get_tenant_amazon_creds(tenant_id: int, db: Session) -> models.AmazonCredential:
+    """
+    Return AmazonCredential for tenant. Falls back to env vars for tenant 1
+    when no DB record exists (upgrade path).
+    """
+    cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
+    if not cred and tenant_id == 1 and _amazon_sp_configured():
+        # Auto-seed from env vars on first use
+        cred = models.AmazonCredential(
+            tenant_id=1,
+            lwa_client_id=os.getenv("AMAZON_LWA_CLIENT_ID"),
+            lwa_client_secret=os.getenv("AMAZON_LWA_CLIENT_SECRET"),
+            sp_refresh_token=os.getenv("AMAZON_SP_REFRESH_TOKEN"),
+            seller_id=os.getenv("AMAZON_SELLER_ID"),
+            marketplace_id=os.getenv("AMAZON_MARKETPLACE_ID", "ATVPDKIKX0DER"),
+            is_sandbox=os.getenv("AMAZON_SP_SANDBOX", "").lower() in ("1", "true", "yes"),
+        )
+        db.add(cred)
+        db.commit()
+        db.refresh(cred)
+    return cred
+
+
+def _tenant_amazon_configured(tenant_id: int, db: Session) -> bool:
+    cred = _get_tenant_amazon_creds(tenant_id, db)
+    return bool(cred and cred.sp_refresh_token and cred.lwa_client_id)
+
+
+async def _get_tenant_access_token(cred: models.AmazonCredential) -> str:
+    """Exchange refresh token → access token using per-tenant credentials."""
+    import httpx as _httpx
+    # App-level credentials: prefer per-tenant override, else fall back to env vars
+    client_id     = cred.lwa_client_id     or os.getenv("AMAZON_LWA_CLIENT_ID", "")
+    client_secret = cred.lwa_client_secret or os.getenv("AMAZON_LWA_CLIENT_SECRET", "")
+    async with _httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(
+            _AMAZON_LWA_URL,
+            data={
+                "grant_type":    "refresh_token",
+                "refresh_token": cred.sp_refresh_token,
+                "client_id":     client_id,
+                "client_secret": client_secret,
+            },
+        )
+    if r.status_code != 200:
+        raise HTTPException(502, f"Amazon LWA token error: {r.text[:200]}")
+    return r.json()["access_token"]
+
+
+# ── Amazon OAuth endpoints ────────────────────────────────────────────────────
+
+# App-level OAuth credentials (registered in Amazon Developer Central)
+_AMAZON_APP_ID        = os.getenv("AMAZON_SP_APP_ID", "")    # amzn1.sp.solution.xxx
+_AMAZON_OAUTH_CALLBACK = os.getenv("APP_URL", "http://localhost:8000") + "/api/amazon/oauth/callback"
+
+
+@app.get("/api/amazon/oauth/url")
+def amazon_oauth_url(current: dict = Depends(require_auth)):
+    """
+    Returns the Amazon Seller Central OAuth consent URL.
+    The seller clicks this link, authorizes the app, and Amazon
+    redirects back to /api/amazon/oauth/callback with a code.
+    """
+    tenant_id = current.get("tenant_id", 1)
+    if not _AMAZON_APP_ID:
+        raise HTTPException(503, "AMAZON_SP_APP_ID env var is not set. Register your app in Amazon Developer Central.")
+    import urllib.parse
+    params = {
+        "application_id": _AMAZON_APP_ID,
+        "state": str(tenant_id),
+        "version": "beta",
+        "redirect_uri": _AMAZON_OAUTH_CALLBACK,
+    }
+    url = "https://sellercentral.amazon.com/apps/authorize/consent?" + urllib.parse.urlencode(params)
+    return {"url": url}
+
+
+@app.get("/api/amazon/oauth/callback")
+async def amazon_oauth_callback(
+    spapi_oauth_code: str = "",
+    state: str = "",
+    selling_partner_id: str = "",
+    db: Session = Depends(get_db),
+):
+    """
+    Amazon redirects here after the seller authorizes the app.
+    Exchanges the OAuth code for a refresh token and stores it.
+    Then redirects to the frontend onboarding page.
+    """
+    import httpx as _httpx
+
+    if not spapi_oauth_code:
+        return RedirectResponse("/onboarding/amazon?error=no_code")
+
+    tenant_id = int(state) if state.isdigit() else 1
+    tenant    = db.query(models.Tenant).filter_by(id=tenant_id).first()
+    if not tenant:
+        return RedirectResponse("/onboarding/amazon?error=invalid_tenant")
+
+    # Exchange code for refresh token
+    try:
+        async with _httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                _AMAZON_LWA_URL,
+                data={
+                    "grant_type":   "authorization_code",
+                    "code":          spapi_oauth_code,
+                    "redirect_uri":  _AMAZON_OAUTH_CALLBACK,
+                    "client_id":     os.getenv("AMAZON_LWA_CLIENT_ID", ""),
+                    "client_secret": os.getenv("AMAZON_LWA_CLIENT_SECRET", ""),
+                },
+            )
+        if r.status_code != 200:
+            return RedirectResponse(f"/onboarding/amazon?error=token_exchange_failed")
+        tokens = r.json()
+        refresh_token = tokens.get("refresh_token", "")
+    except Exception as e:
+        return RedirectResponse(f"/onboarding/amazon?error=exception")
+
+    # Upsert credential record
+    cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
+    if cred:
+        cred.sp_refresh_token = refresh_token
+        cred.seller_id        = selling_partner_id or cred.seller_id
+        cred.connected_at     = datetime.utcnow()
+    else:
+        cred = models.AmazonCredential(
+            tenant_id=tenant_id,
+            sp_refresh_token=refresh_token,
+            seller_id=selling_partner_id,
+            marketplace_id=_AMAZON_MKT_ID,
+            connected_at=datetime.utcnow(),
+        )
+        db.add(cred)
+    db.commit()
+
+    return RedirectResponse("/onboarding/amazon?connected=true")
+
+
+@app.get("/api/amazon/credentials")
+def get_amazon_credentials(
+    current: dict = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """Return current Amazon connection status for the tenant."""
+    tenant_id = current.get("tenant_id", 1)
+    cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
+    return {
+        "connected":      bool(cred and cred.sp_refresh_token),
+        "seller_id":      cred.seller_id if cred else None,
+        "marketplace_id": cred.marketplace_id if cred else "ATVPDKIKX0DER",
+        "connected_at":   cred.connected_at.isoformat() if cred and cred.connected_at else None,
+        "is_sandbox":     cred.is_sandbox if cred else False,
+    }
+
+
+@app.put("/api/amazon/credentials")
+def save_amazon_credentials(
+    body: dict,
+    current: dict = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Manually save Amazon SP-API credentials (for users who prefer
+    to paste their credentials rather than going through OAuth).
+    """
+    tenant_id = current.get("tenant_id", 1)
+    cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
+    if not cred:
+        cred = models.AmazonCredential(tenant_id=tenant_id)
+        db.add(cred)
+
+    if body.get("lwa_client_id"):     cred.lwa_client_id     = body["lwa_client_id"]
+    if body.get("lwa_client_secret"): cred.lwa_client_secret = body["lwa_client_secret"]
+    if body.get("sp_refresh_token"):  cred.sp_refresh_token  = body["sp_refresh_token"]
+    if body.get("seller_id"):         cred.seller_id         = body["seller_id"]
+    if body.get("marketplace_id"):    cred.marketplace_id    = body["marketplace_id"]
+    if "is_sandbox" in body:          cred.is_sandbox        = bool(body["is_sandbox"])
+    cred.connected_at  = datetime.utcnow()
+    cred.connected_by  = current["sub"]
+    db.commit()
+    return {"ok": True}
+
+
 @app.get("/api/amazon/test")
-async def amazon_test():
-    """Diagnostic endpoint — tests each step of Amazon SP-API auth."""
+async def amazon_test(current: dict = Depends(require_auth), db: Session = Depends(get_db)):
+    """Diagnostic: tests Amazon SP-API auth for the current tenant."""
+    tenant_id = current.get("tenant_id", 1)
+    cred = _get_tenant_amazon_creds(tenant_id, db)
+    configured = bool(cred and cred.sp_refresh_token)
     result = {
-        "credentials_set": {
-            "AMAZON_LWA_CLIENT_ID":     bool(os.getenv("AMAZON_LWA_CLIENT_ID", "").strip()),
-            "AMAZON_LWA_CLIENT_SECRET": bool(os.getenv("AMAZON_LWA_CLIENT_SECRET", "").strip()),
-            "AMAZON_SP_REFRESH_TOKEN":  bool(os.getenv("AMAZON_SP_REFRESH_TOKEN", "").strip()),
-            "AMAZON_SELLER_ID":         bool(os.getenv("AMAZON_SELLER_ID", "").strip()),
-            "AMAZON_SP_SANDBOX":        os.getenv("AMAZON_SP_SANDBOX", "false"),
-        },
-        "endpoint": _AMAZON_SP_BASE,
+        "configured": configured,
+        "seller_id":  cred.seller_id if cred else None,
+        "sandbox":    cred.is_sandbox if cred else False,
         "token_test": None,
         "token_error": None,
     }
-    try:
-        token = await _get_amazon_access_token()
-        result["token_test"] = f"OK — token starts with {token[:20]}..."
-    except Exception as e:
-        result["token_error"] = str(e)
+    if configured:
+        try:
+            token = await _get_tenant_access_token(cred)
+            result["token_test"] = f"OK — token starts with {token[:20]}..."
+        except Exception as e:
+            result["token_error"] = str(e)
     return result
 
 
 @app.get("/api/amazon/status")
-def amazon_status(current: dict = Depends(require_auth)):
-    return {"configured": _amazon_sp_configured()}
+def amazon_status(current: dict = Depends(require_auth), db: Session = Depends(get_db)):
+    tenant_id = current.get("tenant_id", 1)
+    return {"configured": _tenant_amazon_configured(tenant_id, db)}
 
 
 async def _fetch_fba_inventory() -> list:

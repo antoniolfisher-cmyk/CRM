@@ -5,134 +5,190 @@ from database import Base
 import enum
 
 
+# ─── Multi-Tenant Core ────────────────────────────────────────────────────────
+
+class Tenant(Base):
+    __tablename__ = "tenants"
+
+    id                      = Column(Integer, primary_key=True, index=True)
+    name                    = Column(String, nullable=False)
+    slug                    = Column(String, unique=True, nullable=False, index=True)
+    plan                    = Column(String, default="starter")   # starter|pro|enterprise
+    is_active               = Column(Boolean, default=True)
+
+    # Stripe billing
+    stripe_customer_id      = Column(String, nullable=True)
+    stripe_subscription_id  = Column(String, nullable=True)
+    stripe_price_id         = Column(String, nullable=True)
+    stripe_status           = Column(String, nullable=True)  # active|trialing|canceled|past_due
+    trial_ends_at           = Column(DateTime(timezone=True), nullable=True)
+
+    created_at              = Column(DateTime(timezone=True), server_default=func.now())
+
+    users             = relationship("User", back_populates="tenant")
+    amazon_credential = relationship("AmazonCredential", back_populates="tenant", uselist=False)
+
+
+class AmazonCredential(Base):
+    """Per-tenant Amazon SP-API credentials (encrypted at rest via ENCRYPTION_KEY)."""
+    __tablename__ = "amazon_credentials"
+
+    id               = Column(Integer, primary_key=True, index=True)
+    tenant_id        = Column(Integer, ForeignKey("tenants.id"), unique=True, nullable=False)
+
+    # These can come from OAuth flow or manual entry
+    lwa_client_id     = Column(String, nullable=True)   # app-level (shared) or per-seller
+    lwa_client_secret = Column(String, nullable=True)   # app-level (shared) or per-seller
+    sp_refresh_token  = Column(String, nullable=True)   # per-seller, from OAuth
+    seller_id         = Column(String, nullable=True)
+    marketplace_id    = Column(String, default="ATVPDKIKX0DER")
+    is_sandbox        = Column(Boolean, default=False)
+
+    connected_at     = Column(DateTime(timezone=True), nullable=True)
+    connected_by     = Column(String, nullable=True)   # username who connected
+
+    tenant = relationship("Tenant", back_populates="amazon_credential")
+
+
+# ─── Users ────────────────────────────────────────────────────────────────────
+
 class User(Base):
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, index=True)
-    username = Column(String, unique=True, nullable=False, index=True)
+    id            = Column(Integer, primary_key=True, index=True)
+    tenant_id     = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
+    username      = Column(String, nullable=False, index=True)
     password_hash = Column(String, nullable=False)
-    role = Column(String, default="user")   # "admin" or "user"
-    is_active = Column(Boolean, default=True)
-    email = Column(String, nullable=True)
-    notify_email = Column(Boolean, default=True)   # receive follow-up digests
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    role          = Column(String, default="user")   # "admin" or "user"
+    is_active     = Column(Boolean, default=True)
+    email         = Column(String, nullable=True)
+    notify_email  = Column(Boolean, default=True)
+    created_at    = Column(DateTime(timezone=True), server_default=func.now())
 
+    tenant = relationship("Tenant", back_populates="users")
+
+
+# ─── Enums ────────────────────────────────────────────────────────────────────
 
 class AccountStatus(str, enum.Enum):
-    active = "active"
+    active   = "active"
     inactive = "inactive"
     prospect = "prospect"
-    on_hold = "on_hold"
+    on_hold  = "on_hold"
 
 
 class AccountType(str, enum.Enum):
-    retailer = "retailer"
+    retailer    = "retailer"
     distributor = "distributor"
-    restaurant = "restaurant"
-    grocery = "grocery"
-    online = "online"
-    other = "other"
+    restaurant  = "restaurant"
+    grocery     = "grocery"
+    online      = "online"
+    other       = "other"
 
 
 class FollowUpType(str, enum.Enum):
-    call = "call"
-    email = "email"
+    call    = "call"
+    email   = "email"
     meeting = "meeting"
-    visit = "visit"
-    other = "other"
+    visit   = "visit"
+    other   = "other"
 
 
 class FollowUpStatus(str, enum.Enum):
-    pending = "pending"
+    pending   = "pending"
     completed = "completed"
     cancelled = "cancelled"
 
 
 class FollowUpPriority(str, enum.Enum):
-    low = "low"
+    low    = "low"
     medium = "medium"
-    high = "high"
+    high   = "high"
 
 
 class OrderStatus(str, enum.Enum):
-    quote = "quote"
-    pending = "pending"
+    quote     = "quote"
+    pending   = "pending"
     confirmed = "confirmed"
-    shipped = "shipped"
+    shipped   = "shipped"
     delivered = "delivered"
     cancelled = "cancelled"
 
 
+# ─── CRM Models (all scoped by tenant_id) ────────────────────────────────────
+
 class Account(Base):
     __tablename__ = "accounts"
 
-    id = Column(Integer, primary_key=True, index=True)
-    created_by = Column(String, nullable=True, index=True)
-    name = Column(String, nullable=False, index=True)
+    id           = Column(Integer, primary_key=True, index=True)
+    tenant_id    = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
+    created_by   = Column(String, nullable=True, index=True)
+    name         = Column(String, nullable=False, index=True)
     account_type = Column(String, default="retailer")
-    status = Column(String, default="prospect")
-    phone = Column(String)
-    email = Column(String)
-    website = Column(String)
-    address = Column(String)
-    city = Column(String)
-    state = Column(String)
-    zip_code = Column(String)
-    territory = Column(String)
+    status       = Column(String, default="prospect")
+    phone        = Column(String)
+    email        = Column(String)
+    website      = Column(String)
+    address      = Column(String)
+    city         = Column(String)
+    state        = Column(String)
+    zip_code     = Column(String)
+    territory    = Column(String)
     payment_terms = Column(String)
     credit_limit = Column(Float, default=0)
-    notes = Column(Text)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    notes        = Column(Text)
+    created_at   = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at   = Column(DateTime(timezone=True), onupdate=func.now())
 
-    # Opening pipeline tracking
-    pipeline_stage = Column(String, default="new", nullable=False)
-    pipeline_updated_at = Column(DateTime(timezone=True), nullable=True)
-    last_auto_followup_at = Column(DateTime(timezone=True), nullable=True)
+    pipeline_stage           = Column(String, default="new", nullable=False)
+    pipeline_updated_at      = Column(DateTime(timezone=True), nullable=True)
+    last_auto_followup_at    = Column(DateTime(timezone=True), nullable=True)
 
-    contacts = relationship("Contact", back_populates="account", cascade="all, delete-orphan")
+    contacts  = relationship("Contact",  back_populates="account", cascade="all, delete-orphan")
     follow_ups = relationship("FollowUp", back_populates="account", cascade="all, delete-orphan")
-    orders = relationship("Order", back_populates="account", cascade="all, delete-orphan")
+    orders    = relationship("Order",    back_populates="account", cascade="all, delete-orphan")
 
 
 class Contact(Base):
     __tablename__ = "contacts"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id         = Column(Integer, primary_key=True, index=True)
+    tenant_id  = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
     created_by = Column(String, nullable=True, index=True)
     account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
     first_name = Column(String, nullable=False)
-    last_name = Column(String, nullable=False)
-    title = Column(String)
-    phone = Column(String)
-    mobile = Column(String)
-    email = Column(String)
+    last_name  = Column(String, nullable=False)
+    title      = Column(String)
+    phone      = Column(String)
+    mobile     = Column(String)
+    email      = Column(String)
     is_primary = Column(Boolean, default=False)
-    notes = Column(Text)
+    notes      = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    account = relationship("Account", back_populates="contacts")
+    account    = relationship("Account", back_populates="contacts")
     follow_ups = relationship("FollowUp", back_populates="contact")
 
 
 class FollowUp(Base):
     __tablename__ = "follow_ups"
 
-    id = Column(Integer, primary_key=True, index=True)
-    created_by = Column(String, nullable=True, index=True)
-    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
-    contact_id = Column(Integer, ForeignKey("contacts.id"), nullable=True)
-    follow_up_type = Column(String, default="call")
-    status = Column(String, default="pending")
-    priority = Column(String, default="medium")
-    subject = Column(String, nullable=False)
-    due_date = Column(DateTime(timezone=True), nullable=False)
-    completed_date = Column(DateTime(timezone=True), nullable=True)
-    notes = Column(Text)
-    outcome = Column(Text)
+    id               = Column(Integer, primary_key=True, index=True)
+    tenant_id        = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
+    created_by       = Column(String, nullable=True, index=True)
+    account_id       = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    contact_id       = Column(Integer, ForeignKey("contacts.id"), nullable=True)
+    follow_up_type   = Column(String, default="call")
+    status           = Column(String, default="pending")
+    priority         = Column(String, default="medium")
+    subject          = Column(String, nullable=False)
+    due_date         = Column(DateTime(timezone=True), nullable=False)
+    completed_date   = Column(DateTime(timezone=True), nullable=True)
+    notes            = Column(Text)
+    outcome          = Column(Text)
     next_follow_up_date = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at       = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at       = Column(DateTime(timezone=True), onupdate=func.now())
 
     account = relationship("Account", back_populates="follow_ups")
     contact = relationship("Contact", back_populates="follow_ups")
@@ -141,35 +197,36 @@ class FollowUp(Base):
 class Order(Base):
     __tablename__ = "orders"
 
-    id = Column(Integer, primary_key=True, index=True)
-    created_by = Column(String, nullable=True, index=True)
-    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
-    order_number = Column(String, unique=True, index=True)
-    status = Column(String, default="pending")
-    order_date = Column(DateTime(timezone=True), server_default=func.now())
-    ship_date = Column(DateTime(timezone=True), nullable=True)
-    subtotal = Column(Float, default=0)
-    discount = Column(Float, default=0)
-    total = Column(Float, default=0)
-    notes = Column(Text)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    id           = Column(Integer, primary_key=True, index=True)
+    tenant_id    = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
+    created_by   = Column(String, nullable=True, index=True)
+    account_id   = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    order_number = Column(String, index=True)
+    status       = Column(String, default="pending")
+    order_date   = Column(DateTime(timezone=True), server_default=func.now())
+    ship_date    = Column(DateTime(timezone=True), nullable=True)
+    subtotal     = Column(Float, default=0)
+    discount     = Column(Float, default=0)
+    total        = Column(Float, default=0)
+    notes        = Column(Text)
+    created_at   = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at   = Column(DateTime(timezone=True), onupdate=func.now())
 
     account = relationship("Account", back_populates="orders")
-    items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
+    items   = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
 
 
 class OrderItem(Base):
     __tablename__ = "order_items"
 
-    id = Column(Integer, primary_key=True, index=True)
-    order_id = Column(Integer, ForeignKey("orders.id"), nullable=False)
+    id           = Column(Integer, primary_key=True, index=True)
+    order_id     = Column(Integer, ForeignKey("orders.id"), nullable=False)
     product_name = Column(String, nullable=False)
-    sku = Column(String)
-    quantity = Column(Float, default=1)
-    unit = Column(String, default="case")
-    unit_price = Column(Float, default=0)
-    total = Column(Float, default=0)
+    sku          = Column(String)
+    quantity     = Column(Float, default=1)
+    unit         = Column(String, default="case")
+    unit_price   = Column(Float, default=0)
+    total        = Column(Float, default=0)
 
     order = relationship("Order", back_populates="items")
 
@@ -177,15 +234,16 @@ class OrderItem(Base):
 class EmailMessage(Base):
     __tablename__ = "email_messages"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id         = Column(Integer, primary_key=True, index=True)
+    tenant_id  = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
     account_id = Column(Integer, ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True, index=True)
-    direction = Column(String, nullable=False)   # "sent" | "received"
+    direction  = Column(String, nullable=False)   # "sent" | "received"
     from_email = Column(String)
-    to_email = Column(String)
-    subject = Column(String)
-    body_text = Column(Text)
-    is_read = Column(Boolean, default=False)
-    sent_by = Column(String, nullable=True)      # username for outbound emails
+    to_email   = Column(String)
+    subject    = Column(String)
+    body_text  = Column(Text)
+    is_read    = Column(Boolean, default=False)
+    sent_by    = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     account = relationship("Account", backref="email_messages")
@@ -194,115 +252,93 @@ class EmailMessage(Base):
 class TimeEntry(Base):
     __tablename__ = "time_entries"
 
-    id = Column(Integer, primary_key=True, index=True)
-    username = Column(String, nullable=False, index=True)
-    clock_in = Column(DateTime(timezone=True), nullable=False)
-    clock_out = Column(DateTime(timezone=True), nullable=True)
-    duration_minutes = Column(Float, nullable=True)  # computed on clock-out
-    notes = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    id               = Column(Integer, primary_key=True, index=True)
+    tenant_id        = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
+    username         = Column(String, nullable=False, index=True)
+    clock_in         = Column(DateTime(timezone=True), nullable=False)
+    clock_out        = Column(DateTime(timezone=True), nullable=True)
+    duration_minutes = Column(Float, nullable=True)
+    notes            = Column(Text, nullable=True)
+    created_at       = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class RepricerStrategy(Base):
     __tablename__ = "repricer_strategies"
 
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False)
-    description = Column(Text, nullable=True)
-
-    # strategy_type: maven | buy_box | featured_merchants | lowest_price | custom
-    strategy_type = Column(String, nullable=False, default="buy_box")
-
-    # Who to compete against (rule-based only)
-    # auto-set for buy_box/featured_merchants/lowest_price; user-set for custom
-    target = Column(String, nullable=True)   # buy_box_winner | featured_merchants | lowest_price
-
-    # How to compete: match | beat_pct | beat_amt
+    id             = Column(Integer, primary_key=True, index=True)
+    tenant_id      = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
+    name           = Column(String, nullable=False)
+    description    = Column(Text, nullable=True)
+    strategy_type  = Column(String, nullable=False, default="buy_box")
+    target         = Column(String, nullable=True)
     compete_action = Column(String, nullable=True, default="beat_pct")
-    compete_value  = Column(Float, nullable=True)   # pct as fraction (0.01=1%) or dollar amt
-
-    # What to do when already winning the Buy Box
-    # maintain | raise_pct | raise_amt | raise_to_max
+    compete_value  = Column(Float, nullable=True)
     winning_action = Column(String, nullable=True, default="raise_pct")
-    winning_value  = Column(Float, nullable=True)   # pct as fraction or dollar amt
-
-    # Price limits (all optional, apply to every action)
-    min_price    = Column(Float, nullable=True)
-    max_price    = Column(Float, nullable=True)
-    profit_floor = Column(Float, nullable=True)   # min $ profit per unit
-
-    is_active  = Column(Boolean, default=True)
-    is_default = Column(Boolean, default=False)
-    notes = Column(Text, nullable=True)
-
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    winning_value  = Column(Float, nullable=True)
+    min_price      = Column(Float, nullable=True)
+    max_price      = Column(Float, nullable=True)
+    profit_floor   = Column(Float, nullable=True)
+    is_active      = Column(Boolean, default=True)
+    is_default     = Column(Boolean, default=False)
+    notes          = Column(Text, nullable=True)
+    created_at     = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at     = Column(DateTime(timezone=True), onupdate=func.now())
 
 
 class Product(Base):
     __tablename__ = "products"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id         = Column(Integer, primary_key=True, index=True)
+    tenant_id  = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
     created_by = Column(String, nullable=True, index=True)
 
-    # Identity
-    asin = Column(String, index=True)
-    product_name = Column(String, nullable=False)
-    amazon_url = Column(String)
+    asin          = Column(String, index=True)
+    product_name  = Column(String, nullable=False)
+    amazon_url    = Column(String)
     purchase_link = Column(String)
 
-    # Discovery & logistics
-    date_found = Column(DateTime(timezone=True))
-    va_finder = Column(String)           # Virtual Assistant who sourced it
+    date_found   = Column(DateTime(timezone=True))
+    va_finder    = Column(String)
 
-    # Purchase info
-    date_purchased = Column(DateTime(timezone=True))
-    order_number = Column(String)
-    quantity = Column(Float, default=0)
-    buy_cost = Column(Float, default=0)   # cost per unit
-    money_spent = Column(Float, default=0)  # total cash out
+    date_purchased  = Column(DateTime(timezone=True))
+    order_number    = Column(String)
+    quantity        = Column(Float, default=0)
+    buy_cost        = Column(Float, default=0)
+    money_spent     = Column(Float, default=0)
 
-    # Amazon pipeline
-    arrived_at_prep = Column(DateTime(timezone=True))
-    date_sent_to_amazon = Column(DateTime(timezone=True))
-    amazon_tracking_number = Column(String)
+    arrived_at_prep         = Column(DateTime(timezone=True))
+    date_sent_to_amazon     = Column(DateTime(timezone=True))
+    amazon_tracking_number  = Column(String)
 
-    # Gating
-    ungated = Column(Boolean, default=False)
+    ungated          = Column(Boolean, default=False)
     ungating_quantity = Column(Float, default=0)
+    total_bought     = Column(Float, default=0)
+    replenish        = Column(Boolean, default=False)
 
-    # Inventory management
-    total_bought = Column(Float, default=0)
-    replenish = Column(Boolean, default=False)
-
-    # Financials
-    amazon_fee = Column(Float, default=0)
-    total_cost = Column(Float, default=0)   # buy_cost + amazon_fee per unit
-    buy_box = Column(Float, default=0)      # current Amazon buy box price
-    profit = Column(Float, default=0)       # per unit
-    profit_margin = Column(Float, default=0)  # 0.xx decimal
-    roi = Column(Float, default=0)          # 0.xx decimal
+    amazon_fee    = Column(Float, default=0)
+    total_cost    = Column(Float, default=0)
+    buy_box       = Column(Float, default=0)
+    profit        = Column(Float, default=0)
+    profit_margin = Column(Float, default=0)
+    roi           = Column(Float, default=0)
     estimated_sales = Column(Float, default=0)
-    num_sellers = Column(Integer, default=0)
+    num_sellers   = Column(Integer, default=0)
 
-    notes = Column(Text)
+    notes      = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-    # Keepa live market data
-    keepa_bsr = Column(Integer, nullable=True)          # Best Seller Rank
-    keepa_category = Column(String, nullable=True)      # Amazon category name
+    keepa_bsr         = Column(Integer, nullable=True)
+    keepa_category    = Column(String, nullable=True)
     keepa_last_synced = Column(DateTime(timezone=True), nullable=True)
 
-    # Approval workflow
-    status = Column(String, default='sourcing')  # sourcing | pending | approved
+    status = Column(String, default='sourcing')
 
-    # Aria AI Repricer
     aria_suggested_price = Column(Float, nullable=True)
-    aria_suggested_at = Column(DateTime(timezone=True), nullable=True)
-    aria_reasoning = Column(Text, nullable=True)
-    aria_last_buy_box = Column(Float, nullable=True)   # buy_box at time of last Aria run (smart trigger)
-    aria_strategy_id = Column(Integer, nullable=True)  # per-product strategy override
+    aria_suggested_at    = Column(DateTime(timezone=True), nullable=True)
+    aria_reasoning       = Column(Text, nullable=True)
+    aria_last_buy_box    = Column(Float, nullable=True)
+    aria_strategy_id     = Column(Integer, nullable=True)
 
     ungate_requests = relationship("UngateRequest", back_populates="product", cascade="all, delete-orphan")
 
@@ -310,37 +346,35 @@ class Product(Base):
 class UngateTemplate(Base):
     __tablename__ = "ungate_templates"
 
-    id         = Column(Integer, primary_key=True, index=True)
-    number     = Column(Integer, unique=True, nullable=False)  # 1–10
-    name       = Column(String, nullable=False)
+    id          = Column(Integer, primary_key=True, index=True)
+    tenant_id   = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
+    number      = Column(Integer, nullable=False)
+    name        = Column(String, nullable=False)
     description = Column(Text, nullable=True)
-    subject    = Column(String, nullable=True)   # email subject with {variables}
-    body       = Column(Text, nullable=False)    # email body with {variables}
-    category   = Column(String, default="general")  # general|resubmission|escalation|brand_auth
-    is_active  = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    subject     = Column(String, nullable=True)
+    body        = Column(Text, nullable=False)
+    category    = Column(String, default="general")
+    is_active   = Column(Boolean, default=True)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at  = Column(DateTime(timezone=True), onupdate=func.now())
 
 
 class UngateRequest(Base):
     __tablename__ = "ungate_requests"
 
-    id           = Column(Integer, primary_key=True, index=True)
-    product_id   = Column(Integer, ForeignKey("products.id", ondelete="SET NULL"), nullable=True)
-    asin         = Column(String, nullable=False, index=True)
-    product_name = Column(String, nullable=False)
-    category     = Column(String, nullable=True)
-    # pending | in_progress | approved | rejected_final
-    status       = Column(String, default="pending")
+    id                   = Column(Integer, primary_key=True, index=True)
+    tenant_id            = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
+    product_id           = Column(Integer, ForeignKey("products.id", ondelete="SET NULL"), nullable=True)
+    asin                 = Column(String, nullable=False, index=True)
+    product_name         = Column(String, nullable=False)
+    category             = Column(String, nullable=True)
+    status               = Column(String, default="pending")
     current_template_num = Column(Integer, default=1)
-    # JSON: {"quantity": 150, "invoice_age_days": 180, "notes": "..."}
-    requirements = Column(Text, nullable=True)
-    # JSON array of steps:
-    # [{"template_num":1,"submitted_at":"...","rejection_reason":"...","ai_response":"...","status":"rejected"}]
-    history      = Column(Text, default="[]")
-    amazon_case_id = Column(String, nullable=True)
-    notes        = Column(Text, nullable=True)
-    created_at   = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at   = Column(DateTime(timezone=True), onupdate=func.now())
+    requirements         = Column(Text, nullable=True)
+    history              = Column(Text, default="[]")
+    amazon_case_id       = Column(String, nullable=True)
+    notes                = Column(Text, nullable=True)
+    created_at           = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at           = Column(DateTime(timezone=True), onupdate=func.now())
 
     product = relationship("Product", back_populates="ungate_requests")

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate, useLocation } from 'react-router-dom'
+import { useNavigate, useLocation, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 
 export default function Login() {
@@ -85,8 +85,12 @@ export default function Login() {
           </form>
         </div>
 
-        <p className="text-center text-slate-500 text-xs mt-6">
-          Delight Shoppe · Follow-Up & Distribution Tracker
+        <p className="text-center text-slate-400 text-sm mt-4">
+          New to SellerSuite?{' '}
+          <Link to="/register" className="text-orange-400 font-medium hover:underline">Create a workspace</Link>
+        </p>
+        <p className="text-center text-slate-600 text-xs mt-3">
+          SellerSuite · Amazon Seller CRM
         </p>
       </div>
     </div>

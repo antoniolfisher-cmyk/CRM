@@ -1,21 +1,34 @@
-import { createContext, useContext, useState, useEffect } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback } from 'react'
 
 const AuthContext = createContext(null)
 const TOKEN_KEY = 'crm_token'
 
 export function AuthProvider({ children }) {
-  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY))
-  const [user, setUser] = useState(null)     // { username, role }
+  const [token, setToken]     = useState(() => localStorage.getItem(TOKEN_KEY))
+  const [user, setUser]       = useState(null)   // { username, role, tenant_id, tenant_name, plan }
   const [checking, setChecking] = useState(true)
+
+  const fetchMe = useCallback(async (t) => {
+    const r = await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${t}` } })
+    if (!r.ok) throw new Error('Auth failed')
+    return r.json()
+  }, [])
 
   useEffect(() => {
     if (!token) { setChecking(false); return }
-    fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } })
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((data) => setUser({ username: data.username, role: data.role }))
+    fetchMe(token)
+      .then((data) => setUser({
+        username:    data.username,
+        role:        data.role,
+        tenant_id:   data.tenant_id,
+        tenant_name: data.tenant_name,
+        tenant_slug: data.tenant_slug,
+        plan:        data.plan,
+        stripe_status: data.stripe_status,
+      }))
       .catch(() => { localStorage.removeItem(TOKEN_KEY); setToken(null) })
       .finally(() => setChecking(false))
-  }, [token])
+  }, [token, fetchMe])
 
   const login = async (username, password) => {
     const res = await fetch('/api/auth/login', {
@@ -30,11 +43,23 @@ export function AuthProvider({ children }) {
     const data = await res.json()
     localStorage.setItem(TOKEN_KEY, data.access_token)
     setToken(data.access_token)
-    // Fetch user info to get role
-    const me = await fetch('/api/auth/me', {
-      headers: { Authorization: `Bearer ${data.access_token}` },
-    }).then((r) => r.json())
-    setUser({ username: me.username, role: me.role })
+    const me = await fetchMe(data.access_token)
+    setUser({
+      username:    me.username,
+      role:        me.role,
+      tenant_id:   me.tenant_id,
+      tenant_name: me.tenant_name,
+      tenant_slug: me.tenant_slug,
+      plan:        me.plan,
+      stripe_status: me.stripe_status,
+    })
+  }
+
+  /** Called after register API returns a token directly */
+  const loginWithToken = (accessToken, userInfo) => {
+    localStorage.setItem(TOKEN_KEY, accessToken)
+    setToken(accessToken)
+    setUser(userInfo)
   }
 
   const logout = () => {
@@ -46,7 +71,10 @@ export function AuthProvider({ children }) {
   const isAdmin = user?.role === 'admin'
 
   return (
-    <AuthContext.Provider value={{ token, user, checking, login, logout, isAdmin, isAuthenticated: !!token && !!user }}>
+    <AuthContext.Provider value={{
+      token, user, checking, login, loginWithToken, logout,
+      isAdmin, isAuthenticated: !!token && !!user,
+    }}>
       {children}
     </AuthContext.Provider>
   )

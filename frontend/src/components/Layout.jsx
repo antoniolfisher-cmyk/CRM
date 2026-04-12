@@ -25,9 +25,11 @@ export default function Layout({ children }) {
             <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center">
               <TruckIcon className="w-5 h-5 text-white" />
             </div>
-            <div>
-              <p className="text-white font-semibold text-sm leading-tight">Delight Shoppe</p>
-              <p className="text-slate-400 text-xs">Distribution Suite</p>
+            <div className="min-w-0">
+              <p className="text-white font-semibold text-sm leading-tight truncate">
+                {user?.tenant_name || 'SellerSuite'}
+              </p>
+              <p className="text-slate-400 text-xs capitalize">{user?.plan || 'starter'} plan</p>
             </div>
           </div>
         </div>
@@ -55,6 +57,17 @@ export default function Layout({ children }) {
               <div className="pt-3 pb-1 px-3">
                 <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Admin</p>
               </div>
+              <NavLink
+                to="/billing"
+                className={({ isActive }) =>
+                  `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                    isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                  }`
+                }
+              >
+                <BillingIcon className="w-4 h-4 shrink-0" />
+                Billing & Plan
+              </NavLink>
               <NavLink
                 to="/approvals"
                 className={({ isActive }) =>
@@ -214,6 +227,13 @@ function SupportIcon({ className }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9 5.25h.008v.008H12v-.008z" />
+    </svg>
+  )
+}
+function BillingIcon({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 002.25-2.25V6.75A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25v10.5A2.25 2.25 0 004.5 19.5z" />
     </svg>
   )
 }

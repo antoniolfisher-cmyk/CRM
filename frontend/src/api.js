@@ -33,6 +33,20 @@ export const api = {
   getDashboardAmazonLive: () => req('GET', '/dashboard/amazon-live'),
   getDashboardAmazonSales: (period = 'today') => req('GET', `/dashboard/amazon-sales?period=${period}`),
 
+  // Tenant & Multi-tenancy
+  getTenantMe: () => req('GET', '/tenant/me'),
+  getTenantUsers: () => req('GET', '/tenant/users'),
+
+  // Amazon credentials (multi-tenant)
+  getAmazonOAuthUrl: () => req('GET', '/amazon/oauth/url'),
+  getAmazonCredentials: () => req('GET', '/amazon/credentials'),
+  saveAmazonCredentials: (data) => req('PUT', '/amazon/credentials', data),
+
+  // Billing (Stripe)
+  getBillingPlans: () => req('GET', '/billing/plans'),
+  createBillingCheckout: (plan) => req('POST', '/billing/checkout', { plan }),
+  getBillingPortal: () => req('GET', '/billing/portal'),
+
   // Accounts
   getAccounts: (params = {}) => {
     const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v)).toString()
