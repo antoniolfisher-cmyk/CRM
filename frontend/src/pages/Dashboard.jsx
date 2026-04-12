@@ -199,15 +199,20 @@ function AmazonSalesPanel() {
       )}
 
       {!loading && error && (
-        <div className="card p-5 border border-red-100 bg-red-50">
-          <div className="flex items-start gap-3">
-            <div className="w-8 h-8 bg-red-100 rounded-lg flex items-center justify-center shrink-0">
-              <AlertIcon className="w-4 h-4 text-red-600" />
+        <div className="card p-5 border border-amber-200 bg-amber-50">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div className="w-8 h-8 bg-amber-100 rounded-lg flex items-center justify-center shrink-0">
+                <AlertIcon className="w-4 h-4 text-amber-600" />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-amber-800">Amazon account not connected</p>
+                <p className="text-xs text-amber-600 mt-0.5">Connect your Amazon Seller Central account to see live sales and orders here.</p>
+              </div>
             </div>
-            <div>
-              <p className="text-sm font-medium text-red-700">Amazon Orders API Unavailable</p>
-              <p className="text-xs text-red-500 mt-0.5">{error}</p>
-            </div>
+            <a href="/onboarding/amazon" className="shrink-0 px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-xs font-semibold rounded-lg transition-colors">
+              Connect Amazon →
+            </a>
           </div>
         </div>
       )}
@@ -365,15 +370,20 @@ function AmazonLivePanel() {
       )}
 
       {!loading && error && (
-        <div className="card p-5 border border-red-100 bg-red-50">
-          <div className="flex items-start gap-3">
-            <div className="w-8 h-8 bg-red-100 rounded-lg flex items-center justify-center shrink-0">
-              <AlertIcon className="w-4 h-4 text-red-600" />
+        <div className="card p-5 border border-amber-200 bg-amber-50">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div className="w-8 h-8 bg-amber-100 rounded-lg flex items-center justify-center shrink-0">
+                <AlertIcon className="w-4 h-4 text-amber-600" />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-amber-800">Amazon account not connected</p>
+                <p className="text-xs text-amber-600 mt-0.5">Connect your Amazon Seller Central account to see live FBA data here.</p>
+              </div>
             </div>
-            <div>
-              <p className="text-sm font-medium text-red-700">Amazon SP-API Unavailable</p>
-              <p className="text-xs text-red-500 mt-0.5">{error}</p>
-            </div>
+            <a href="/onboarding/amazon" className="shrink-0 px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-xs font-semibold rounded-lg transition-colors">
+              Connect Amazon →
+            </a>
           </div>
         </div>
       )}

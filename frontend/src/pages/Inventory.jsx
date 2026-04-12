@@ -356,12 +356,9 @@ function AmazonSyncCard({ status, onSync, syncing }) {
   if (!status.configured) {
     return (
       <div className="card p-4 border-l-4 border-amber-400 bg-amber-50">
-        <p className="font-semibold text-amber-900 text-sm">Amazon SP-API not connected</p>
+        <p className="font-semibold text-amber-900 text-sm">Amazon account not connected</p>
         <p className="text-xs text-amber-700 mt-0.5">
-          Add <code className="bg-amber-100 px-1 rounded">AMAZON_LWA_CLIENT_ID</code>,{' '}
-          <code className="bg-amber-100 px-1 rounded">AMAZON_LWA_CLIENT_SECRET</code>,{' '}
-          <code className="bg-amber-100 px-1 rounded">AMAZON_SP_REFRESH_TOKEN</code>, and{' '}
-          <code className="bg-amber-100 px-1 rounded">AMAZON_SELLER_ID</code> in Railway Variables to enable hourly sync.
+          Go to <strong>Settings → Connect Amazon</strong> and authorize your Amazon Seller Central account to enable live sync.
         </p>
       </div>
     )
