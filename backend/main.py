@@ -2876,6 +2876,19 @@ def _get_oauth_callback_url() -> str:
     return os.getenv("APP_URL", "http://localhost:8000").rstrip("/") + "/api/amazon/oauth/callback"
 
 
+@app.get("/api/debug/db-status")
+def debug_db_status(db: Session = Depends(get_db)):
+    """Public endpoint — shows tenant and user counts to diagnose bootstrap issues."""
+    tenants = db.query(models.Tenant).all()
+    users   = db.query(models.User).all()
+    return {
+        "tenant_count": len(tenants),
+        "tenants": [{"id": t.id, "name": t.name, "slug": t.slug} for t in tenants],
+        "user_count": len(users),
+        "users": [{"id": u.id, "username": u.username, "tenant_id": u.tenant_id} for u in users],
+    }
+
+
 @app.get("/api/debug/oauth-config")
 def debug_oauth_config():
     """Public endpoint — shows exactly what redirect URI the app will send to Amazon."""
@@ -2930,7 +2943,16 @@ async def amazon_oauth_callback(
     tenant_id = int(state) if state.isdigit() else 1
     tenant    = db.query(models.Tenant).filter_by(id=tenant_id).first()
     if not tenant:
+        # Fall back to first available tenant (handles bootstrap race condition)
+        tenant = db.query(models.Tenant).order_by(models.Tenant.id.asc()).first()
+    if not tenant:
+        # No tenants at all — run bootstrap and retry
+        from auth import ensure_bootstrap_admin
+        ensure_bootstrap_admin(db)
+        tenant = db.query(models.Tenant).order_by(models.Tenant.id.asc()).first()
+    if not tenant:
         return RedirectResponse("/onboarding/amazon?error=invalid_tenant")
+    tenant_id = tenant.id
 
     # Exchange code for refresh token
     try:
@@ -4270,8 +4292,15 @@ def timeclock_export(
 
 
 @app.get("/api/health")
-def health():
-    return {"status": "ok"}
+def health(db: Session = Depends(get_db)):
+    tenants = db.query(models.Tenant).all()
+    users   = db.query(models.User).all()
+    return {
+        "status": "ok",
+        "tenants": len(tenants),
+        "users": len(users),
+        "tenant_list": [{"id": t.id, "name": t.name} for t in tenants],
+    }
 
 
 # ─── Serve React SPA (must be last) ───────────────────────────────────────────
