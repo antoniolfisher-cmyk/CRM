@@ -267,21 +267,35 @@ function AmazonSalesPanel() {
             <div className="flex items-start justify-between mb-3">
               <div>
                 <p className="text-xs font-semibold text-green-600 uppercase tracking-wider">Payments</p>
-                <p className="text-4xl font-bold text-gray-900 mt-1">{fmt$(data.pending_payment)}</p>
+                {data.payment_balance !== null ? (
+                  <p className="text-4xl font-bold text-gray-900 mt-1">{fmt$(data.payment_balance)}</p>
+                ) : (
+                  <p className="text-lg font-semibold text-gray-400 mt-2">
+                    {data.finances_error === 'Finances role not enabled'
+                      ? 'Enable Finances role'
+                      : data.finances_error
+                        ? 'Unavailable'
+                        : '—'}
+                  </p>
+                )}
               </div>
               <div className="w-10 h-10 bg-green-50 text-green-600 rounded-lg flex items-center justify-center shrink-0">
                 <PaymentIcon />
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3 pt-3 border-t border-gray-100">
-              <div>
-                <p className="text-xs text-gray-400">Collected</p>
-                <p className="text-lg font-bold text-green-700">{fmt$(data.revenue)}</p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-400">Pending</p>
-                <p className="text-lg font-bold text-amber-600">{fmt$(data.pending_payment)}</p>
-              </div>
+            <div className="pt-3 border-t border-gray-100">
+              {data.payment_balance !== null ? (
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 bg-green-400 rounded-full inline-block"></span>
+                  <p className="text-xs text-gray-500">Total balance held by Amazon</p>
+                </div>
+              ) : (
+                <p className="text-xs text-gray-400">
+                  {data.finances_error === 'Finances role not enabled'
+                    ? 'Grant Finances role in Seller Central → SP-API app permissions'
+                    : 'Add Finances API role to your SP-API app'}
+                </p>
+              )}
             </div>
           </div>
         </div>

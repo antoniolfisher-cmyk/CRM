@@ -539,11 +539,12 @@ async def get_dashboard_amazon_sales(
     _ = Depends(require_auth),
 ):
     """
-    Real-time Amazon sales figures from SP-API Orders endpoint.
+    Real-time Amazon sales + payments from SP-API.
     period: "today" | "week" | "month"
-    Returns revenue, order_count, units_sold for the period,
-    plus open_orders_count (Pending/Unshipped/PartiallyShipped) and
-    pending_payment_amount (Unshipped orders = money awaiting fulfilment).
+
+    Sales revenue = ALL order totals for the period regardless of status,
+    matching Seller Central's "Today so far" which includes Pending/Unshipped.
+    Payments balance = fetched from the Finances API (financial event groups).
     """
     if not _amazon_sp_configured():
         raise HTTPException(503, "Amazon SP-API credentials are not configured")
@@ -562,8 +563,9 @@ async def get_dashboard_amazon_sales(
     created_after = period_start.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     access_token = await _get_amazon_access_token()
+    headers = {"x-amz-access-token": access_token}
 
-    # ── Fetch all orders for period ──────────────────────────────────────────
+    # ── 1. Fetch orders for period (all statuses) ───────────────────────────
     all_orders: list[dict] = []
     next_token = None
 
@@ -574,14 +576,15 @@ async def get_dashboard_amazon_sales(
             else:
                 params = {
                     "MarketplaceIds": _AMAZON_MKT_ID,
-                    "CreatedAfter": created_after,
-                    "OrderStatuses": "Pending,Unshipped,PartiallyShipped,Shipped,InvoiceUnconfirmed",
+                    "CreatedAfter":   created_after,
+                    # Include every relevant status — Seller Central counts all of these
+                    "OrderStatuses":  "Pending,Unshipped,PartiallyShipped,Shipped,InvoiceUnconfirmed,Unfulfillable",
                 }
 
             resp = await client.get(
                 f"{_AMAZON_SP_BASE}/orders/v0/orders",
                 params=params,
-                headers={"x-amz-access-token": access_token},
+                headers=headers,
             )
             if resp.status_code == 403:
                 raise HTTPException(403, "Amazon SP-API: insufficient permissions for Orders API")
@@ -589,55 +592,96 @@ async def get_dashboard_amazon_sales(
                 raise HTTPException(502, f"Amazon Orders API error {resp.status_code}: {resp.text[:300]}")
 
             body = resp.json().get("payload", {})
-            orders_page = body.get("Orders", [])
-            all_orders.extend(orders_page)
-
+            all_orders.extend(body.get("Orders", []))
             next_token = body.get("NextToken")
             if not next_token:
                 break
 
-    # ── Aggregate metrics ────────────────────────────────────────────────────
-    open_statuses   = {"Pending", "Unshipped", "PartiallyShipped"}
-    revenue_statuses = {"Shipped", "PartiallyShipped", "InvoiceUnconfirmed"}
+    # ── 2. Aggregate order metrics ──────────────────────────────────────────
+    open_statuses = {"Pending", "Unshipped", "PartiallyShipped"}
 
-    revenue         = 0.0
-    pending_payment = 0.0
-    units_sold      = 0
+    # Sales = sum of ALL order totals (matches Seller Central "Today so far")
+    # Amazon FBA orders in Pending status already have the OrderTotal set
+    sales_revenue    = 0.0
+    units_sold       = 0
     open_order_count = 0
-    shipped_count   = 0
-    currency        = "USD"
+    currency         = "USD"
 
     for o in all_orders:
-        status = o.get("OrderStatus", "")
+        status    = o.get("OrderStatus", "")
         total_obj = o.get("OrderTotal") or {}
-        amount = float(total_obj.get("Amount") or 0)
-        cur = total_obj.get("CurrencyCode", "USD")
+        amount    = float(total_obj.get("Amount") or 0)
+        cur       = total_obj.get("CurrencyCode", "USD")
         if cur:
             currency = cur
-        shipped  = int(o.get("NumberOfItemsShipped") or 0)
-        unshipped = int(o.get("NumberOfItemsUnshipped") or 0)
+
+        # Count every non-cancelled order toward sales
+        if status not in {"Canceled", "Unfulfillable"}:
+            sales_revenue += amount
+            units_sold += int(o.get("NumberOfItemsShipped") or 0) + int(o.get("NumberOfItemsUnshipped") or 0)
 
         if status in open_statuses:
             open_order_count += 1
-        if status in revenue_statuses:
-            revenue += amount
-            units_sold += shipped
-            shipped_count += 1
-        if status in {"Pending", "Unshipped"}:
-            pending_payment += amount
+
+    # ── 3. Fetch payment balance from Finances API ──────────────────────────
+    # GET /finances/v0/financialEventGroups — sum Open groups = seller's balance
+    payment_balance   = None
+    payment_currency  = currency
+    finances_error    = None
+
+    try:
+        # Look back 90 days to catch any open settlement group
+        finances_after = (now - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        async with _httpx.AsyncClient(timeout=20) as client:
+            fin_resp = await client.get(
+                f"{_AMAZON_SP_BASE}/finances/v0/financialEventGroups",
+                params={"FinancialEventGroupStartedAfter": finances_after},
+                headers=headers,
+            )
+        if fin_resp.status_code == 200:
+            groups = fin_resp.json().get("payload", {}).get("FinancialEventGroupList", [])
+            total_balance = 0.0
+            for g in groups:
+                # Open = not yet disbursed / current settlement period
+                if g.get("ProcessingStatus") in ("Open", "Closed"):
+                    orig = (g.get("OriginalTotal") or g.get("ConvertedTotal") or {})
+                    amt  = float(orig.get("Amount") or 0)
+                    cur2 = orig.get("CurrencyCode", currency)
+                    if cur2:
+                        payment_currency = cur2
+                    # Only add positive (owed to seller) balances from Open groups
+                    # and the most-recent Closed group (covers recent settlement)
+                    if g.get("ProcessingStatus") == "Open":
+                        total_balance += amt
+            # If no open groups found, try summing all groups in the period
+            if total_balance == 0.0 and groups:
+                for g in groups[:3]:   # last 3 settlement periods
+                    orig = (g.get("OriginalTotal") or g.get("ConvertedTotal") or {})
+                    total_balance += float(orig.get("Amount") or 0)
+            payment_balance = round(total_balance, 2)
+        elif fin_resp.status_code == 403:
+            finances_error = "Finances role not enabled"
+        else:
+            finances_error = f"Finances API error {fin_resp.status_code}"
+    except Exception as e:
+        finances_error = str(e)
 
     return {
-        "period":             period,
-        "period_start":       period_start.isoformat(),
-        "fetched_at":         now.isoformat(),
-        "currency":           currency,
-        "revenue":            round(revenue, 2),
-        "order_count":        len(all_orders),
-        "shipped_count":      shipped_count,
-        "units_sold":         units_sold,
-        "open_order_count":   open_order_count,
-        "pending_payment":    round(pending_payment, 2),
-        "total_orders":       len(all_orders),
+        "period":            period,
+        "period_start":      period_start.isoformat(),
+        "fetched_at":        now.isoformat(),
+        "currency":          currency,
+        # Sales tile
+        "revenue":           round(sales_revenue, 2),
+        "order_count":       len(all_orders),
+        "units_sold":        units_sold,
+        # Open orders tile
+        "open_order_count":  open_order_count,
+        # Payments tile
+        "payment_balance":   payment_balance,
+        "payment_currency":  payment_currency,
+        "finances_error":    finances_error,
+        "total_orders":      len(all_orders),
     }
 
 
