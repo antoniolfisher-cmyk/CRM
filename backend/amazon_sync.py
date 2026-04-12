@@ -33,6 +33,9 @@ def _default_state() -> dict:
         "created":      0,
         "updated":      0,
         "skipped":      0,
+        "fba_synced":   0,
+        "fbm_synced":   0,
+        "fbm_error":    None,
         "error":        None,
         "running":      False,
     }
@@ -243,16 +246,25 @@ async def _fetch_fbm_listings(tenant_id: Optional[int] = None) -> list:
 
     seller_id = await _resolve_seller_id(tenant_id, token, base)
     if not seller_id:
-        log.info("FBM sync skipped for tenant %s — could not resolve seller_id", tenant_id)
-        return []
+        raise RuntimeError(
+            "FBM sync: seller_id not found. Reconnect your Amazon account — "
+            "the Seller ID is captured automatically during OAuth."
+        )
 
     items = await _listings_api_fbm(seller_id, tenant_id, token, mkt_id, base)
     if items is None:
-        # Listings API unavailable — fall back to Reports API
-        log.info("Falling back to Reports API for FBM listings (tenant %s)", tenant_id)
-        items = await _reports_api_fbm(tenant_id, token, mkt_id, base) or []
+        # Listings Items API permission not granted — try Reports API
+        log.info("Listings Items API returned 403/404 for tenant %s — falling back to Reports API", tenant_id)
+        items = await _reports_api_fbm(tenant_id, token, mkt_id, base)
+        if items is None:
+            raise RuntimeError(
+                "FBM sync unavailable: Listings Items API returned 403 (permission not granted) "
+                "and Reports API also failed. Add 'Listings Items' or 'Reports' role to your "
+                "Amazon SP-API app in Developer Central, then reconnect."
+            )
+        items = items or []
 
-    log.info("FBM sync tenant %s: %d items", tenant_id, len(items))
+    log.info("FBM sync tenant %s: %d items (seller_id=%s)", tenant_id, len(items), seller_id)
     return items
 
 
@@ -353,12 +365,15 @@ async def _reports_api_fbm(tenant_id, token: str, mkt_id: str, base: str):
             },
             headers=headers,
         )
+        if r.status_code in (403, 404):
+            log.warning("FBM Reports API permission denied %s for tenant %s", r.status_code, tenant_id)
+            return None   # signal "API not available" to caller
         if r.status_code not in (200, 202):
             log.warning("FBM Reports API create failed %s for tenant %s: %s", r.status_code, tenant_id, r.text[:150])
-            return []
+            return None
         report_id = r.json().get("reportId")
         if not report_id:
-            return []
+            return None
 
         # 2. Poll for completion (max 3 min)
         deadline = _t.time() + 180
@@ -437,6 +452,8 @@ async def run_sync(tenant_id: Optional[int] = None) -> dict:
 
     db = SessionLocal()
     created = updated = skipped = 0
+    fba_synced = fbm_synced = 0
+    fbm_error = None
 
     try:
         # Pull FBA inventory (tag each item)
@@ -444,16 +461,20 @@ async def run_sync(tenant_id: Optional[int] = None) -> dict:
         for item in fba_items:
             item["fulfillment_channel"] = "FBA"
 
-        # Pull FBM listings (silently skips if seller_id missing or no permission)
+        # Pull FBM listings — capture error separately so FBA sync still completes
         try:
             fbm_items = await _fetch_fbm_listings(tenant_id)
         except Exception as _e:
             log.warning("FBM fetch failed for tenant %s (non-fatal): %s", tenant_id, _e)
+            fbm_error = str(_e)
             fbm_items = []
 
-        # FBM items that are ALSO in FBA should not be double-counted — FBA wins
+        # FBM items that are ALSO in FBA — FBA wins (already counted there)
         fba_asins = {(item.get("asin") or "").strip() for item in fba_items}
+        deduped = [i for i in fbm_items if (i.get("asin") or "").strip() in fba_asins]
         fbm_items = [i for i in fbm_items if (i.get("asin") or "").strip() not in fba_asins]
+        if deduped:
+            log.info("FBM deduped %d items already in FBA for tenant %s", len(deduped), tenant_id)
 
         all_items = fba_items + fbm_items
 
@@ -490,6 +511,11 @@ async def run_sync(tenant_id: Optional[int] = None) -> dict:
                 db.add(p)
                 created += 1
 
+            if channel == "FBA":
+                fba_synced += 1
+            else:
+                fbm_synced += 1
+
         db.commit()
 
         result = {
@@ -497,6 +523,9 @@ async def run_sync(tenant_id: Optional[int] = None) -> dict:
             "created":      created,
             "updated":      updated,
             "skipped":      skipped,
+            "fba_synced":   fba_synced,
+            "fbm_synced":   fbm_synced,
+            "fbm_error":    fbm_error,
             "error":        None,
             "running":      False,
         }

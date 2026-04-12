@@ -365,22 +365,34 @@ function AmazonSyncCard({ status, onSync, syncing, onPurge, purging, isAdmin }) 
   }
   const ago = fmtAgo(status.last_sync_at)
   const hasError = Boolean(status.error)
+  const hasFbmError = Boolean(status.fbm_error)
+  const hasSyncData = status.last_sync_at && (status.fba_synced != null || status.fbm_synced != null)
   return (
-    <div className={`card p-4 flex flex-wrap items-center justify-between gap-3 ${hasError ? 'border-l-4 border-red-400' : ''}`}>
+    <div className={`card p-4 flex flex-wrap items-center justify-between gap-3 ${hasError ? 'border-l-4 border-red-400' : hasFbmError ? 'border-l-4 border-amber-400' : ''}`}>
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full ${hasError ? 'bg-red-500' : 'bg-green-500'}`} />
-          <span className="text-sm font-medium text-gray-800">Amazon FBA Sync</span>
+          <span className={`w-2 h-2 rounded-full ${hasError ? 'bg-red-500' : hasFbmError ? 'bg-amber-500' : 'bg-green-500'}`} />
+          <span className="text-sm font-medium text-gray-800">Amazon Sync</span>
           <span className="text-xs text-gray-400">— auto-refreshes every hour</span>
         </div>
         {ago && !hasError && (
           <div className="flex items-center gap-3 text-xs text-gray-500">
             <span>Last sync: <span className="font-medium text-gray-700">{ago}</span></span>
+            {hasSyncData && (
+              <span className="text-blue-600 font-medium">
+                FBA: {status.fba_synced ?? '—'} &nbsp;|&nbsp; FBM: {status.fbm_synced ?? '—'}
+              </span>
+            )}
             {status.updated > 0 && <span className="text-green-600">↑ {status.updated} updated</span>}
             {status.created > 0 && <span className="text-blue-600">+ {status.created} new</span>}
           </div>
         )}
         {hasError && <span className="text-xs text-red-600 font-medium">Last error: {status.error}</span>}
+        {hasFbmError && !hasError && (
+          <span className="text-xs text-amber-700 font-medium" title={status.fbm_error}>
+            FBM: {status.fbm_error?.split('.')[0]}
+          </span>
+        )}
         {status.running && <span className="text-xs text-blue-600 animate-pulse">Syncing…</span>}
       </div>
       <div className="flex items-center gap-2">
