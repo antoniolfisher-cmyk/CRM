@@ -198,24 +198,35 @@ function AmazonSalesPanel() {
         </div>
       )}
 
-      {!loading && error && (
-        <div className="card p-5 border border-amber-200 bg-amber-50">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex items-start gap-3">
-              <div className="w-8 h-8 bg-amber-100 rounded-lg flex items-center justify-center shrink-0">
-                <AlertIcon className="w-4 h-4 text-amber-600" />
+      {!loading && error && (() => {
+        const notConnected = error.includes('not configured') || error.includes('not connected')
+        return (
+          <div className={`card p-5 border ${notConnected ? 'border-amber-200 bg-amber-50' : 'border-red-200 bg-red-50'}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className={`w-8 h-8 ${notConnected ? 'bg-amber-100' : 'bg-red-100'} rounded-lg flex items-center justify-center shrink-0`}>
+                  <AlertIcon className={`w-4 h-4 ${notConnected ? 'text-amber-600' : 'text-red-600'}`} />
+                </div>
+                <div>
+                  <p className={`text-sm font-medium ${notConnected ? 'text-amber-800' : 'text-red-800'}`}>
+                    {notConnected ? 'Amazon account not connected' : 'Amazon API error'}
+                  </p>
+                  <p className={`text-xs ${notConnected ? 'text-amber-600' : 'text-red-600'} mt-0.5`}>
+                    {notConnected
+                      ? 'Connect your Amazon Seller Central account to see live sales and orders here.'
+                      : error}
+                  </p>
+                </div>
               </div>
-              <div>
-                <p className="text-sm font-medium text-amber-800">Amazon account not connected</p>
-                <p className="text-xs text-amber-600 mt-0.5">Connect your Amazon Seller Central account to see live sales and orders here.</p>
-              </div>
+              {notConnected && (
+                <a href="/onboarding/amazon" className="shrink-0 px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-xs font-semibold rounded-lg transition-colors">
+                  Connect Amazon →
+                </a>
+              )}
             </div>
-            <a href="/onboarding/amazon" className="shrink-0 px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-xs font-semibold rounded-lg transition-colors">
-              Connect Amazon →
-            </a>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {!loading && data && !error && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -369,24 +380,35 @@ function AmazonLivePanel() {
         </div>
       )}
 
-      {!loading && error && (
-        <div className="card p-5 border border-amber-200 bg-amber-50">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex items-start gap-3">
-              <div className="w-8 h-8 bg-amber-100 rounded-lg flex items-center justify-center shrink-0">
-                <AlertIcon className="w-4 h-4 text-amber-600" />
+      {!loading && error && (() => {
+        const notConnected = error.includes('not configured') || error.includes('not connected')
+        return (
+          <div className={`card p-5 border ${notConnected ? 'border-amber-200 bg-amber-50' : 'border-red-200 bg-red-50'}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className={`w-8 h-8 ${notConnected ? 'bg-amber-100' : 'bg-red-100'} rounded-lg flex items-center justify-center shrink-0`}>
+                  <AlertIcon className={`w-4 h-4 ${notConnected ? 'text-amber-600' : 'text-red-600'}`} />
+                </div>
+                <div>
+                  <p className={`text-sm font-medium ${notConnected ? 'text-amber-800' : 'text-red-800'}`}>
+                    {notConnected ? 'Amazon account not connected' : 'Amazon API error'}
+                  </p>
+                  <p className={`text-xs ${notConnected ? 'text-amber-600' : 'text-red-600'} mt-0.5`}>
+                    {notConnected
+                      ? 'Connect your Amazon Seller Central account to see live FBA data here.'
+                      : error}
+                  </p>
+                </div>
               </div>
-              <div>
-                <p className="text-sm font-medium text-amber-800">Amazon account not connected</p>
-                <p className="text-xs text-amber-600 mt-0.5">Connect your Amazon Seller Central account to see live FBA data here.</p>
-              </div>
+              {notConnected && (
+                <a href="/onboarding/amazon" className="shrink-0 px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-xs font-semibold rounded-lg transition-colors">
+                  Connect Amazon →
+                </a>
+              )}
             </div>
-            <a href="/onboarding/amazon" className="shrink-0 px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-xs font-semibold rounded-lg transition-colors">
-              Connect Amazon →
-            </a>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {!loading && data && !error && (
         <>
