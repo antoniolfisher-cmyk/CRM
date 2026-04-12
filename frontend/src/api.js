@@ -44,10 +44,21 @@ export const api = {
   triggerInitialSync: () => req('POST', '/amazon/trigger-initial-sync', {}),
   getOnboardingSyncStatus: () => req('GET', '/onboarding/sync-status'),
 
-  // Billing (Stripe)
+  // Billing (Stripe) — tenant self-service
   getBillingPlans: () => req('GET', '/billing/plans'),
   createBillingCheckout: (plan) => req('POST', '/billing/checkout', { plan }),
   getBillingPortal: () => req('GET', '/billing/portal'),
+
+  // Admin Billing Dashboard (superadmin only)
+  getAdminBillingOverview: () => req('GET', '/admin/billing/overview'),
+  getAdminBillingTenants: () => req('GET', '/admin/billing/tenants'),
+  getAdminBillingInvoices: (params = {}) => {
+    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== '')).toString()
+    return req('GET', `/admin/billing/invoices${qs ? '?' + qs : ''}`)
+  },
+  suspendTenant: (id) => req('POST', `/admin/billing/tenants/${id}/suspend`),
+  activateTenant: (id) => req('POST', `/admin/billing/tenants/${id}/activate`),
+  adminChangePlan: (id, plan) => req('PUT', `/admin/billing/tenants/${id}/plan`, { plan }),
 
   // Accounts
   getAccounts: (params = {}) => {

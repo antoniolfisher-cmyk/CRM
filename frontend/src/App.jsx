@@ -5,6 +5,7 @@ import Login from './pages/Login'
 import Register from './pages/Register'
 import Onboarding from './pages/Onboarding'
 import Billing from './pages/Billing'
+import AdminBilling from './pages/AdminBilling'
 import Dashboard from './pages/Dashboard'
 import Accounts from './pages/Accounts'
 import FollowUps from './pages/FollowUps'
@@ -33,7 +34,7 @@ export default function App() {
 }
 
 function PrivateRoute() {
-  const { isAuthenticated, isAdmin, checking } = useAuth()
+  const { isAuthenticated, isAdmin, isSuperAdmin, checking } = useAuth()
   const location = useLocation()
 
   if (checking) {
@@ -62,11 +63,12 @@ function PrivateRoute() {
         <Route path="/support"     element={<Support />} />
         <Route path="/upc-scanner" element={<UpcScanner />} />
         <Route path="/ungate"      element={<Ungate />} />
-        <Route path="/billing"     element={<Billing />} />
-        <Route path="/approvals"   element={isAdmin ? <Approvals /> : <Navigate to="/" replace />} />
-        <Route path="/repricer"    element={isAdmin ? <Repricer /> : <Navigate to="/" replace />} />
-        <Route path="/admin"       element={isAdmin ? <Admin /> : <Navigate to="/" replace />} />
-        <Route path="*"            element={<Navigate to="/" replace />} />
+        <Route path="/billing"        element={<Billing />} />
+        <Route path="/approvals"      element={isAdmin ? <Approvals /> : <Navigate to="/" replace />} />
+        <Route path="/repricer"       element={isAdmin ? <Repricer /> : <Navigate to="/" replace />} />
+        <Route path="/admin"          element={isAdmin ? <Admin /> : <Navigate to="/" replace />} />
+        <Route path="/admin-billing"  element={isSuperAdmin ? <AdminBilling /> : <Navigate to="/" replace />} />
+        <Route path="*"               element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>
   )

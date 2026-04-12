@@ -13,8 +13,9 @@ SECRET_KEY          = os.getenv("SECRET_KEY", "dev-secret-change-in-production")
 ALGORITHM           = "HS256"
 TOKEN_EXPIRE_HOURS  = 24 * 7   # 7 days
 
-BOOTSTRAP_USERNAME = os.getenv("CRM_USERNAME", "admin")
-BOOTSTRAP_PASSWORD = os.getenv("CRM_PASSWORD", "changeme")
+BOOTSTRAP_USERNAME   = os.getenv("CRM_USERNAME", "admin")
+BOOTSTRAP_PASSWORD   = os.getenv("CRM_PASSWORD", "changeme")
+SUPERADMIN_USERNAME  = os.getenv("SUPERADMIN_USERNAME", BOOTSTRAP_USERNAME)
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer      = HTTPBearer(auto_error=False)
@@ -45,7 +46,13 @@ def verify_password(plain: str, hashed: str) -> bool:
 def create_token(username: str, role: str, tenant_id: int) -> str:
     expire = datetime.utcnow() + timedelta(hours=TOKEN_EXPIRE_HOURS)
     return jwt.encode(
-        {"sub": username, "role": role, "tenant_id": tenant_id, "exp": expire},
+        {
+            "sub":           username,
+            "role":          role,
+            "tenant_id":     tenant_id,
+            "is_superadmin": (username == SUPERADMIN_USERNAME),
+            "exp":           expire,
+        },
         SECRET_KEY,
         algorithm=ALGORITHM,
     )
@@ -73,6 +80,14 @@ def require_admin(credentials: HTTPAuthorizationCredentials = Depends(bearer)):
     payload = _decode(credentials)
     if payload.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
+    return payload
+
+
+def require_superadmin(credentials: HTTPAuthorizationCredentials = Depends(bearer)):
+    """Platform-level superadmin only (set SUPERADMIN_USERNAME env var, defaults to bootstrap admin)."""
+    payload = _decode(credentials)
+    if not payload.get("is_superadmin"):
+        raise HTTPException(status_code=403, detail="Platform admin access required")
     return payload
 
 

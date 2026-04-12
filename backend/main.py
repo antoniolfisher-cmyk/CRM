@@ -12,7 +12,7 @@ import schemas
 from database import engine, get_db
 from auth import (
     LoginRequest, RegisterRequest, create_token, require_auth, require_admin,
-    hash_password, verify_password, ensure_bootstrap_admin, get_tenant_id,
+    require_superadmin, hash_password, verify_password, ensure_bootstrap_admin, get_tenant_id,
 )
 from notifications import start_scheduler, stop_scheduler, send_daily_digests, send_email, build_digest_html, _smtp_configured
 import aura as aura_client
@@ -159,6 +159,36 @@ try:
                     _conn.commit()
     except Exception:
         pass
+    # ── Create billing_invoices table if missing ─────────────────────────────
+    try:
+        if "billing_invoices" not in _inspector.get_table_names():
+            with engine.connect() as _conn:
+                _conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS billing_invoices (
+                        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                        tenant_id         INTEGER NOT NULL REFERENCES tenants(id),
+                        stripe_invoice_id VARCHAR UNIQUE,
+                        stripe_charge_id  VARCHAR,
+                        amount_cents      INTEGER DEFAULT 0,
+                        currency          VARCHAR DEFAULT 'usd',
+                        status            VARCHAR NOT NULL,
+                        plan              VARCHAR,
+                        period_start      DATETIME,
+                        period_end        DATETIME,
+                        description       VARCHAR,
+                        invoice_url       VARCHAR,
+                        created_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+                _conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_billing_invoices_tenant_id ON billing_invoices(tenant_id)"
+                ))
+                _conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_billing_invoices_stripe_invoice_id ON billing_invoices(stripe_invoice_id)"
+                ))
+                _conn.commit()
+    except Exception:
+        pass
     # order_number unique constraint relaxed for multi-tenant
     try:
         _cols = [c["name"] for c in _inspector.get_columns("orders")]
@@ -260,12 +290,13 @@ def me(payload: dict = Depends(require_auth), db: Session = Depends(get_db)):
     tenant_id = payload.get("tenant_id", 1)
     tenant    = db.query(models.Tenant).filter_by(id=tenant_id).first()
     return {
-        "username":    payload["sub"],
-        "role":        payload["role"],
-        "tenant_id":   tenant_id,
-        "tenant_name": tenant.name if tenant else "Default",
-        "tenant_slug": tenant.slug if tenant else "default",
-        "plan":        tenant.plan if tenant else "starter",
+        "username":      payload["sub"],
+        "role":          payload["role"],
+        "is_superadmin": payload.get("is_superadmin", False),
+        "tenant_id":     tenant_id,
+        "tenant_name":   tenant.name if tenant else "Default",
+        "tenant_slug":   tenant.slug if tenant else "default",
+        "plan":          tenant.plan if tenant else "starter",
         "stripe_status": tenant.stripe_status if tenant else None,
     }
 
@@ -635,6 +666,183 @@ async def billing_webhook(request: Request, db: Session = Depends(get_db)):
         return result
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+# ─── Super-Admin Billing Dashboard (platform owner only) ─────────────────────
+
+@app.get("/api/admin/billing/overview")
+def admin_billing_overview(
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_superadmin),
+):
+    """Platform MRR, subscriber counts, and revenue summary."""
+    tenants  = db.query(models.Tenant).all()
+    invoices = db.query(models.BillingInvoice).all()
+
+    plan_prices = stripe_billing.PLAN_PRICES_CENTS
+
+    active_tenants  = [t for t in tenants if t.stripe_status == "active"]
+    trial_tenants   = [t for t in tenants if t.stripe_status == "trialing"]
+    past_due_tenants = [t for t in tenants if t.stripe_status == "past_due"]
+    free_tenants    = [t for t in tenants if not t.stripe_customer_id or t.plan == "starter"]
+
+    mrr_cents = sum(plan_prices.get(t.plan, 0) for t in active_tenants)
+
+    paid_invs  = [i for i in invoices if i.status == "paid"]
+    total_rev  = sum(i.amount_cents for i in paid_invs)
+    failed_inv = [i for i in invoices if i.status == "failed"]
+
+    return {
+        "total_tenants":          len(tenants),
+        "active_subscribers":     len(active_tenants),
+        "trial_subscribers":      len(trial_tenants),
+        "past_due_subscribers":   len(past_due_tenants),
+        "free_subscribers":       len(free_tenants),
+        "mrr":                    mrr_cents / 100,
+        "total_revenue":          total_rev / 100,
+        "total_invoices":         len(invoices),
+        "paid_invoices":          len(paid_invs),
+        "failed_invoices":        len(failed_inv),
+        "billing_enabled":        stripe_billing.billing_enabled(),
+    }
+
+
+@app.get("/api/admin/billing/tenants")
+def admin_billing_tenants(
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_superadmin),
+):
+    """All tenants with billing and connection details."""
+    tenants = db.query(models.Tenant).order_by(models.Tenant.created_at.desc()).all()
+    result  = []
+    for t in tenants:
+        cred  = db.query(models.AmazonCredential).filter_by(tenant_id=t.id).first()
+        users = db.query(func.count(models.User.id)).filter(models.User.tenant_id == t.id).scalar() or 0
+        last_inv = (
+            db.query(models.BillingInvoice)
+            .filter_by(tenant_id=t.id)
+            .order_by(models.BillingInvoice.created_at.desc())
+            .first()
+        )
+        admin_user = (
+            db.query(models.User)
+            .filter_by(tenant_id=t.id, role="admin")
+            .first()
+        )
+        result.append({
+            "id":                t.id,
+            "name":              t.name,
+            "slug":              t.slug,
+            "plan":              t.plan,
+            "is_active":         t.is_active,
+            "stripe_status":     t.stripe_status,
+            "stripe_customer_id": t.stripe_customer_id,
+            "trial_ends_at":     t.trial_ends_at.isoformat() if t.trial_ends_at else None,
+            "created_at":        t.created_at.isoformat() if t.created_at else None,
+            "amazon_connected":  bool(cred and cred.sp_refresh_token),
+            "store_name":        cred.store_name if cred else None,
+            "users_count":       users,
+            "admin_email":       admin_user.email if admin_user else None,
+            "mrr":               stripe_billing.PLAN_PRICES_CENTS.get(t.plan, 0) / 100
+                                 if t.stripe_status in ("active", "trialing") else 0,
+            "last_payment": {
+                "amount":     last_inv.amount_cents / 100,
+                "status":     last_inv.status,
+                "created_at": last_inv.created_at.isoformat() if last_inv.created_at else None,
+            } if last_inv else None,
+        })
+    return result
+
+
+@app.get("/api/admin/billing/invoices")
+def admin_billing_invoices(
+    limit: int = 100,
+    offset: int = 0,
+    tenant_id: int = None,
+    status: str = None,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_superadmin),
+):
+    """Payment history across all tenants (or filtered by tenant_id / status)."""
+    q = db.query(models.BillingInvoice).order_by(models.BillingInvoice.created_at.desc())
+    if tenant_id:
+        q = q.filter(models.BillingInvoice.tenant_id == tenant_id)
+    if status:
+        q = q.filter(models.BillingInvoice.status == status)
+
+    invoices = q.offset(offset).limit(limit).all()
+
+    # Bulk-fetch tenant names to avoid N+1
+    tid_set  = {i.tenant_id for i in invoices}
+    t_map    = {t.id: t.name for t in db.query(models.Tenant).filter(models.Tenant.id.in_(tid_set)).all()}
+
+    return [
+        {
+            "id":                 inv.id,
+            "tenant_id":          inv.tenant_id,
+            "tenant_name":        t_map.get(inv.tenant_id, "Unknown"),
+            "stripe_invoice_id":  inv.stripe_invoice_id,
+            "amount":             inv.amount_cents / 100,
+            "currency":           inv.currency,
+            "status":             inv.status,
+            "plan":               inv.plan,
+            "description":        inv.description,
+            "invoice_url":        inv.invoice_url,
+            "period_start":       inv.period_start.isoformat() if inv.period_start else None,
+            "period_end":         inv.period_end.isoformat() if inv.period_end else None,
+            "created_at":         inv.created_at.isoformat() if inv.created_at else None,
+        }
+        for inv in invoices
+    ]
+
+
+@app.post("/api/admin/billing/tenants/{tenant_id}/suspend")
+def admin_suspend_tenant(
+    tenant_id: int,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_superadmin),
+):
+    """Disable a tenant (locks them out without deleting data)."""
+    tenant = db.query(models.Tenant).filter_by(id=tenant_id).first()
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+    tenant.is_active = False
+    db.commit()
+    return {"ok": True, "tenant_id": tenant_id, "is_active": False}
+
+
+@app.post("/api/admin/billing/tenants/{tenant_id}/activate")
+def admin_activate_tenant(
+    tenant_id: int,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_superadmin),
+):
+    """Re-enable a suspended tenant."""
+    tenant = db.query(models.Tenant).filter_by(id=tenant_id).first()
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+    tenant.is_active = True
+    db.commit()
+    return {"ok": True, "tenant_id": tenant_id, "is_active": True}
+
+
+@app.put("/api/admin/billing/tenants/{tenant_id}/plan")
+def admin_change_plan(
+    tenant_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_superadmin),
+):
+    """Manually override a tenant's plan (e.g. comp an account or correct a billing error)."""
+    tenant = db.query(models.Tenant).filter_by(id=tenant_id).first()
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+    new_plan = body.get("plan", "starter")
+    if new_plan not in stripe_billing.PLANS:
+        raise HTTPException(400, f"Unknown plan: {new_plan}")
+    tenant.plan = new_plan
+    db.commit()
+    return {"ok": True, "tenant_id": tenant_id, "plan": new_plan}
 
 
 # ─── Ownership helpers ────────────────────────────────────────────────────────

@@ -379,3 +379,26 @@ class UngateRequest(Base):
     updated_at           = Column(DateTime(timezone=True), onupdate=func.now())
 
     product = relationship("Product", back_populates="ungate_requests")
+
+
+# ─── Billing / Subscription Tracking ────────────────────────────────────────
+
+class BillingInvoice(Base):
+    """Immutable record of every Stripe payment event, keyed per tenant."""
+    __tablename__ = "billing_invoices"
+
+    id                = Column(Integer, primary_key=True, index=True)
+    tenant_id         = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    stripe_invoice_id = Column(String, unique=True, nullable=True, index=True)
+    stripe_charge_id  = Column(String, nullable=True)
+    amount_cents      = Column(Integer, default=0)           # in cents (USD)
+    currency          = Column(String, default="usd")
+    status            = Column(String, nullable=False)       # paid | failed | refunded | open
+    plan              = Column(String, nullable=True)        # starter | pro | enterprise
+    period_start      = Column(DateTime(timezone=True), nullable=True)
+    period_end        = Column(DateTime(timezone=True), nullable=True)
+    description       = Column(String, nullable=True)
+    invoice_url       = Column(String, nullable=True)        # Stripe hosted invoice URL
+    created_at        = Column(DateTime(timezone=True), server_default=func.now())
+
+    tenant = relationship("Tenant", backref="invoices")

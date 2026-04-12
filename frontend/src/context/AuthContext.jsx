@@ -18,12 +18,13 @@ export function AuthProvider({ children }) {
     if (!token) { setChecking(false); return }
     fetchMe(token)
       .then((data) => setUser({
-        username:    data.username,
-        role:        data.role,
-        tenant_id:   data.tenant_id,
-        tenant_name: data.tenant_name,
-        tenant_slug: data.tenant_slug,
-        plan:        data.plan,
+        username:      data.username,
+        role:          data.role,
+        is_superadmin: data.is_superadmin || false,
+        tenant_id:     data.tenant_id,
+        tenant_name:   data.tenant_name,
+        tenant_slug:   data.tenant_slug,
+        plan:          data.plan,
         stripe_status: data.stripe_status,
       }))
       .catch(() => { localStorage.removeItem(TOKEN_KEY); setToken(null) })
@@ -45,12 +46,13 @@ export function AuthProvider({ children }) {
     setToken(data.access_token)
     const me = await fetchMe(data.access_token)
     setUser({
-      username:    me.username,
-      role:        me.role,
-      tenant_id:   me.tenant_id,
-      tenant_name: me.tenant_name,
-      tenant_slug: me.tenant_slug,
-      plan:        me.plan,
+      username:      me.username,
+      role:          me.role,
+      is_superadmin: me.is_superadmin || false,
+      tenant_id:     me.tenant_id,
+      tenant_name:   me.tenant_name,
+      tenant_slug:   me.tenant_slug,
+      plan:          me.plan,
       stripe_status: me.stripe_status,
     })
   }
@@ -68,12 +70,13 @@ export function AuthProvider({ children }) {
     setUser(null)
   }
 
-  const isAdmin = user?.role === 'admin'
+  const isAdmin      = user?.role === 'admin'
+  const isSuperAdmin = user?.is_superadmin === true
 
   return (
     <AuthContext.Provider value={{
       token, user, checking, login, loginWithToken, logout,
-      isAdmin, isAuthenticated: !!token && !!user,
+      isAdmin, isSuperAdmin, isAuthenticated: !!token && !!user,
     }}>
       {children}
     </AuthContext.Provider>
