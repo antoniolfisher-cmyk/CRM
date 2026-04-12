@@ -2775,6 +2775,7 @@ async def get_ungate_requirements(asin: str, current: dict = Depends(require_aut
     asin = asin.strip().upper()
 
     restrictions_data = {}
+    sp_error = None
     if _amazon_sp_configured():
         try:
             token = await _get_amazon_access_token()
@@ -2782,7 +2783,8 @@ async def get_ungate_requirements(asin: str, current: dict = Depends(require_aut
             import httpx as _httpx
             async with _httpx.AsyncClient(timeout=15) as c:
                 r = await c.get(
-                    f"{_AMAZON_SP_BASE}/products/restrictions/2022-08-01/listings/restrictions",
+                    # Same endpoint used by the sourcing page check — known to work
+                    f"{_AMAZON_SP_BASE}/listings/2021-08-01/restrictions",
                     headers={"x-amz-access-token": token},
                     params={
                         "asin":           asin,
@@ -2793,8 +2795,12 @@ async def get_ungate_requirements(asin: str, current: dict = Depends(require_aut
                 )
             if r.status_code == 200:
                 restrictions_data = r.json()
-        except Exception:
-            pass
+            else:
+                sp_error = f"SP-API returned {r.status_code}"
+        except Exception as e:
+            sp_error = str(e)
+    else:
+        sp_error = "Amazon SP-API not configured"
 
     # Summarize restrictions
     restrictions = restrictions_data.get("restrictions") or []
@@ -2840,6 +2846,8 @@ Return ONLY valid JSON with these fields (use null if not mentioned):
     return {
         "asin":         asin,
         "is_gated":     len(restrictions) > 0,
+        "check_ran":    sp_error is None,
+        "sp_error":     sp_error,
         "reasons":      reasons,
         "apply_links":  apply_links,
         "requirements": ai_requirements,

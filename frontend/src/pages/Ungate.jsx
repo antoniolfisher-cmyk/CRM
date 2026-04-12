@@ -381,7 +381,19 @@ function RequirementsBlock({ asin, cachedReqs }) {
         </button>
       </div>
       {(expanded || hasCache) && (reqs || hasCache) && (
-        <div className="mt-2 grid grid-cols-2 gap-2">
+        <div className="mt-2 space-y-2">
+          {/* Gating status banner */}
+          {reqs && (
+            <div className={`rounded-lg px-3 py-2 text-xs font-medium ${reqs.is_gated ? 'bg-red-50 border border-red-200 text-red-700' : reqs.check_ran ? 'bg-green-50 border border-green-200 text-green-700' : 'bg-gray-50 border border-gray-200 text-gray-600'}`}>
+              {reqs.is_gated
+                ? '🔒 GATED — approval required'
+                : reqs.check_ran
+                ? '✓ Appears ungated for your account'
+                : `⚠ ${reqs.sp_error || 'Could not verify'}`}
+              {reqs.reasons?.map((r, i) => <p key={i} className="font-normal mt-0.5">{r}</p>)}
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-2">
           {data.quantity && (
             <div className="bg-white rounded-lg border border-amber-100 px-3 py-2">
               <p className="text-xs text-amber-600">Min. Invoice Qty</p>
@@ -408,10 +420,11 @@ function RequirementsBlock({ asin, cachedReqs }) {
             <div className="col-span-2">
               <a href={reqs.apply_links[0].resource} target="_blank" rel="noreferrer"
                 className="text-xs text-blue-600 hover:underline">
-                Apply in Seller Central ↗
+                {reqs.apply_links[0].title || 'Apply in Seller Central'} ↗
               </a>
             </div>
           )}
+          </div>
         </div>
       )}
     </div>
@@ -479,12 +492,24 @@ function NewRequestModal({ onClose, onCreate }) {
           </div>
 
           {reqData && (
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs">
-              <p className="font-medium text-amber-700 mb-1">
-                {reqData.is_gated ? '🔒 Product is gated' : '✓ Product appears ungated'}
+            <div className={`border rounded-lg p-3 text-xs ${reqData.is_gated ? 'bg-red-50 border-red-200' : reqData.check_ran ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200'}`}>
+              <p className={`font-medium mb-1 ${reqData.is_gated ? 'text-red-700' : reqData.check_ran ? 'text-green-700' : 'text-gray-600'}`}>
+                {reqData.is_gated
+                  ? '🔒 Product is GATED — approval required'
+                  : reqData.check_ran
+                  ? '✓ Product appears ungated for your account'
+                  : `⚠ Could not verify gating status — ${reqData.sp_error || 'SP-API unavailable'}`}
               </p>
-              {reqData.requirements?.quantity && <p className="text-amber-600">Min quantity: {reqData.requirements.quantity} units</p>}
-              {reqData.requirements?.notes && <p className="text-amber-600 mt-1">{reqData.requirements.notes}</p>}
+              {reqData.reasons?.map((r, i) => (
+                <p key={i} className="text-red-600 mt-0.5">{r}</p>
+              ))}
+              {reqData.requirements?.quantity && <p className="text-gray-600 mt-1">Min invoice qty: <strong>{reqData.requirements.quantity} units</strong></p>}
+              {reqData.requirements?.notes && <p className="text-gray-600 mt-0.5">{reqData.requirements.notes}</p>}
+              {reqData.apply_links?.[0] && (
+                <a href={reqData.apply_links[0].resource} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline mt-1 block">
+                  {reqData.apply_links[0].title || 'Apply in Seller Central'} ↗
+                </a>
+              )}
             </div>
           )}
 
