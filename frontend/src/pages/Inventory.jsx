@@ -482,20 +482,28 @@ export default function Inventory() {
     return () => clearInterval(id)
   }, [loadAmazonSyncStatus])
 
-  const tabCounts = Object.fromEntries(TABS.map(t => [t.key, applyTab(products, t.key).length]))
+  const [channelFilter, setChannelFilter] = useState(null) // null | 'FBA' | 'FBM'
+
+  const channelFiltered = channelFilter
+    ? products.filter(p => (p.fulfillment_channel || 'FBA') === channelFilter)
+    : products
+
+  const tabCounts = Object.fromEntries(TABS.map(t => [t.key, applyTab(channelFiltered, t.key).length]))
 
   const searchedProducts = search
-    ? products.filter(p =>
+    ? channelFiltered.filter(p =>
         p.product_name?.toLowerCase().includes(search.toLowerCase()) ||
         p.asin?.toLowerCase().includes(search.toLowerCase())
       )
-    : products
+    : channelFiltered
   const tableRows = applyTab(searchedProducts, activeTab)
 
   const activeProducts = products.filter(p => Number(p.quantity) > 0)
   const totalUnits = activeProducts.reduce((s, p) => s + (Number(p.quantity) || 0), 0)
   const totalSpent = products.reduce((s, p) => s + (Number(p.money_spent) || 0), 0)
   const oosCount   = products.filter(p => !Number(p.quantity)).length
+  const fbaCount   = products.filter(p => (p.fulfillment_channel || 'FBA') === 'FBA').length
+  const fbmCount   = products.filter(p => p.fulfillment_channel === 'FBM').length
 
   const handleBulkSync = async () => {
     setBulkLoading(true)
@@ -581,7 +589,7 @@ export default function Inventory() {
       <KeepaStatusCard status={keepaStatus} onBulkSync={handleBulkSync} bulkLoading={bulkLoading} bulkResult={bulkResult} isAdmin={isAdmin} />
 
       {/* KPIs */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         <div className="card p-4">
           <p className="text-xs text-gray-500 uppercase tracking-wide">Active SKUs</p>
           <p className="text-2xl font-bold text-gray-900 mt-1">{activeProducts.length}</p>
@@ -597,6 +605,30 @@ export default function Inventory() {
         <div className="card p-4 cursor-pointer hover:bg-gray-50 transition-colors" onClick={() => setActiveTab('oos')}>
           <p className="text-xs text-gray-500 uppercase tracking-wide">Out of Stock</p>
           <p className={`text-2xl font-bold mt-1 ${oosCount > 0 ? 'text-red-600' : 'text-gray-400'}`}>{oosCount}</p>
+        </div>
+        {/* FBA tile */}
+        <div
+          onClick={() => setChannelFilter(c => c === 'FBA' ? null : 'FBA')}
+          className={`card p-4 cursor-pointer transition-all ${channelFilter === 'FBA' ? 'ring-2 ring-blue-500 bg-blue-50' : 'hover:bg-gray-50'}`}
+        >
+          <div className="flex items-center justify-between mb-1">
+            <p className="text-xs text-gray-500 uppercase tracking-wide">FBA</p>
+            <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">Amazon</span>
+          </div>
+          <p className="text-2xl font-bold text-blue-700 mt-1">{fbaCount}</p>
+          {channelFilter === 'FBA' && <p className="text-xs text-blue-500 mt-1">Filtered ✕ click to clear</p>}
+        </div>
+        {/* FBM tile */}
+        <div
+          onClick={() => setChannelFilter(c => c === 'FBM' ? null : 'FBM')}
+          className={`card p-4 cursor-pointer transition-all ${channelFilter === 'FBM' ? 'ring-2 ring-purple-500 bg-purple-50' : 'hover:bg-gray-50'}`}
+        >
+          <div className="flex items-center justify-between mb-1">
+            <p className="text-xs text-gray-500 uppercase tracking-wide">FBM</p>
+            <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-purple-100 text-purple-700">Merchant</span>
+          </div>
+          <p className="text-2xl font-bold text-purple-700 mt-1">{fbmCount}</p>
+          {channelFilter === 'FBM' && <p className="text-xs text-purple-500 mt-1">Filtered ✕ click to clear</p>}
         </div>
       </div>
 

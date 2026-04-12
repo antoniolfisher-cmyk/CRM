@@ -3464,7 +3464,7 @@ async def keepa_batch_lookup(body: dict, current: dict = Depends(require_auth)):
                 if resp.status_code == 429:
                     try:
                         refill = resp.json().get("refillIn", 0)
-                        errors.append(f"Keepa token limit reached. Refills in ~{round(refill/3600,1)}h.")
+                        errors.append(f"Keepa data limit reached — will refill in ~{round(refill/3600,1)}h. Remaining products skipped.")
                     except Exception:
                         errors.append("Keepa token limit reached.")
                     break
@@ -3551,7 +3551,7 @@ async def keepa_refresh_one(
             refill_secs = kd.get("refillIn", 0)
             refill_hrs = round(refill_secs / 3600, 1)
             tokens_left = kd.get("tokensLeft", "?")
-            raise HTTPException(429, f"Keepa token limit reached (tokensLeft: {tokens_left}). Tokens refill in ~{refill_hrs}h.")
+            raise HTTPException(429, f"Keepa data limit reached — will refill in ~{refill_hrs}h. Try again later.")
         except HTTPException:
             raise
         except Exception:
@@ -3618,7 +3618,7 @@ async def keepa_bulk_refresh(
                     tokens_left = kd.get("tokensLeft", "?")
                 except Exception:
                     refill_hrs, tokens_left = "?", "?"
-                errors.append(f"Keepa token limit reached (tokensLeft: {tokens_left}, refills in ~{refill_hrs}h) — sync stopped early")
+                errors.append(f"Keepa data limit reached — sync paused and will resume automatically in ~{refill_hrs}h.")
                 break  # no point hammering more batches
             if resp.status_code != 200:
                 errors.append(f"Keepa {resp.status_code} on batch {i // 100 + 1}")
