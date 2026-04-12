@@ -2547,19 +2547,44 @@ def approve_all_sourcing(db: Session = Depends(get_db), current: dict = Depends(
 @app.post("/api/admin/purge-system-products")
 async def purge_system_products(db: Session = Depends(get_db), current: dict = Depends(require_admin)):
     """
-    Delete all Amazon-synced (created_by='system') products for the current tenant
-    so the next FBA sync re-imports them cleanly using the tenant's own credentials.
-    Only affects the calling admin's own tenant. Superadmin can optionally pass
-    ?tenant_id=X to purge a specific tenant.
+    Delete ALL Amazon-synced products for the current tenant so the next FBA
+    sync re-imports them cleanly from the tenant's own credentials.
+
+    Catches three cases from the Josh credential-hijack incident:
+      1. Products created fresh by the wrong sync (created_by='system', tenant_id=tid)
+      2. Same as above but synced in legacy mode (tenant_id=NULL, created_by='system')
+      3. Products that already existed and had their quantity overwritten by the wrong sync
+         — identified by: has an ASIN, status='approved', and no purchase date or buy cost
+           (i.e. looks like a raw FBA import, not a product Antonio sourced and approved manually)
     """
+    from sqlalchemy import or_, and_
     tid = current.get("tenant_id")
     if not tid:
         raise HTTPException(400, "No tenant_id in token — cannot purge")
-    deleted = db.query(models.Product).filter(
-        models.Product.tenant_id == tid,
+
+    # Case 1 & 2: explicitly created by sync scheduler
+    deleted_system = db.query(models.Product).filter(
+        or_(models.Product.tenant_id == tid, models.Product.tenant_id.is_(None)),
         models.Product.created_by == "system",
     ).delete(synchronize_session=False)
+
+    # Case 3: products with an ASIN that have no sourcing data — pure FBA imports
+    # Safe guard: only delete if they have no buy_cost, no date_purchased, no supplier link
+    # (manually sourced products always have at least one of these)
+    deleted_fba = db.query(models.Product).filter(
+        models.Product.tenant_id == tid,
+        models.Product.created_by != "system",   # already handled above
+        models.Product.asin.isnot(None),
+        models.Product.asin != "",
+        models.Product.status == "approved",
+        models.Product.buy_cost.is_(None),
+        models.Product.date_purchased.is_(None),
+        models.Product.purchase_link.is_(None),
+    ).delete(synchronize_session=False)
+
     db.commit()
+    deleted = deleted_system + deleted_fba
+
     # Trigger a fresh sync for this tenant
     import amazon_sync
     sync_result = None
@@ -2570,6 +2595,8 @@ async def purge_system_products(db: Session = Depends(get_db), current: dict = D
             sync_result = {"error": str(e)}
     return {
         "purged": deleted,
+        "purged_system": deleted_system,
+        "purged_fba": deleted_fba,
         "sync_triggered": sync_result is not None,
         "sync_result": sync_result,
     }

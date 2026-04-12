@@ -537,7 +537,10 @@ export default function Inventory() {
       const result = await api.purgeAndResyncAmazon()
       load()
       loadAmazonSyncStatus()
-      alert(`Done — ${result.purged} old products removed, ${(result.sync_result?.created || 0) + (result.sync_result?.updated || 0)} re-imported from your Amazon account.`)
+      const reimported = result.sync_triggered
+        ? `${(result.sync_result?.created || 0) + (result.sync_result?.updated || 0)} re-imported from your Amazon account.`
+        : 'Connect your Amazon account then hit Sync Now to re-import.'
+      alert(`Cleared ${result.purged} products (${result.purged_system} auto-created, ${result.purged_fba} FBA imports). ${reimported}`)
     } catch (e) {
       alert(`Failed: ${e.message}`)
     } finally {
