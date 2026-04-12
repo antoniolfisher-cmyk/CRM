@@ -290,6 +290,33 @@ def recover_account(db: Session = Depends(get_db)):
     return {"ok": True, "recovered_user": _username, "message": "Password reset. Log in now, then REMOVE RESET_PASSWORD_FOR from Railway Variables."}
 
 
+@app.get("/api/auth/recover", include_in_schema=False)
+def recover_account_get(db: Session = Depends(get_db)):
+    """GET version — just visit the URL in a browser to trigger the reset."""
+    from fastapi.responses import HTMLResponse
+    import os as _os
+    _reset = _os.getenv("RESET_PASSWORD_FOR", "").strip()
+    if not _reset or ":" not in _reset:
+        return HTMLResponse("<h2 style='font-family:sans-serif;color:red'>&#10060; RESET_PASSWORD_FOR not set in Railway Variables.</h2>")
+    _username, _new_pass = _reset.split(":", 1)
+    _username = _username.strip()
+    _new_pass = _new_pass.strip()
+    user = db.query(models.User).filter(models.User.username == _username).first()
+    if not user:
+        all_users = [u.username for u in db.query(models.User).all()]
+        return HTMLResponse(f"<h2 style='font-family:sans-serif;color:red'>&#10060; User '{_username}' not found.<br>Existing users: {all_users}</h2>")
+    user.password_hash = hash_password(_new_pass)
+    user.is_active = True
+    db.commit()
+    return HTMLResponse(f"""
+    <div style='font-family:sans-serif;max-width:400px;margin:80px auto;padding:20px;background:#dcfce7;border:2px solid #86efac;border-radius:12px'>
+    <h2 style='color:#166534'>&#9989; Password Reset!</h2>
+    <p style='color:#166534'>Username: <strong>{_username}</strong><br>
+    You can now <a href='/login'>log in</a> with your new password.<br><br>
+    <strong>Important:</strong> Delete RESET_PASSWORD_FOR from Railway Variables now.</p>
+    </div>""")
+
+
 @app.post("/api/auth/register")
 def register(data: RegisterRequest, db: Session = Depends(get_db)):
     """Create a new tenant workspace + admin user. Returns a JWT."""
