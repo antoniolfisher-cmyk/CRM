@@ -126,10 +126,17 @@ export default function Layout({ children }) {
         <div className="px-4 py-4 border-t border-slate-700 space-y-2">
           {user && (
             <div className="px-1">
-              <p className="text-slate-300 text-xs font-medium">{user.username}</p>
-              <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${isAdmin ? 'bg-blue-900 text-blue-300' : 'bg-slate-700 text-slate-400'}`}>
-                {user.role}
-              </span>
+              <p className="text-slate-200 text-xs font-semibold">{user.username}</p>
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${isAdmin ? 'bg-blue-900 text-blue-300' : 'bg-slate-700 text-slate-400'}`}>
+                  {user.role}
+                </span>
+                {isSuperAdmin && (
+                  <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-orange-900 text-orange-300">
+                    platform
+                  </span>
+                )}
+              </div>
             </div>
           )}
           <button

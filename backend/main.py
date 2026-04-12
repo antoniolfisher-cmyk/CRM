@@ -289,10 +289,13 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
 def me(payload: dict = Depends(require_auth), db: Session = Depends(get_db)):
     tenant_id = payload.get("tenant_id", 1)
     tenant    = db.query(models.Tenant).filter_by(id=tenant_id).first()
+    # Read SUPERADMIN_USERNAME fresh every request — never use cached JWT value
+    import os as _os
+    _superadmin = _os.getenv("SUPERADMIN_USERNAME", _os.getenv("CRM_USERNAME", "admin"))
     return {
         "username":      payload["sub"],
         "role":          payload["role"],
-        "is_superadmin": payload.get("is_superadmin", False),
+        "is_superadmin": payload["sub"] == _superadmin,
         "tenant_id":     tenant_id,
         "tenant_name":   tenant.name if tenant else "Default",
         "tenant_slug":   tenant.slug if tenant else "default",

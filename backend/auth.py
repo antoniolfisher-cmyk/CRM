@@ -84,9 +84,10 @@ def require_admin(credentials: HTTPAuthorizationCredentials = Depends(bearer)):
 
 
 def require_superadmin(credentials: HTTPAuthorizationCredentials = Depends(bearer)):
-    """Platform-level superadmin only (set SUPERADMIN_USERNAME env var, defaults to bootstrap admin)."""
+    """Platform-level superadmin only. Reads SUPERADMIN_USERNAME env var fresh every call."""
     payload = _decode(credentials)
-    if not payload.get("is_superadmin"):
+    superadmin = os.getenv("SUPERADMIN_USERNAME", os.getenv("CRM_USERNAME", "admin"))
+    if payload.get("sub") != superadmin:
         raise HTTPException(status_code=403, detail="Platform admin access required")
     return payload
 
