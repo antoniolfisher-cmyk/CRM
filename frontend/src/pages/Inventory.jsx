@@ -502,8 +502,8 @@ export default function Inventory() {
   const totalUnits = activeProducts.reduce((s, p) => s + (Number(p.quantity) || 0), 0)
   const totalSpent = products.reduce((s, p) => s + (Number(p.money_spent) || 0), 0)
   const oosCount   = products.filter(p => !Number(p.quantity)).length
-  const fbaCount   = products.filter(p => (p.fulfillment_channel || 'FBA') === 'FBA').length
-  const fbmCount   = products.filter(p => p.fulfillment_channel === 'FBM').length
+  const fbaCount   = products.filter(p => (p.fulfillment_channel || 'FBA') === 'FBA' && Number(p.quantity) > 0).length
+  const fbmCount   = products.filter(p => p.fulfillment_channel === 'FBM' && Number(p.quantity) > 0).length
 
   const handleBulkSync = async () => {
     setBulkLoading(true)
@@ -616,6 +616,7 @@ export default function Inventory() {
             <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">Amazon</span>
           </div>
           <p className="text-2xl font-bold text-blue-700 mt-1">{fbaCount}</p>
+          <p className="text-xs text-gray-400 mt-0.5">active SKUs</p>
           {channelFilter === 'FBA' && <p className="text-xs text-blue-500 mt-1">Filtered ✕ click to clear</p>}
         </div>
         {/* FBM tile */}
@@ -628,6 +629,7 @@ export default function Inventory() {
             <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-purple-100 text-purple-700">Merchant</span>
           </div>
           <p className="text-2xl font-bold text-purple-700 mt-1">{fbmCount}</p>
+          <p className="text-xs text-gray-400 mt-0.5">active SKUs</p>
           {channelFilter === 'FBM' && <p className="text-xs text-purple-500 mt-1">Filtered ✕ click to clear</p>}
         </div>
       </div>
