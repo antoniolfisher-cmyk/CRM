@@ -5025,6 +5025,47 @@ def health(db: Session = Depends(get_db)):
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
+@app.get("/recover", include_in_schema=False)
+@app.get("/recover.html", include_in_schema=False)
+def recover_page():
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(content="""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Account Recovery</title>
+<style>
+  body{font-family:sans-serif;max-width:420px;margin:80px auto;padding:20px;background:#f8fafc}
+  h2{color:#1e293b}p{color:#64748b;font-size:14px}
+  button{background:#2563eb;color:#fff;border:none;padding:12px 24px;border-radius:8px;font-size:15px;cursor:pointer;width:100%;margin-top:12px}
+  button:hover{background:#1d4ed8}button:disabled{background:#94a3b8;cursor:not-allowed}
+  #result{margin-top:16px;padding:14px;border-radius:8px;font-size:14px;display:none;white-space:pre-wrap;word-break:break-all}
+  .ok{background:#dcfce7;color:#166534;border:1px solid #86efac}
+  .err{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5}
+</style>
+</head>
+<body>
+<h2>&#128273; Emergency Account Recovery</h2>
+<p>Resets your password using the <code>RESET_PASSWORD_FOR</code> variable you set in Railway Variables.<br><br>Make sure you added that variable first, then click the button.</p>
+<button onclick="recover()" id="btn">Reset My Password Now</button>
+<div id="result"></div>
+<script>
+async function recover(){
+  const btn=document.getElementById('btn'),box=document.getElementById('result');
+  btn.textContent='Resetting\u2026';btn.disabled=true;box.style.display='none';
+  try{
+    const r=await fetch('/api/auth/recover',{method:'POST'});
+    const d=await r.json();
+    box.style.display='block';
+    if(r.ok){box.className='ok';box.textContent='SUCCESS!\n\n'+JSON.stringify(d,null,2)+'\n\nLog in now, then REMOVE RESET_PASSWORD_FOR from Railway Variables.';}
+    else{box.className='err';box.textContent='Error: '+(d.detail||JSON.stringify(d));}
+  }catch(e){box.style.display='block';box.className='err';box.textContent='Request failed: '+e.message;}
+  btn.textContent='Reset My Password Now';btn.disabled=false;
+}
+</script>
+</body>
+</html>""")
+
 if os.path.isdir(STATIC_DIR):
     assets_dir = os.path.join(STATIC_DIR, "assets")
     if os.path.isdir(assets_dir):
