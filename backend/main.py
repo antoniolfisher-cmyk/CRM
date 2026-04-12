@@ -2362,7 +2362,8 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
             import httpx as _hx
             _cred = _get_tenant_amazon_creds(_tenant_id, db)
             if not _cred or not _cred.sp_refresh_token:
-                print(f"[sp_data] no creds for tenant {_tenant_id}", flush=True)
+                _missing = [k for k in ("AMAZON_LWA_CLIENT_ID","AMAZON_LWA_CLIENT_SECRET","AMAZON_SP_REFRESH_TOKEN","AMAZON_SELLER_ID") if not os.getenv(k,"").strip()]
+                print(f"[sp_data] no creds tenant={_tenant_id} db_record={_cred is not None} refresh_token={bool(_cred and _cred.sp_refresh_token)} missing_env={_missing}", flush=True)
                 return {}
             _tok  = await _get_tenant_access_token(_cred)
             _mkt  = _cred.marketplace_id or _AMAZON_MKT_ID
