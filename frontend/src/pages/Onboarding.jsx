@@ -50,7 +50,7 @@ export default function Onboarding() {
       setSyncing(false)
       setSyncDone(true)
       api.getAmazonCredentials().then(setStatus).catch(() => {})
-    }, 180_000)
+    }, 600_000)  // 10 minute UI timeout — backend sync continues regardless
   }
 
   // After confirming it's their account — start data pull
@@ -185,21 +185,15 @@ export default function Onboarding() {
             </h1>
 
             {/* Confirmed account */}
-            {(urlSellerId || status?.seller_id) && (
+            {(urlSellerId || status?.seller_id || urlStoreName || status?.store_name) && (
               <div className="mt-4 mb-5 bg-green-50 border border-green-200 rounded-xl p-4 text-left">
                 <p className="text-xs font-semibold text-green-700 uppercase tracking-wide mb-2">
                   ✓ Verified Amazon Account
                 </p>
-                {(urlStoreName || status?.store_name) && (
-                  <div className="flex justify-between text-sm mb-1">
-                    <span className="text-gray-500">Store</span>
-                    <span className="font-semibold text-gray-900">{urlStoreName || status?.store_name}</span>
-                  </div>
-                )}
                 <div className="flex justify-between text-sm">
-                  <span className="text-gray-500">Seller ID</span>
-                  <span className="font-mono text-xs font-bold text-gray-800 bg-gray-100 px-2 py-0.5 rounded">
-                    {urlSellerId || status?.seller_id}
+                  <span className="text-gray-500">Store Name</span>
+                  <span className="font-semibold text-gray-900">
+                    {urlStoreName || status?.store_name || urlSellerId || status?.seller_id || '—'}
                   </span>
                 </div>
               </div>
@@ -207,7 +201,8 @@ export default function Onboarding() {
 
             {syncing && (
               <p className="text-gray-500 text-sm mb-4">
-                Pulling your FBA inventory and Keepa data — about 30–60 seconds.
+                Pulling your FBA inventory and Keepa data.<br />
+                <span className="text-xs text-gray-400">This can take a few minutes for large catalogs — you can navigate away and it will keep running.</span>
               </p>
             )}
 
