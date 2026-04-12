@@ -2285,15 +2285,51 @@ def keepa_status_endpoint(current: dict = Depends(require_auth)):
 
 
 @app.get("/api/keepa/lookup/{asin}")
-async def keepa_lookup(asin: str, current: dict = Depends(require_auth)):
+async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Session = Depends(get_db)):
     """Fetch rich Keepa data for a single ASIN — FBA/FBM prices, seller counts, price history."""
-    api_key = os.getenv("KEEPA_API_KEY", "").strip()
-    if not api_key:
-        raise HTTPException(503, "KEEPA_API_KEY is not configured")
-
     asin = asin.strip().upper()
     if len(asin) != 10:
         raise HTTPException(400, "ASIN must be 10 characters")
+
+    # ── Cache-first: return DB data if synced within 24h ─────────────────────
+    from datetime import timezone as _tz
+    _cache_cutoff = datetime.now(_tz.utc) - timedelta(hours=24)
+    _cached = (
+        db.query(models.Product)
+        .filter(
+            models.Product.asin == asin,
+            models.Product.keepa_last_synced >= _cache_cutoff,
+        )
+        .order_by(models.Product.keepa_last_synced.desc())
+        .first()
+    )
+    if _cached and (_cached.buy_box or _cached.keepa_bsr):
+        _chart = f"https://graph.keepa.com/pricehistory.png?asin={asin}&domain=1&salesrank=1&bb=1&new=1&fbafba=1&range=90"
+        return {
+            "asin":                 asin,
+            "title":                _cached.product_name or "",
+            "amazon_url":           f"https://www.amazon.com/dp/{asin}",
+            "buy_box":              _cached.buy_box,
+            "amazon_fee":           _cached.amazon_fee,
+            "fba_fulfillment_fee":  None,
+            "referral_fee":         None,
+            "num_sellers":          _cached.num_sellers or None,
+            "num_fba_sellers":      None,
+            "num_fbm_sellers":      None,
+            "bsr":                  _cached.keepa_bsr,
+            "category":             _cached.keepa_category or "",
+            "estimated_sales":      _cached.estimated_sales or None,
+            "fba_low":              None, "fba_high": None, "fba_median": None,
+            "fbm_low":              None, "fbm_high": None, "fbm_median": None,
+            "overall_90_high":      None, "overall_90_low": None, "overall_median": None,
+            "fba_history":          [], "fbm_history": [], "bsr_history": [],
+            "keepa_chart_url":      _chart,
+            "source":               "cache",
+        }
+
+    api_key = os.getenv("KEEPA_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(503, "Keepa data temporarily unavailable")
 
     # Add offers=20 to get FBA vs FBM seller breakdown
     url = (
