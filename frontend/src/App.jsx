@@ -19,6 +19,7 @@ import TimeClock from './pages/TimeClock'
 import Support from './pages/Support'
 import UpcScanner from './pages/UpcScanner'
 import Ungate from './pages/Ungate'
+import Profile from './pages/Profile'
 
 export default function App() {
   return (
@@ -68,6 +69,7 @@ function PrivateRoute() {
         <Route path="/repricer"       element={isAdmin ? <Repricer /> : <Navigate to="/" replace />} />
         <Route path="/admin"          element={isAdmin ? <Admin /> : <Navigate to="/" replace />} />
         <Route path="/admin-billing"  element={isSuperAdmin ? <AdminBilling /> : <Navigate to="/" replace />} />
+        <Route path="/profile"        element={<Profile />} />
         <Route path="*"               element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>

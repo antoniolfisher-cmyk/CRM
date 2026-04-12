@@ -26,6 +26,8 @@ export function AuthProvider({ children }) {
         tenant_slug:   data.tenant_slug,
         plan:          data.plan,
         stripe_status: data.stripe_status,
+        email:         data.email || '',
+        notify_email:  data.notify_email !== false,
       }))
       .catch(() => { localStorage.removeItem(TOKEN_KEY); setToken(null) })
       .finally(() => setChecking(false))
@@ -54,6 +56,8 @@ export function AuthProvider({ children }) {
       tenant_slug:   me.tenant_slug,
       plan:          me.plan,
       stripe_status: me.stripe_status,
+      email:         me.email || '',
+      notify_email:  me.notify_email !== false,
     })
   }
 

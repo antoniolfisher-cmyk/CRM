@@ -366,6 +366,7 @@ def me(payload: dict = Depends(require_auth), db: Session = Depends(get_db)):
     # Use Amazon store_name as the display name when connected — falls back to tenant.name
     cred      = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first() if tenant_id else None
     display_name = (cred.store_name if cred and cred.store_name else None) or (tenant.name if tenant else "My Store")
+    db_user   = db.query(models.User).filter(models.User.username == payload["sub"]).first()
     # Read SUPERADMIN_USERNAME fresh every request — never use cached JWT value
     import os as _os
     _superadmin = _os.getenv("SUPERADMIN_USERNAME", _os.getenv("CRM_USERNAME", "admin"))
@@ -379,8 +380,67 @@ def me(payload: dict = Depends(require_auth), db: Session = Depends(get_db)):
         "tenant_slug":   tenant.slug if tenant else "default",
         "plan":          tenant.plan if tenant else "starter",
         "stripe_status": tenant.stripe_status if tenant else None,
+        "email":         db_user.email if db_user else None,
+        "notify_email":  db_user.notify_email if db_user else True,
     }
 
+
+class ProfileUpdate(BaseModel):
+    username: Optional[str] = None
+    email: Optional[str] = None
+    notify_email: Optional[bool] = None
+    current_password: Optional[str] = None
+    new_password: Optional[str] = None
+
+
+@app.put("/api/auth/profile")
+def update_profile(
+    data: ProfileUpdate,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_auth),
+):
+    """Let the currently logged-in user update their own username, email, or password."""
+    user = db.query(models.User).filter(models.User.username == current["sub"]).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Password change requires current password verification
+    if data.new_password:
+        if not data.current_password:
+            raise HTTPException(status_code=400, detail="current_password is required to change password")
+        if not verify_password(data.current_password, user.password_hash):
+            raise HTTPException(status_code=400, detail="Current password is incorrect")
+        if len(data.new_password) < 8:
+            raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+        user.password_hash = hash_password(data.new_password)
+
+    new_username = None
+    if data.username and data.username.strip() and data.username.strip() != user.username:
+        new_username = data.username.strip()
+        conflict = db.query(models.User).filter(
+            models.User.username == new_username,
+            models.User.id != user.id,
+        ).first()
+        if conflict:
+            raise HTTPException(status_code=409, detail="Username already taken")
+        user.username = new_username
+
+    if data.email is not None:
+        user.email = data.email.strip() or None
+    if data.notify_email is not None:
+        user.notify_email = data.notify_email
+
+    db.commit()
+
+    new_token = None
+    if new_username:
+        new_token = create_token(new_username, user.role, user.tenant_id or 1)
+
+    return {
+        "message": "Profile updated",
+        "username": user.username,
+        "new_token": new_token,
+    }
 
 
 # ─── Debug (admin only) ───────────────────────────────────────────────────────
@@ -693,11 +753,6 @@ def delete_user(user_id: int, db: Session = Depends(get_db), payload: dict = Dep
     db.commit()
 
 
-@app.get("/api/auth/me")
-def me(payload: dict = Depends(require_auth)):
-    return {"username": payload["sub"], "role": payload["role"]}
-
-
 # ─── Tenant info ─────────────────────────────────────────────────────────────
 
 @app.get("/api/tenant/me")
@@ -722,6 +777,29 @@ def tenant_me(current: dict = Depends(require_auth), db: Session = Depends(get_d
         "billing_enabled":      stripe_billing.billing_enabled(),
         "plans":                stripe_billing.PLANS,
     }
+
+
+@app.patch("/api/tenant/settings")
+def update_tenant_settings(
+    data: dict,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_admin),
+):
+    """Let an admin update their workspace display name (store name)."""
+    tenant_id = current.get("tenant_id", 1)
+    tenant    = db.query(models.Tenant).filter_by(id=tenant_id).first()
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+
+    store_name = (data.get("store_name") or "").strip()
+    if store_name:
+        tenant.name = store_name
+        # Also persist to AmazonCredential so email templates use the right name
+        cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
+        if cred:
+            cred.store_name = store_name
+    db.commit()
+    return {"ok": True, "store_name": tenant.name}
 
 
 @app.get("/api/tenant/users")

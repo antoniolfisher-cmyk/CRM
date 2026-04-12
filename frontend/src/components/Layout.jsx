@@ -1,4 +1,4 @@
-import { NavLink } from 'react-router-dom'
+import { NavLink, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 
 const nav = [
@@ -123,10 +123,13 @@ export default function Layout({ children }) {
             </>
           )}
         </nav>
-        <div className="px-4 py-4 border-t border-slate-700 space-y-2">
+        <div className="px-4 py-4 border-t border-slate-700 space-y-1">
           {user && (
-            <div className="px-1">
-              <p className="text-slate-200 text-xs font-semibold">{user.username}</p>
+            <Link
+              to="/profile"
+              className="block px-1 py-1.5 rounded-lg hover:bg-slate-800 transition-colors group"
+            >
+              <p className="text-slate-200 text-xs font-semibold group-hover:text-white">{user.username}</p>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${isAdmin ? 'bg-blue-900 text-blue-300' : 'bg-slate-700 text-slate-400'}`}>
                   {user.role}
@@ -137,7 +140,7 @@ export default function Layout({ children }) {
                   </span>
                 )}
               </div>
-            </div>
+            </Link>
           )}
           <button
             onClick={logout}
