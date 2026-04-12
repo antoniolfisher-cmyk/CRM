@@ -3029,7 +3029,10 @@ def _get_tenant_amazon_creds(tenant_id: int, db: Session) -> models.AmazonCreden
 
 def _tenant_amazon_configured(tenant_id: int, db: Session) -> bool:
     cred = _get_tenant_amazon_creds(tenant_id, db)
-    return bool(cred and cred.sp_refresh_token and cred.lwa_client_id)
+    if not cred or not cred.sp_refresh_token:
+        return False
+    # lwa_client_id can live in DB (manual entry) or env vars (OAuth flow)
+    return bool(cred.lwa_client_id or os.getenv("AMAZON_LWA_CLIENT_ID", ""))
 
 
 async def _get_tenant_access_token(cred: models.AmazonCredential) -> str:

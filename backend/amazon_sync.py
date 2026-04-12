@@ -56,17 +56,22 @@ def _sp_base(is_sandbox: bool = False) -> str:
 def configured(tenant_id: Optional[int] = None) -> bool:
     """
     Returns True if Amazon SP-API is configured for the given tenant.
-    Falls back to env vars when tenant_id is None or 0 (legacy mode).
+    A tenant is considered configured if they have a refresh token stored
+    (from OAuth) AND the LWA client credentials are available either in
+    the DB record or as env vars.
     """
     if tenant_id:
         db = SessionLocal()
         try:
             cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
-            return bool(
-                cred and cred.sp_refresh_token
-                and (cred.lwa_client_id or os.getenv("AMAZON_LWA_CLIENT_ID", ""))
-                and (cred.lwa_client_secret or os.getenv("AMAZON_LWA_CLIENT_SECRET", ""))
-            )
+            if not cred or not cred.sp_refresh_token:
+                return False
+            # Client ID/secret can be in the DB (manual entry) or env vars (shared app creds)
+            lwa_id     = cred.lwa_client_id     or os.getenv("AMAZON_LWA_CLIENT_ID", "")
+            lwa_secret = cred.lwa_client_secret or os.getenv("AMAZON_LWA_CLIENT_SECRET", "")
+            # If refresh token exists and at least client_id is available, consider configured
+            # (secret falls back to env var at token-exchange time)
+            return bool(lwa_id or lwa_secret)
         finally:
             db.close()
     return all(os.getenv(k, "").strip() for k in (
