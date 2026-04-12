@@ -149,11 +149,24 @@ function RequestsTab() {
 // ─── Request Detail ───────────────────────────────────────────────────────────
 
 function RequestDetail({ request: r, onUpdate, onDelete }) {
-  const [history, setHistory] = useState([])
-  const [busy, setBusy]       = useState(false)
+  const [history, setHistory]   = useState([])
+  const [busy, setBusy]         = useState(false)
   const [rejModal, setRejModal] = useState(false)
   const [rendered, setRendered] = useState(null)
-  const [copied, setCopied]   = useState(false)
+  const [copied, setCopied]     = useState(false)
+  const [submitModal, setSubmitModal] = useState(false)
+  const [applyLink, setApplyLink] = useState(null)
+
+  // Fetch apply link from requirements when loaded
+  useEffect(() => {
+    const loadLink = async () => {
+      try {
+        const d = await api.getUngateRequirements(r.asin)
+        if (d.apply_links?.[0]) setApplyLink(d.apply_links[0].resource)
+      } catch {}
+    }
+    loadLink()
+  }, [r.asin])
 
   useEffect(() => {
     try { setHistory(JSON.parse(r.history || '[]')) } catch { setHistory([]) }
@@ -176,11 +189,30 @@ function RequestDetail({ request: r, onUpdate, onDelete }) {
     load()
   }, [r.current_template_num, r.asin, r.product_name, r.requirements])
 
-  const markSubmitted = async () => {
+  const markSubmitted = async (openLink = false) => {
     setBusy(true)
     try {
+      // Copy template to clipboard before opening SC so it's ready to paste
+      const bodyText = latestDraft?.ai_response || rendered?.body || ''
+      if (bodyText && openLink) {
+        try { await navigator.clipboard.writeText(bodyText) } catch {}
+      }
       const updated = await api.submitUngateRequest(r.id, {})
       onUpdate(updated)
+      if (openLink && applyLink) window.open(applyLink, '_blank')
+    } catch (e) { alert(e.message) }
+    finally { setBusy(false) }
+  }
+
+  const sendEmail = async (toEmail) => {
+    const body   = latestDraft?.ai_response || rendered?.body || ''
+    const subject = latestDraft?.subject || rendered?.subject || `Ungate Request — ${r.product_name} (${r.asin})`
+    setBusy(true)
+    try {
+      await api.sendUngateEmail(r.id, { to_email: toEmail, subject, body })
+      const updated = await api.getUngateRequest(r.id)
+      onUpdate(updated)
+      setSubmitModal(false)
     } catch (e) { alert(e.message) }
     finally { setBusy(false) }
   }
@@ -302,25 +334,44 @@ function RequestDetail({ request: r, onUpdate, onDelete }) {
 
       {/* Actions */}
       {r.status !== 'approved' && r.status !== 'rejected_final' && (
-        <div className="px-5 py-4 border-t border-gray-100 flex flex-wrap gap-2">
-          {r.status === 'pending' || history.length === 0 ? (
-            <button onClick={markSubmitted} disabled={busy} className="btn-primary text-sm disabled:opacity-50">
-              Mark as Submitted to Amazon
-            </button>
+        <div className="px-5 py-4 border-t border-gray-100 space-y-2">
+          {(r.status === 'pending' || history.length === 0 || history[history.length-1]?.status === 'draft') ? (
+            <div className="flex flex-wrap gap-2">
+              {applyLink && (
+                <button
+                  onClick={() => { markSubmitted(true) }}
+                  disabled={busy}
+                  className="btn-primary text-sm disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  <span>🔓</span> Submit via Seller Central ↗
+                </button>
+              )}
+              <button
+                onClick={() => setSubmitModal(true)}
+                disabled={busy}
+                className="btn-secondary text-sm disabled:opacity-50 flex items-center gap-1.5"
+              >
+                ✉ Send via Email
+              </button>
+              {!applyLink && (
+                <button onClick={() => markSubmitted(false)} disabled={busy} className="btn-primary text-sm disabled:opacity-50">
+                  Mark as Submitted
+                </button>
+              )}
+            </div>
           ) : history.length > 0 && history[history.length - 1]?.status === 'submitted' ? (
-            <>
+            <div className="flex flex-wrap gap-2">
               <button onClick={() => setRejModal(true)} disabled={busy} className="bg-red-50 text-red-600 border border-red-200 rounded-lg px-4 py-2 text-sm font-medium hover:bg-red-100 transition-colors">
                 Record Amazon Rejection
               </button>
               <button onClick={markApproved} disabled={busy} className="bg-green-50 text-green-700 border border-green-200 rounded-lg px-4 py-2 text-sm font-medium hover:bg-green-100 transition-colors">
                 Mark Approved ✓
               </button>
-            </>
-          ) : history.length > 0 && history[history.length - 1]?.status === 'draft' ? (
-            <button onClick={markSubmitted} disabled={busy} className="btn-primary text-sm disabled:opacity-50">
-              Submit This Response to Amazon
-            </button>
+            </div>
           ) : null}
+          <p className="text-xs text-gray-400">
+            Template copied to clipboard automatically when submitting via Seller Central.
+          </p>
         </div>
       )}
 
@@ -343,6 +394,14 @@ function RequestDetail({ request: r, onUpdate, onDelete }) {
             } catch (e) { alert(e.message) }
             finally { setBusy(false) }
           }}
+        />
+      )}
+
+      {submitModal && (
+        <SubmitEmailModal
+          onClose={() => setSubmitModal(false)}
+          onSend={sendEmail}
+          busy={busy}
         />
       )}
     </div>
@@ -448,6 +507,9 @@ function NewRequestModal({ onClose, onCreate }) {
     try {
       const d = await api.getUngateRequirements(asin.trim().toUpperCase())
       setReqData(d)
+      // Auto-fill product name and category from Amazon catalog data
+      if (d.product_details?.name)     setName(d.product_details.name)
+      if (d.product_details?.category) setCategory(d.product_details.category)
     } catch (e) { alert(e.message) }
     finally { setFetching(false) }
   }
@@ -492,21 +554,32 @@ function NewRequestModal({ onClose, onCreate }) {
           </div>
 
           {reqData && (
-            <div className={`border rounded-lg p-3 text-xs ${reqData.is_gated ? 'bg-red-50 border-red-200' : reqData.check_ran ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200'}`}>
-              <p className={`font-medium mb-1 ${reqData.is_gated ? 'text-red-700' : reqData.check_ran ? 'text-green-700' : 'text-gray-600'}`}>
+            <div className={`border rounded-lg p-3 text-xs space-y-1.5 ${reqData.is_gated ? 'bg-red-50 border-red-200' : reqData.check_ran ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200'}`}>
+              <p className={`font-semibold ${reqData.is_gated ? 'text-red-700' : reqData.check_ran ? 'text-green-700' : 'text-gray-600'}`}>
                 {reqData.is_gated
                   ? '🔒 Product is GATED — approval required'
                   : reqData.check_ran
                   ? '✓ Product appears ungated for your account'
-                  : `⚠ Could not verify gating status — ${reqData.sp_error || 'SP-API unavailable'}`}
+                  : `⚠ Could not verify — ${reqData.sp_error || 'SP-API unavailable'}`}
               </p>
               {reqData.reasons?.map((r, i) => (
-                <p key={i} className="text-red-600 mt-0.5">{r}</p>
+                <p key={i} className="text-red-600">{r}</p>
               ))}
-              {reqData.requirements?.quantity && <p className="text-gray-600 mt-1">Min invoice qty: <strong>{reqData.requirements.quantity} units</strong></p>}
-              {reqData.requirements?.notes && <p className="text-gray-600 mt-0.5">{reqData.requirements.notes}</p>}
+              {reqData.requirements?.quantity && (
+                <p className="text-gray-700">Min invoice qty: <strong>{reqData.requirements.quantity} units</strong>
+                  {reqData.requirements.invoice_age_days ? ` · within ${reqData.requirements.invoice_age_days} days` : ''}
+                </p>
+              )}
+              {reqData.requirements?.needs_brand_auth && <p className="text-amber-700 font-medium">⚠ Brand authorization letter required</p>}
+              {reqData.requirements?.notes && <p className="text-gray-600">{reqData.requirements.notes}</p>}
+              {reqData.product_details?.name && (
+                <p className="text-gray-500">Auto-filled: <span className="font-medium text-gray-700">{reqData.product_details.name}</span>
+                  {reqData.product_details?.category ? ` · ${reqData.product_details.category}` : ''}
+                </p>
+              )}
               {reqData.apply_links?.[0] && (
-                <a href={reqData.apply_links[0].resource} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline mt-1 block">
+                <a href={reqData.apply_links[0].resource} target="_blank" rel="noreferrer"
+                  className="inline-flex items-center gap-1 mt-1 text-blue-600 hover:text-blue-800 font-medium">
                   {reqData.apply_links[0].title || 'Apply in Seller Central'} ↗
                 </a>
               )}
@@ -716,6 +789,47 @@ function TemplateEditModal({ template: t, onClose, onSave }) {
           <button onClick={onClose} className="btn-secondary">Cancel</button>
           <button onClick={save} disabled={saving} className="btn-primary disabled:opacity-50">
             {saving ? 'Saving…' : 'Save Template'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Submit Email Modal ───────────────────────────────────────────────────────
+
+function SubmitEmailModal({ onClose, onSend, busy }) {
+  const [toEmail, setToEmail] = useState('seller-performance@amazon.com')
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-md">
+        <div className="flex items-center justify-between px-5 py-4 border-b">
+          <p className="font-semibold text-gray-900">Send Application via Email</p>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">✕</button>
+        </div>
+        <div className="px-5 py-4 space-y-4">
+          <p className="text-sm text-gray-600">
+            The template will be sent via your configured SMTP email to Amazon's seller performance team.
+          </p>
+          <div>
+            <label className="label">Send to</label>
+            <input
+              className="input"
+              value={toEmail}
+              onChange={e => setToEmail(e.target.value)}
+              placeholder="seller-performance@amazon.com"
+            />
+            <p className="text-xs text-gray-400 mt-1">Common Amazon emails: seller-performance@amazon.com · brand-registry@amazon.com</p>
+          </div>
+        </div>
+        <div className="px-5 py-4 border-t flex justify-end gap-2">
+          <button onClick={onClose} className="btn-secondary">Cancel</button>
+          <button
+            onClick={() => onSend(toEmail)}
+            disabled={!toEmail.trim() || busy}
+            className="btn-primary disabled:opacity-50 flex items-center gap-1.5"
+          >
+            {busy ? 'Sending…' : '✉ Send Email'}
           </button>
         </div>
       </div>

@@ -2775,15 +2775,17 @@ async def get_ungate_requirements(asin: str, current: dict = Depends(require_aut
     asin = asin.strip().upper()
 
     restrictions_data = {}
+    product_details   = {}
     sp_error = None
+
     if _amazon_sp_configured():
         try:
-            token = await _get_amazon_access_token()
+            token     = await _get_amazon_access_token()
             seller_id = os.getenv("AMAZON_SELLER_ID", "").strip()
             import httpx as _httpx
-            async with _httpx.AsyncClient(timeout=15) as c:
+            async with _httpx.AsyncClient(timeout=20) as c:
+                # ① Gating check
                 r = await c.get(
-                    # Same endpoint used by the sourcing page check — known to work
                     f"{_AMAZON_SP_BASE}/listings/2021-08-01/restrictions",
                     headers={"x-amz-access-token": token},
                     params={
@@ -2793,10 +2795,33 @@ async def get_ungate_requirements(asin: str, current: dict = Depends(require_aut
                         "marketplaceIds": _AMAZON_MKT_ID,
                     },
                 )
-            if r.status_code == 200:
-                restrictions_data = r.json()
-            else:
-                sp_error = f"SP-API returned {r.status_code}"
+                if r.status_code == 200:
+                    restrictions_data = r.json()
+                else:
+                    sp_error = f"SP-API returned {r.status_code}"
+
+                # ② Product details from catalog (name, brand, category)
+                cat_r = await c.get(
+                    f"{_AMAZON_SP_BASE}/catalog/2022-04-01/items/{asin}",
+                    headers={"x-amz-access-token": token},
+                    params={
+                        "marketplaceIds": _AMAZON_MKT_ID,
+                        "includedData":   "summaries,classifications",
+                    },
+                )
+                if cat_r.status_code == 200:
+                    cat_data = cat_r.json()
+                    summaries = cat_data.get("summaries") or []
+                    if summaries:
+                        product_details["name"]  = summaries[0].get("itemName", "")
+                        product_details["brand"] = summaries[0].get("brandName", "")
+                    cls_groups = cat_data.get("classifications") or []
+                    if cls_groups:
+                        cls_list = cls_groups[0].get("classifications") or []
+                        if cls_list:
+                            # Walk to the deepest classification for the most specific category
+                            leaf = cls_list[-1] if cls_list else {}
+                            product_details["category"] = leaf.get("displayName", "")
         except Exception as e:
             sp_error = str(e)
     else:
@@ -2844,14 +2869,15 @@ Return ONLY valid JSON with these fields (use null if not mentioned):
             pass
 
     return {
-        "asin":         asin,
-        "is_gated":     len(restrictions) > 0,
-        "check_ran":    sp_error is None,
-        "sp_error":     sp_error,
-        "reasons":      reasons,
-        "apply_links":  apply_links,
-        "requirements": ai_requirements,
-        "raw":          restrictions_data,
+        "asin":            asin,
+        "is_gated":        len(restrictions) > 0,
+        "check_ran":       sp_error is None,
+        "sp_error":        sp_error,
+        "reasons":         reasons,
+        "apply_links":     apply_links,
+        "requirements":    ai_requirements,
+        "product_details": product_details,
+        "raw":             restrictions_data,
     }
 
 
@@ -3058,6 +3084,66 @@ def render_template(
     }
     body, subject = _fill_template(t.body, t.subject or "", variables)
     return {"subject": subject, "body": body, "template": t}
+
+
+@app.post("/api/ungate/requests/{req_id}/send-email")
+async def send_ungate_email(req_id: int, body: dict, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    """Send the current ungating template via email to Amazon seller performance."""
+    import json as _json, smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+
+    req = db.query(models.UngateRequest).filter(models.UngateRequest.id == req_id).first()
+    if not req:
+        raise HTTPException(404, "Request not found")
+
+    smtp_host = os.getenv("SMTP_HOST", "").strip()
+    smtp_user = os.getenv("SMTP_USER", "").strip()
+    smtp_pass = os.getenv("SMTP_PASS", "").strip()
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    if not all([smtp_host, smtp_user, smtp_pass]):
+        raise HTTPException(503, "SMTP not configured — add SMTP_HOST, SMTP_USER, SMTP_PASS to environment")
+
+    to_email   = body.get("to_email", "seller-performance@amazon.com")
+    subject    = body.get("subject", "")
+    email_body = body.get("body", "")
+
+    if not subject or not email_body:
+        raise HTTPException(400, "subject and body required")
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = smtp_user
+    msg["To"]      = to_email
+    msg.attach(MIMEText(email_body, "plain"))
+
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.sendmail(smtp_user, [to_email], msg.as_string())
+    except Exception as e:
+        raise HTTPException(502, f"Failed to send email: {str(e)}")
+
+    # Record the send in history
+    history = _json.loads(req.history or "[]")
+    if history:
+        history[-1]["emailed_at"]  = datetime.utcnow().isoformat()
+        history[-1]["emailed_to"]  = to_email
+        history[-1]["status"]      = "submitted"
+    else:
+        history.append({
+            "template_num": req.current_template_num,
+            "submitted_at": datetime.utcnow().isoformat(),
+            "emailed_to":   to_email,
+            "status":       "submitted",
+        })
+    req.history = _json.dumps(history)
+    req.status  = "in_progress"
+    db.commit()
+    db.refresh(req)
+    return {"ok": True, "sent_to": to_email}
 
 
 @app.post("/api/support/chat")

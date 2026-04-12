@@ -148,6 +148,7 @@ export const api = {
     const qs = new URLSearchParams(Object.entries(params).filter(([,v]) => v)).toString()
     return req('GET', `/ungate/render-template/${num}${qs ? '?' + qs : ''}`)
   },
+  sendUngateEmail: (id, data) => req('POST', `/ungate/requests/${id}/send-email`, data),
 
   // Orders
   getOrders: (params = {}) => {
