@@ -548,10 +548,10 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
   // Derived financials — computed inline, no effect needed (avoids scroll-reset bug)
   const _calc = calcFinancials(form)
 
-  // Auto-fetch Keepa data when a valid ASIN is entered
+  // Auto-fetch market data when a valid ASIN is entered
   useEffect(() => {
     const asin = (form.asin || '').trim().toUpperCase()
-    if (!keepaConfigured || asin.length !== 10) {
+    if (asin.length !== 10) {
       setKeepaFilled(null)
       setKeepaError('')
       return
@@ -670,7 +670,7 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
           {keepaFilled && (
             <div className="mt-1 space-y-1">
               <p className="text-xs text-green-700 flex flex-wrap items-center gap-x-2">
-                <span className="font-medium">✓ Keepa data loaded</span>
+                <span className="font-medium">✓ Product data loaded</span>
                 {keepaFilled.bsr && <span className="text-gray-500">BSR #{Number(keepaFilled.bsr).toLocaleString()}</span>}
                 {keepaFilled.category && <span className="text-gray-500 truncate max-w-[12rem]">{keepaFilled.category}</span>}
               </p>
@@ -737,7 +737,7 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
             <p className="text-xs text-amber-600 mt-1">⚠ {keepaError}</p>
           )}
           {keepaConfigured && !keepaFilled && !keepaLoading && (form.asin || '').length > 0 && (form.asin || '').length < 10 && (
-            <p className="text-xs text-gray-400 mt-1">Enter all 10 characters to auto-fill from Keepa</p>
+            <p className="text-xs text-gray-400 mt-1">Enter all 10 characters to auto-fill product data</p>
           )}
         </div>
         <Field label="VA Finder" k="va_finder" placeholder="Who found this?" />

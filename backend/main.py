@@ -2505,21 +2505,25 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
         f"?key={api_key}&domain={_KEEPA_DOMAIN}&asin={asin}&stats=90&offers=20"
     )
     import httpx as _httpx
-    async with _httpx.AsyncClient(timeout=8) as client:
-        resp = await client.get(url)
+    try:
+        async with _httpx.AsyncClient(timeout=8) as client:
+            resp = await client.get(url)
+        data = resp.json() if resp.status_code == 200 else {}
+    except Exception:
+        data = {}
 
-    if resp.status_code != 200:
-        raise HTTPException(503, "Keepa data temporarily unavailable")
-
-    data = resp.json()
-    if (data.get("tokensLeft") or 1) < 0:
-        raise HTTPException(503, "Keepa data temporarily unavailable")
-    if data.get("error"):
-        raise HTTPException(503, "Keepa data temporarily unavailable")
+    # Keepa unavailable or rate-limited — return what SP-API gave us
+    # (Market Analysis still renders with live offer counts + buy box)
+    if (
+        not data
+        or (data.get("tokensLeft") or 1) < 0
+        or data.get("error")
+    ):
+        return _base_resp()
 
     products_data = data.get("products") or []
     if not products_data:
-        raise HTTPException(404, f"ASIN {asin} not found in Keepa")
+        return _base_resp()   # ASIN unknown — still show Market Analysis with SP-API data
 
     kp = products_data[0]
     stats = kp.get("stats") or {}
