@@ -2871,7 +2871,9 @@ async def _fetch_amazon_store_name(cred) -> str:
 
 # App-level OAuth credentials (registered in Amazon Developer Central)
 _AMAZON_APP_ID        = os.getenv("AMAZON_SP_APP_ID", "")    # amzn1.sp.solution.xxx
-_AMAZON_OAUTH_CALLBACK = os.getenv("APP_URL", "http://localhost:8000") + "/api/amazon/oauth/callback"
+def _get_oauth_callback_url() -> str:
+    """Read APP_URL fresh from env each time — never cached at startup."""
+    return os.getenv("APP_URL", "http://localhost:8000").rstrip("/") + "/api/amazon/oauth/callback"
 
 
 @app.get("/api/amazon/oauth/url")
@@ -2885,14 +2887,15 @@ def amazon_oauth_url(current: dict = Depends(require_auth)):
     if not _AMAZON_APP_ID:
         raise HTTPException(503, "AMAZON_SP_APP_ID env var is not set. Register your app in Amazon Developer Central.")
     import urllib.parse
+    callback_url = _get_oauth_callback_url()
     params = {
         "application_id": _AMAZON_APP_ID,
         "state": str(tenant_id),
         "version": "beta",
-        "redirect_uri": _AMAZON_OAUTH_CALLBACK,
+        "redirect_uri": callback_url,
     }
     url = "https://sellercentral.amazon.com/apps/authorize/consent?" + urllib.parse.urlencode(params)
-    return {"url": url}
+    return {"url": url, "redirect_uri": callback_url}
 
 
 @app.get("/api/amazon/oauth/callback")
@@ -2926,7 +2929,7 @@ async def amazon_oauth_callback(
                 data={
                     "grant_type":   "authorization_code",
                     "code":          spapi_oauth_code,
-                    "redirect_uri":  _AMAZON_OAUTH_CALLBACK,
+                    "redirect_uri":  _get_oauth_callback_url(),
                     "client_id":     os.getenv("AMAZON_LWA_CLIENT_ID", ""),
                     "client_secret": os.getenv("AMAZON_LWA_CLIENT_SECRET", ""),
                 },
