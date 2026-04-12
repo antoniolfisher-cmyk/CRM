@@ -32,6 +32,7 @@ export const api = {
   getRepricerStats: () => req('GET', '/dashboard/repricer-stats'),
   getDashboardAmazonLive: () => req('GET', '/dashboard/amazon-live'),
   getDashboardAmazonSales: (period = 'today') => req('GET', `/dashboard/amazon-sales?period=${period}`),
+  getDashboardAmazonOrders: () => req('GET', '/dashboard/amazon-orders'),
 
   // Tenant & Multi-tenancy
   getTenantMe: () => req('GET', '/tenant/me'),

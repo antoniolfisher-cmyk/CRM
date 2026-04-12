@@ -1241,6 +1241,62 @@ async def get_dashboard_amazon_live(db: Session = Depends(get_db), current: dict
     }
 
 
+@app.get("/api/dashboard/amazon-orders")
+async def get_dashboard_amazon_orders(
+    current: dict = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """
+    Live open FBA + FBM orders from Amazon SP-API (last 60 days, open statuses).
+    Returns separate lists so the dashboard can show FBA vs FBM boxes.
+    """
+    tenant_id = current.get("tenant_id", 1)
+    cred = _get_tenant_amazon_creds(tenant_id, db)
+    if not cred or not cred.sp_refresh_token:
+        raise HTTPException(503, "Amazon SP-API credentials are not configured")
+
+    from datetime import timezone as _tz2
+    now       = datetime.now(_tz2.utc)
+    since     = (now - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    mkt_id    = cred.marketplace_id or _AMAZON_MKT_ID
+
+    access_token = await _get_tenant_access_token(cred)
+
+    params = [
+        ("MarketplaceIds",  mkt_id),
+        ("LastUpdatedAfter", since),
+        ("OrderStatuses",   "Pending"),
+        ("OrderStatuses",   "Unshipped"),
+        ("OrderStatuses",   "PartiallyShipped"),
+    ]
+    all_orders = await _amazon_fetch_orders(access_token, params)
+
+    def _fmt(o):
+        total_obj = o.get("OrderTotal") or {}
+        return {
+            "order_id":    o.get("AmazonOrderId", ""),
+            "status":      o.get("OrderStatus", ""),
+            "date":        (o.get("PurchaseDate") or "")[:10],
+            "ship_by":     (o.get("LatestShipDate") or "")[:10],
+            "items":       (o.get("NumberOfItemsShipped") or 0) + (o.get("NumberOfItemsUnshipped") or 0),
+            "total":       float(total_obj.get("Amount") or 0),
+            "currency":    total_obj.get("CurrencyCode") or "USD",
+        }
+
+    fba = sorted([_fmt(o) for o in all_orders if o.get("FulfillmentChannel") == "AFN"],
+                 key=lambda x: x["date"], reverse=True)
+    fbm = sorted([_fmt(o) for o in all_orders if o.get("FulfillmentChannel") == "MFN"],
+                 key=lambda x: x["date"], reverse=True)
+
+    return {
+        "fba_orders":  fba,
+        "fbm_orders":  fbm,
+        "fba_count":   len(fba),
+        "fbm_count":   len(fbm),
+        "fetched_at":  now.isoformat(),
+    }
+
+
 @app.get("/api/dashboard/repricer-stats")
 def get_repricer_stats(db: Session = Depends(get_db), _ = Depends(require_auth)):
     now = datetime.utcnow()
@@ -2546,7 +2602,7 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
         r.update(_live)   # always overlay live SP-API data
         return r
 
-    # ── DB cache: fresh Keepa data (< 24h) ────────────────────────────────────
+    # ── DB cache tier 1: fresh Keepa sync (< 24h) — skip live Keepa call ────────
     _cache_cutoff = datetime.now(_tz.utc) - timedelta(hours=24)
     _fresh = (
         db.query(models.Product)
@@ -2567,33 +2623,32 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
             fbm_low=_fresh.fbm_low, fbm_high=_fresh.fbm_high, fbm_median=_fresh.fbm_median,
         )
 
-    # ── DB cache: ASIN exists but not Keepa-enriched yet ──────────────────────
-    _any = (
-        db.query(models.Product)
-        .filter(models.Product.asin == asin)
-        .order_by(models.Product.updated_at.desc().nullslast())
-        .first()
-    )
-    if _any:
-        return _base_resp(
-            title=_any.product_name or "", buy_box=_any.buy_box or None,
-            amazon_fee=_any.amazon_fee or None, bsr=_any.keepa_bsr or None,
-            category=_any.keepa_category or "", estimated_sales=_any.estimated_sales or None,
-            num_sellers=_any.num_sellers or None,
-            price_90_high=_any.price_90_high, price_90_low=_any.price_90_low,
-            price_90_median=_any.price_90_median,
-            fba_low=_any.fba_low, fba_high=_any.fba_high, fba_median=_any.fba_median,
-            fbm_low=_any.fbm_low, fbm_high=_any.fbm_high, fbm_median=_any.fbm_median,
-        )
+    # ── Live Keepa: parse concurrently-fetched data (priority over stale DB) ──
+    # DB tier-2 (ASIN in DB but unenriched) is intentionally BELOW this so that
+    # a fresh live Keepa response is never discarded in favour of null DB fields.
+    products_data = (_keepa_concurrent.get("products") or []) if _keepa_concurrent else []
 
-    # ── No DB cache: use concurrently-fetched Keepa data ─────────────────────────
-    # If Keepa returned nothing, still show SP-API data (buy box, sellers, fee)
-    if not _keepa_concurrent:
-        return _base_resp()
-
-    products_data = _keepa_concurrent.get("products") or []
+    # ── DB cache tier 2: fallback when Keepa unavailable ─────────────────────
     if not products_data:
-        return _base_resp()   # ASIN not in Keepa — show Market Analysis with SP-API data only
+        _any = (
+            db.query(models.Product)
+            .filter(models.Product.asin == asin)
+            .order_by(models.Product.updated_at.desc().nullslast())
+            .first()
+        )
+        if _any:
+            return _base_resp(
+                title=_any.product_name or "", buy_box=_any.buy_box or None,
+                amazon_fee=_any.amazon_fee or None, bsr=_any.keepa_bsr or None,
+                category=_any.keepa_category or "", estimated_sales=_any.estimated_sales or None,
+                num_sellers=_any.num_sellers or None,
+                price_90_high=_any.price_90_high, price_90_low=_any.price_90_low,
+                price_90_median=_any.price_90_median,
+                fba_low=_any.fba_low, fba_high=_any.fba_high, fba_median=_any.fba_median,
+                fbm_low=_any.fbm_low, fbm_high=_any.fbm_high, fbm_median=_any.fbm_median,
+            )
+        # No DB record + no Keepa → return SP-API data only (sellers, buy box, fee)
+        return _base_resp()
 
     kp = products_data[0]
     stats = kp.get("stats") or {}
@@ -2754,7 +2809,7 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
         "fba_fulfillment_fee": fba_fulfillment,
         "referral_fee":      referral_fee,
         "amazon_fee":        amazon_fee,
-        "tokens_left":       data.get("tokensLeft"),
+        "tokens_left":       (_keepa_concurrent or {}).get("tokensLeft"),
         "fba_low":           fba_low,
         "fba_high":          fba_high,
         "fba_median":        fba_median,

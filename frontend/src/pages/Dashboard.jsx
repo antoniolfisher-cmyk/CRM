@@ -74,6 +74,9 @@ export default function Dashboard() {
       {/* Amazon Sales Panel */}
       <AmazonSalesPanel />
 
+      {/* Amazon FBA + FBM Open Orders */}
+      <AmazonOrdersPanel />
+
       {/* Amazon Live FBA Section */}
       <AmazonLivePanel />
 
@@ -505,6 +508,181 @@ function AmazonLivePanel() {
         </>
       )}
     </div>
+  )
+}
+
+// ─── Amazon Orders Panel ─────────────────────────────────────────────────────
+
+function AmazonOrdersPanel() {
+  const [data, setData]       = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError]     = useState(null)
+  const [modal, setModal]     = useState(null) // 'fba' | 'fbm' | null
+
+  const fetchData = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      setData(await api.getDashboardAmazonOrders())
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { fetchData() }, [fetchData])
+
+  const statusColor = (s) => {
+    if (s === 'Unshipped')        return 'text-red-600 bg-red-50'
+    if (s === 'PartiallyShipped') return 'text-amber-600 bg-amber-50'
+    return 'text-gray-600 bg-gray-100'
+  }
+
+  const orders = modal === 'fba' ? (data?.fba_orders || []) : (data?.fbm_orders || [])
+
+  return (
+    <>
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <h2 className="text-base font-semibold text-gray-700">Amazon Open Orders</h2>
+            <span className="flex items-center gap-1 text-xs text-green-600 bg-green-50 px-2 py-0.5 rounded-full font-medium">
+              <span className="w-1.5 h-1.5 bg-green-500 rounded-full inline-block" />
+              Live
+            </span>
+          </div>
+          <button
+            onClick={fetchData}
+            disabled={loading}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
+          >
+            <RefreshIcon spinning={loading} />
+            {loading ? 'Loading…' : 'Refresh'}
+          </button>
+        </div>
+
+        {loading && (
+          <div className="grid grid-cols-2 gap-4 animate-pulse">
+            <div className="h-28 bg-gray-200 rounded-xl" />
+            <div className="h-28 bg-gray-200 rounded-xl" />
+          </div>
+        )}
+
+        {!loading && error && (
+          <div className="card p-5 border border-amber-200 bg-amber-50">
+            <p className="text-sm text-amber-800 font-medium">
+              {error.includes('not configured') || error.includes('not connected')
+                ? 'Amazon account not connected'
+                : 'Amazon Orders API error'}
+            </p>
+            <p className="text-xs text-amber-600 mt-0.5">{error}</p>
+          </div>
+        )}
+
+        {!loading && data && !error && (
+          <div className="grid grid-cols-2 gap-4">
+            {/* FBA Orders */}
+            <button
+              onClick={() => setModal('fba')}
+              className="card p-5 border-l-4 border-blue-500 text-left hover:shadow-md transition-shadow cursor-pointer group"
+            >
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-sm text-gray-500">FBA Orders</p>
+                  <p className="text-3xl font-bold text-gray-900 mt-1">{data.fba_count}</p>
+                  <p className="text-xs text-gray-400 mt-1">open • fulfilled by Amazon</p>
+                </div>
+                <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center">
+                  <AmazonBoxIcon className="w-5 h-5 text-blue-600" />
+                </div>
+              </div>
+              <p className="text-xs text-blue-600 mt-3 group-hover:underline">View orders →</p>
+            </button>
+
+            {/* FBM Orders */}
+            <button
+              onClick={() => setModal('fbm')}
+              className="card p-5 border-l-4 border-violet-500 text-left hover:shadow-md transition-shadow cursor-pointer group"
+            >
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-sm text-gray-500">FBM Orders</p>
+                  <p className="text-3xl font-bold text-gray-900 mt-1">{data.fbm_count}</p>
+                  <p className="text-xs text-gray-400 mt-1">open • fulfilled by merchant</p>
+                </div>
+                <div className="w-10 h-10 rounded-lg bg-violet-50 flex items-center justify-center">
+                  <BoxIcon className="w-5 h-5 text-violet-600" />
+                </div>
+              </div>
+              <p className="text-xs text-violet-600 mt-3 group-hover:underline">View orders →</p>
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Orders modal */}
+      {modal && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/40" onClick={() => setModal(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">
+                  {modal === 'fba' ? 'FBA' : 'FBM'} Open Orders
+                </h3>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  {orders.length} order{orders.length !== 1 ? 's' : ''} • live from Amazon
+                </p>
+              </div>
+              <button onClick={() => setModal(null)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600">✕</button>
+            </div>
+            <div className="overflow-y-auto flex-1">
+              {orders.length === 0 ? (
+                <p className="text-sm text-gray-400 text-center py-12">No open orders</p>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-gray-50 border-b border-gray-100">
+                    <tr>
+                      <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Order ID</th>
+                      <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Date</th>
+                      <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
+                      <th className="text-right px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Items</th>
+                      <th className="text-right px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {orders.map(o => (
+                      <tr key={o.order_id} className="hover:bg-gray-50 transition-colors">
+                        <td className="px-6 py-3">
+                          <a
+                            href={`https://sellercentral.amazon.com/orders-v3/order/${o.order_id}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-mono text-xs text-blue-600 hover:underline"
+                          >
+                            {o.order_id}
+                          </a>
+                        </td>
+                        <td className="px-4 py-3 text-gray-600 text-xs">{o.date}</td>
+                        <td className="px-4 py-3">
+                          <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${statusColor(o.status)}`}>
+                            {o.status}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right text-gray-700">{o.items || '—'}</td>
+                        <td className="px-6 py-3 text-right font-semibold text-gray-900">
+                          {o.total > 0 ? `$${o.total.toFixed(2)}` : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   )
 }
 
