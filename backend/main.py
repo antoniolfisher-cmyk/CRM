@@ -188,6 +188,34 @@ try:
         # SQLite: drop-and-recreate not needed; just leave the unique constraint
     except Exception:
         pass
+    # ── Migrate ungate templates: replace {SELLER_ID} with {SELLER_NAME} ─────
+    try:
+        if "ungate_templates" in _inspector.get_table_names():
+            with engine.connect() as _conn:
+                _conn.execute(text(
+                    "UPDATE ungate_templates SET body = REPLACE(body, 'Seller ID: {SELLER_ID}', 'Store: {SELLER_NAME}')"
+                    " WHERE body LIKE '%{SELLER_ID}%'"
+                ))
+                _conn.execute(text(
+                    "UPDATE ungate_templates SET body = REPLACE(body, 'Amazon Seller Account: {SELLER_ID}', 'Amazon Store: {SELLER_NAME}')"
+                    " WHERE body LIKE '%{SELLER_ID}%'"
+                ))
+                _conn.execute(text(
+                    "UPDATE ungate_templates SET body = REPLACE(body, '(Seller ID: {SELLER_ID})', '({SELLER_NAME})')"
+                    " WHERE body LIKE '%{SELLER_ID}%'"
+                ))
+                # Catch any remaining {SELLER_ID} references
+                _conn.execute(text(
+                    "UPDATE ungate_templates SET body = REPLACE(body, '{SELLER_ID}', '{SELLER_NAME}')"
+                    " WHERE body LIKE '%{SELLER_ID}%'"
+                ))
+                _conn.execute(text(
+                    "UPDATE ungate_templates SET subject = REPLACE(subject, '{SELLER_ID}', '{SELLER_NAME}')"
+                    " WHERE subject LIKE '%{SELLER_ID}%'"
+                ))
+                _conn.commit()
+    except Exception:
+        pass
 except Exception:
     pass
 
@@ -281,6 +309,9 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
 def me(payload: dict = Depends(require_auth), db: Session = Depends(get_db)):
     tenant_id = payload.get("tenant_id", 1)
     tenant    = db.query(models.Tenant).filter_by(id=tenant_id).first()
+    # Use Amazon store_name as the display name when connected — falls back to tenant.name
+    cred      = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first() if tenant_id else None
+    display_name = (cred.store_name if cred and cred.store_name else None) or (tenant.name if tenant else "My Store")
     # Read SUPERADMIN_USERNAME fresh every request — never use cached JWT value
     import os as _os
     _superadmin = _os.getenv("SUPERADMIN_USERNAME", _os.getenv("CRM_USERNAME", "admin"))
@@ -289,7 +320,8 @@ def me(payload: dict = Depends(require_auth), db: Session = Depends(get_db)):
         "role":          payload["role"],
         "is_superadmin": payload["sub"] == _superadmin,
         "tenant_id":     tenant_id,
-        "tenant_name":   tenant.name if tenant else "Default",
+        "tenant_name":   display_name,
+        "store_name":    cred.store_name if cred and cred.store_name else None,
         "tenant_slug":   tenant.slug if tenant else "default",
         "plan":          tenant.plan if tenant else "starter",
         "stripe_status": tenant.stripe_status if tenant else None,
@@ -3604,16 +3636,19 @@ async def amazon_oauth_callback(
         db.commit()
         db.refresh(cred)
 
-        # ── Fetch store name (best-effort) ────────────────────────────────────
+        # ── Fetch store name + update tenant branding ────────────────────────
         try:
             store_name = await _fetch_amazon_store_name(cred)
             if not store_name:
                 store_name = tenant.name or ""
             if store_name:
                 cred.store_name = store_name
+                # Also update the tenant display name so the sidebar shows the store name
+                if tenant and store_name:
+                    tenant.name = store_name
                 db.commit()
         except Exception as _se:
-            log.warning("Could not fetch store name for tenant %s: %s", tenant_id, _se)
+            print(f"[oauth] Could not fetch store name for tenant {tenant_id}: {_se}", flush=True)
             try:
                 if not cred.store_name:
                     cred.store_name = tenant.name or ""
@@ -3891,7 +3926,7 @@ _DEFAULT_TEMPLATES = [
 
 I am writing to request approval to sell {PRODUCT_NAME} (ASIN: {ASIN}) on the Amazon marketplace.
 
-I am an authorized reseller with a verified seller account (Seller ID: {SELLER_ID}). I have attached the following documentation to support my application:
+I am an authorized reseller operating under the store name {SELLER_NAME}. I have attached the following documentation to support my application:
 
 • Invoice from an authorized distributor/supplier dated within the last 180 days
 • Invoice quantity: {QUANTITY}+ units (meeting Amazon's requirements)
@@ -3903,7 +3938,7 @@ I look forward to your approval and appreciate your consideration.
 
 Best regards,
 {SELLER_NAME}
-Amazon Seller Account: {SELLER_ID}""",
+Amazon Store: {SELLER_NAME}""",
     },
     {
         "number": 2, "name": "Invoice Resubmission", "category": "resubmission",
@@ -3926,7 +3961,7 @@ Please let me know if you require any additional documentation.
 
 Respectfully,
 {SELLER_NAME}
-Seller ID: {SELLER_ID}""",
+Store: {SELLER_NAME}""",
     },
     {
         "number": 3, "name": "Quantity Clarification", "category": "resubmission",
@@ -3951,7 +3986,7 @@ I am fully committed to meeting all requirements for approval and am happy to pr
 
 Thank you for your time,
 {SELLER_NAME}
-Seller ID: {SELLER_ID}""",
+Store: {SELLER_NAME}""",
     },
     {
         "number": 4, "name": "Supplier Legitimacy", "category": "resubmission",
@@ -3982,7 +4017,7 @@ I assure you that all products are authentic and sourced through legitimate chan
 
 Sincerely,
 {SELLER_NAME}
-Seller ID: {SELLER_ID}""",
+Store: {SELLER_NAME}""",
     },
     {
         "number": 5, "name": "Brand Authorization", "category": "brand_auth",
@@ -4006,7 +4041,7 @@ Please find all documents attached. I am confident this fulfills Amazon's requir
 
 Thank you for your consideration,
 {SELLER_NAME}
-Seller ID: {SELLER_ID}""",
+Store: {SELLER_NAME}""",
     },
     {
         "number": 6, "name": "Business Documentation", "category": "resubmission",
@@ -4034,7 +4069,7 @@ I appreciate your time in reviewing this application.
 
 Best regards,
 {SELLER_NAME}
-Seller ID: {SELLER_ID}""",
+Store: {SELLER_NAME}""",
     },
     {
         "number": 7, "name": "Distributor Chain Documentation", "category": "resubmission",
@@ -4060,7 +4095,7 @@ I am confident that this comprehensive documentation package fulfills all requir
 
 Thank you,
 {SELLER_NAME}
-Seller ID: {SELLER_ID}""",
+Store: {SELLER_NAME}""",
     },
     {
         "number": 8, "name": "Management Escalation", "category": "escalation",
@@ -4086,7 +4121,7 @@ Thank you for your attention to this escalation.
 
 Respectfully,
 {SELLER_NAME}
-Seller ID: {SELLER_ID}""",
+Store: {SELLER_NAME}""",
     },
     {
         "number": 9, "name": "Final Appeal", "category": "escalation",
@@ -4119,7 +4154,7 @@ If there is a specific document or piece of information that would satisfy Amazo
 I sincerely appreciate your consideration of this final appeal.
 
 {SELLER_NAME}
-Seller ID: {SELLER_ID}""",
+Store: {SELLER_NAME}""",
     },
     {
         "number": 10, "name": "Custom Response", "category": "general",
@@ -4133,7 +4168,7 @@ Thank you for your consideration.
 
 Best regards,
 {SELLER_NAME}
-Seller ID: {SELLER_ID}""",
+Store: {SELLER_NAME}""",
     },
 ]
 
