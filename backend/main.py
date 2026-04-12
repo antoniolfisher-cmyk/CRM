@@ -3245,22 +3245,28 @@ def _get_tenant_amazon_creds(tenant_id: int, db: Session) -> models.AmazonCreden
     """
     Return AmazonCredential for tenant. Falls back to env vars for any tenant
     when no DB record exists (single-tenant / env-var mode).
+    Only requires the 3 token-exchange vars (LWA client id/secret + refresh token);
+    AMAZON_SELLER_ID is optional (only needed for inventory sync, not ASIN lookups).
     """
     cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
-    if not cred and _amazon_sp_configured():
-        # Auto-seed from env vars on first use (works for any tenant_id)
-        cred = models.AmazonCredential(
-            tenant_id=tenant_id,
-            lwa_client_id=os.getenv("AMAZON_LWA_CLIENT_ID"),
-            lwa_client_secret=os.getenv("AMAZON_LWA_CLIENT_SECRET"),
-            sp_refresh_token=os.getenv("AMAZON_SP_REFRESH_TOKEN"),
-            seller_id=os.getenv("AMAZON_SELLER_ID"),
-            marketplace_id=os.getenv("AMAZON_MARKETPLACE_ID", "ATVPDKIKX0DER"),
-            is_sandbox=os.getenv("AMAZON_SP_SANDBOX", "").lower() in ("1", "true", "yes"),
-        )
-        db.add(cred)
-        db.commit()
-        db.refresh(cred)
+    if not cred:
+        _lwa_id     = os.getenv("AMAZON_LWA_CLIENT_ID", "").strip()
+        _lwa_secret = os.getenv("AMAZON_LWA_CLIENT_SECRET", "").strip()
+        _refresh    = os.getenv("AMAZON_SP_REFRESH_TOKEN", "").strip()
+        if _lwa_id and _lwa_secret and _refresh:
+            # Auto-seed from env vars on first use (works for any tenant_id)
+            cred = models.AmazonCredential(
+                tenant_id=tenant_id,
+                lwa_client_id=_lwa_id,
+                lwa_client_secret=_lwa_secret,
+                sp_refresh_token=_refresh,
+                seller_id=os.getenv("AMAZON_SELLER_ID") or None,
+                marketplace_id=os.getenv("AMAZON_MARKETPLACE_ID", "ATVPDKIKX0DER"),
+                is_sandbox=os.getenv("AMAZON_SP_SANDBOX", "").lower() in ("1", "true", "yes"),
+            )
+            db.add(cred)
+            db.commit()
+            db.refresh(cred)
     return cred
 
 
