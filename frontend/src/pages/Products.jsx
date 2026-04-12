@@ -919,11 +919,21 @@ function MarketAnalysis({ data, asin }) {
         {/* Keepa price history chart — same visual as embedded on Amazon product pages */}
         {keepaChartUrl && (
           <div>
-            <p className="text-xs text-gray-500 mb-1">Price History &amp; Sales Rank (90 days)</p>
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-xs text-gray-500">Price History &amp; Sales Rank (90 days)</p>
+              <a
+                href={`https://www.keepa.com/#!product/1-${asin}`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs text-blue-600 hover:underline"
+              >
+                Open in Keepa →
+              </a>
+            </div>
             <div className="rounded-lg overflow-hidden border border-gray-100 bg-white">
               <img
                 src={keepaChartUrl}
-                alt="Price history chart"
+                alt="Keepa price history chart"
                 className="w-full"
                 loading="lazy"
               />
