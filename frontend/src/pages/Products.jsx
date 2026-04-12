@@ -591,7 +591,13 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
           setUngatingRestrictions([])
         }
       } catch (e) {
-        setKeepaError(e.message)
+        // Only surface errors the seller can act on (ASIN not found).
+        // Keepa being temporarily unavailable is silent — they can fill in manually.
+        const msg = e.message || ''
+        if (msg.includes('not found') || msg.includes('404')) {
+          setKeepaError('ASIN not found in Keepa')
+        }
+        // otherwise silently fail
       } finally {
         setKeepaLoading(false)
       }

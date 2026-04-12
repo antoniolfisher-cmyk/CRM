@@ -2304,21 +2304,14 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth)):
     async with _httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(url)
 
-    if resp.status_code == 429:
-        try:
-            kd = resp.json()
-            refill_secs = kd.get("refillIn", 0)
-            raise HTTPException(429, f"Keepa token limit reached. Refills in ~{round(refill_secs/3600,1)}h.")
-        except HTTPException:
-            raise
-        except Exception:
-            raise HTTPException(429, "Keepa token limit reached.")
     if resp.status_code != 200:
-        raise HTTPException(502, f"Keepa returned {resp.status_code}")
+        raise HTTPException(503, "Keepa data temporarily unavailable")
 
     data = resp.json()
+    if (data.get("tokensLeft") or 1) < 0:
+        raise HTTPException(503, "Keepa data temporarily unavailable")
     if data.get("error"):
-        raise HTTPException(502, f"Keepa error: {data.get('status', 'unknown')}")
+        raise HTTPException(503, "Keepa data temporarily unavailable")
 
     products_data = data.get("products") or []
     if not products_data:
@@ -2518,21 +2511,12 @@ async def keepa_upc_lookup(code: str, current: dict = Depends(require_auth)):
             params={"key": api_key, "domain": _KEEPA_DOMAIN, "code": code, "stats": 90, "offers": 20},
         )
 
-    if resp.status_code == 429:
-        try:
-            kd = resp.json()
-            refill_secs = kd.get("refillIn", 0)
-            raise HTTPException(429, f"Keepa token limit reached. Refills in ~{round(refill_secs/3600,1)}h.")
-        except HTTPException:
-            raise
-        except Exception:
-            raise HTTPException(429, "Keepa token limit reached.")
     if resp.status_code != 200:
-        raise HTTPException(502, f"Keepa returned {resp.status_code}")
+        raise HTTPException(503, "Keepa data temporarily unavailable")
 
     data = resp.json()
-    if data.get("error"):
-        raise HTTPException(502, f"Keepa error: {data.get('status', 'unknown')}")
+    if (data.get("tokensLeft") or 1) < 0 or data.get("error"):
+        raise HTTPException(503, "Keepa data temporarily unavailable")
 
     products_data = data.get("products") or []
     if not products_data:
