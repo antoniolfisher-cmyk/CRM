@@ -333,6 +333,17 @@ class Product(Base):
     keepa_category    = Column(String, nullable=True)
     keepa_last_synced = Column(DateTime(timezone=True), nullable=True)
 
+    # 90-day price stats from Keepa (stored so they survive token exhaustion)
+    price_90_high  = Column(Float, nullable=True)
+    price_90_low   = Column(Float, nullable=True)
+    price_90_median = Column(Float, nullable=True)
+    fba_low        = Column(Float, nullable=True)
+    fba_high       = Column(Float, nullable=True)
+    fba_median     = Column(Float, nullable=True)
+    fbm_low        = Column(Float, nullable=True)
+    fbm_high       = Column(Float, nullable=True)
+    fbm_median     = Column(Float, nullable=True)
+
     status = Column(String, default='sourcing')
 
     aria_suggested_price = Column(Float, nullable=True)

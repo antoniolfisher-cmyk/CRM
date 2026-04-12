@@ -160,6 +160,26 @@ try:
                     _conn.commit()
     except Exception:
         pass
+    # ── Add 90-day price stat columns to products ────────────────────────────
+    try:
+        _p_cols = [c["name"] for c in _inspector.get_columns("products")]
+        with engine.connect() as _conn:
+            for _col, _ddl in [
+                ("price_90_high",  "FLOAT"),
+                ("price_90_low",   "FLOAT"),
+                ("price_90_median","FLOAT"),
+                ("fba_low",        "FLOAT"),
+                ("fba_high",       "FLOAT"),
+                ("fba_median",     "FLOAT"),
+                ("fbm_low",        "FLOAT"),
+                ("fbm_high",       "FLOAT"),
+                ("fbm_median",     "FLOAT"),
+            ]:
+                if _col not in _p_cols:
+                    _conn.execute(text(f"ALTER TABLE products ADD COLUMN {_col} {_ddl}"))
+            _conn.commit()
+    except Exception:
+        pass
     # billing_invoices is created by models.Base.metadata.create_all above
     # order_number unique constraint relaxed for multi-tenant
     try:
@@ -2254,6 +2274,41 @@ def _parse_keepa_product(kp: dict, product) -> None:
     if monthly_sold is not None and monthly_sold >= 0:
         product.estimated_sales = float(monthly_sold)
 
+    # 90-day price stats — stored so they survive Keepa token exhaustion
+    def _pc(idx, arr):
+        if arr and idx < len(arr) and arr[idx] is not None and arr[idx] > 0:
+            return round(arr[idx] / 100.0, 2)
+        return None
+
+    min90 = stats.get("min90") or []
+    max90 = stats.get("max90") or []
+    avg90 = stats.get("avg90") or []
+    csv   = kp.get("csv") or []
+
+    # Overall 90-day range from FBA price history
+    fba_csv = csv[7] if len(csv) > 7 else []
+    _prices = []
+    i = 0
+    while i + 1 < len(fba_csv):
+        p = fba_csv[i + 1]
+        if p is not None and 0 < p < 1_000_000:
+            _prices.append(round(p / 100.0, 2))
+        i += 2
+    if _prices:
+        product.price_90_high = round(max(_prices), 2)
+        product.price_90_low  = round(min(_prices), 2)
+    else:
+        product.price_90_high = _pc(7, max90) or _pc(1, max90)
+        product.price_90_low  = _pc(7, min90) or _pc(1, min90)
+    product.price_90_median = _pc(7, avg90) or _pc(1, avg90)
+
+    product.fba_low    = _pc(7, min90) or _pc(11, min90)
+    product.fba_high   = _pc(7, max90) or _pc(11, max90)
+    product.fba_median = _pc(7, avg90) or _pc(11, avg90)
+    product.fbm_low    = _pc(12, min90)
+    product.fbm_high   = _pc(12, max90)
+    product.fbm_median = _pc(12, avg90)
+
     product.keepa_last_synced = datetime.now(_tz.utc)
 
 
@@ -2357,9 +2412,15 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
             "bsr":                 p.keepa_bsr or None,
             "category":            p.keepa_category or "",
             "estimated_sales":     p.estimated_sales or None,
-            "fba_low": None, "fba_high": None, "fba_median": None,
-            "fbm_low": None, "fbm_high": None, "fbm_median": None,
-            "overall_90_high": None, "overall_90_low": None, "overall_median": None,
+            "fba_low":             p.fba_low,
+            "fba_high":            p.fba_high,
+            "fba_median":          p.fba_median,
+            "fbm_low":             p.fbm_low,
+            "fbm_high":            p.fbm_high,
+            "fbm_median":          p.fbm_median,
+            "price_90_high":       p.price_90_high,
+            "price_90_low":        p.price_90_low,
+            "median_price":        p.price_90_median,
             "fba_history": [], "fbm_history": [], "bsr_history": [],
             "keepa_chart_url": _chart_url,
             "source": source,
