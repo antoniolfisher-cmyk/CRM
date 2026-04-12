@@ -436,15 +436,23 @@ async def aria_run_all(force: bool = False, db: Session = Depends(get_db), curre
 
 @app.get("/api/repricer/strategies", response_model=List[schemas.RepricerStrategyOut])
 def list_repricer_strategies(db: Session = Depends(get_db), current: dict = Depends(require_admin)):
-    return db.query(models.RepricerStrategy).order_by(models.RepricerStrategy.created_at).all()
+    tid = current.get("tenant_id")
+    q = db.query(models.RepricerStrategy)
+    if tid and not current.get("is_superadmin"):
+        q = q.filter(models.RepricerStrategy.tenant_id == tid)
+    return q.order_by(models.RepricerStrategy.created_at).all()
 
 
 @app.post("/api/repricer/strategies", response_model=schemas.RepricerStrategyOut, status_code=201)
 def create_repricer_strategy(data: schemas.RepricerStrategyCreate, db: Session = Depends(get_db), current: dict = Depends(require_admin)):
+    tid = current.get("tenant_id")
     if data.is_default:
-        # clear any existing default
-        db.query(models.RepricerStrategy).filter(models.RepricerStrategy.is_default == True).update({"is_default": False})
-    s = models.RepricerStrategy(**data.model_dump())
+        # clear any existing default for this tenant only
+        q = db.query(models.RepricerStrategy).filter(models.RepricerStrategy.is_default == True)
+        if tid:
+            q = q.filter(models.RepricerStrategy.tenant_id == tid)
+        q.update({"is_default": False})
+    s = models.RepricerStrategy(**data.model_dump(), tenant_id=tid)
     db.add(s)
     db.commit()
     db.refresh(s)
@@ -453,15 +461,22 @@ def create_repricer_strategy(data: schemas.RepricerStrategyCreate, db: Session =
 
 @app.put("/api/repricer/strategies/{strategy_id}", response_model=schemas.RepricerStrategyOut)
 def update_repricer_strategy(strategy_id: int, data: schemas.RepricerStrategyUpdate, db: Session = Depends(get_db), current: dict = Depends(require_admin)):
-    s = db.query(models.RepricerStrategy).filter(models.RepricerStrategy.id == strategy_id).first()
+    tid = current.get("tenant_id")
+    q = db.query(models.RepricerStrategy).filter(models.RepricerStrategy.id == strategy_id)
+    if tid and not current.get("is_superadmin"):
+        q = q.filter(models.RepricerStrategy.tenant_id == tid)
+    s = q.first()
     if not s:
         raise HTTPException(status_code=404, detail="Strategy not found")
     update = data.model_dump(exclude_unset=True)
     if update.get("is_default"):
-        db.query(models.RepricerStrategy).filter(
+        dq = db.query(models.RepricerStrategy).filter(
             models.RepricerStrategy.is_default == True,
             models.RepricerStrategy.id != strategy_id
-        ).update({"is_default": False})
+        )
+        if tid:
+            dq = dq.filter(models.RepricerStrategy.tenant_id == tid)
+        dq.update({"is_default": False})
     for k, v in update.items():
         setattr(s, k, v)
     db.commit()
@@ -471,7 +486,11 @@ def update_repricer_strategy(strategy_id: int, data: schemas.RepricerStrategyUpd
 
 @app.delete("/api/repricer/strategies/{strategy_id}", status_code=204)
 def delete_repricer_strategy(strategy_id: int, db: Session = Depends(get_db), current: dict = Depends(require_admin)):
-    s = db.query(models.RepricerStrategy).filter(models.RepricerStrategy.id == strategy_id).first()
+    tid = current.get("tenant_id")
+    q = db.query(models.RepricerStrategy).filter(models.RepricerStrategy.id == strategy_id)
+    if tid and not current.get("is_superadmin"):
+        q = q.filter(models.RepricerStrategy.tenant_id == tid)
+    s = q.first()
     if not s:
         raise HTTPException(status_code=404, detail="Strategy not found")
     db.delete(s)
@@ -501,8 +520,12 @@ def notification_status(db: Session = Depends(get_db), current: dict = Depends(r
 # ─── User Management (admin only) ─────────────────────────────────────────────
 
 @app.get("/api/users", response_model=List[schemas.UserOut])
-def list_users(db: Session = Depends(get_db), _=Depends(require_admin)):
-    return db.query(models.User).order_by(models.User.created_at).all()
+def list_users(db: Session = Depends(get_db), current: dict = Depends(require_admin)):
+    tid = current.get("tenant_id")
+    q = db.query(models.User)
+    if tid and not current.get("is_superadmin"):
+        q = q.filter(models.User.tenant_id == tid)
+    return q.order_by(models.User.created_at).all()
 
 
 @app.post("/api/users", response_model=schemas.UserOut, status_code=201)
@@ -1409,7 +1432,7 @@ def get_account(account_id: int, db: Session = Depends(get_db), current: dict = 
 
 @app.post("/api/accounts", response_model=schemas.AccountOut, status_code=201)
 def create_account(data: schemas.AccountCreate, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
-    acc = models.Account(**data.model_dump(), created_by=current["sub"])
+    acc = models.Account(**data.model_dump(), created_by=current["sub"], tenant_id=current.get("tenant_id"))
     db.add(acc)
     db.commit()
     db.refresh(acc)
@@ -1858,7 +1881,7 @@ def create_contact(data: schemas.ContactCreate, db: Session = Depends(get_db), c
     _check_owner(acc, current)
     if data.is_primary:
         db.query(models.Contact).filter(models.Contact.account_id == data.account_id).update({"is_primary": False})
-    contact = models.Contact(**data.model_dump(), created_by=current["sub"])
+    contact = models.Contact(**data.model_dump(), created_by=current["sub"], tenant_id=current.get("tenant_id"))
     db.add(contact)
     db.commit()
     db.refresh(contact)
@@ -1991,7 +2014,7 @@ def create_order(data: schemas.OrderCreate, db: Session = Depends(get_db), curre
     if not order_data.get("order_number"):
         count = db.query(func.count(models.Order.id)).scalar() + 1
         order_data["order_number"] = f"ORD-{datetime.utcnow().year}-{count:04d}"
-    order = models.Order(**order_data, created_by=current["sub"])
+    order = models.Order(**order_data, created_by=current["sub"], tenant_id=current.get("tenant_id"))
     db.add(order)
     db.flush()
     subtotal = 0
@@ -2134,7 +2157,7 @@ def get_product(product_id: int, db: Session = Depends(get_db), current: dict = 
 
 @app.post("/api/products", response_model=schemas.ProductOut, status_code=201)
 def create_product(data: schemas.ProductCreate, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
-    p = models.Product(**data.model_dump(), created_by=current["sub"])
+    p = models.Product(**data.model_dump(), created_by=current["sub"], tenant_id=current.get("tenant_id"))
     db.add(p)
     db.commit()
     db.refresh(p)
@@ -2190,6 +2213,7 @@ def approve_product(
     p = db.query(models.Product).filter(models.Product.id == product_id).first()
     if not p:
         raise HTTPException(404, "Product not found")
+    _check_owner(p, current)
     p.status = "approved"
     db.commit()
     return {"status": "approved"}
@@ -2204,6 +2228,7 @@ def reject_product(
     p = db.query(models.Product).filter(models.Product.id == product_id).first()
     if not p:
         raise HTTPException(404, "Product not found")
+    _check_owner(p, current)
     p.status = "sourcing"
     db.commit()
     return {"status": "sourcing"}
@@ -2220,10 +2245,14 @@ def set_product_strategy(
     p = db.query(models.Product).filter(models.Product.id == product_id).first()
     if not p:
         raise HTTPException(404, "Product not found")
+    _check_owner(p, current)
+    tid = current.get("tenant_id")
     strategy_id = body.get("strategy_id")  # None to clear
     if strategy_id is not None:
-        exists = db.query(models.RepricerStrategy).filter(models.RepricerStrategy.id == strategy_id).first()
-        if not exists:
+        sq = db.query(models.RepricerStrategy).filter(models.RepricerStrategy.id == strategy_id)
+        if tid and not current.get("is_superadmin"):
+            sq = sq.filter(models.RepricerStrategy.tenant_id == tid)
+        if not sq.first():
             raise HTTPException(404, "Strategy not found")
     p.aria_strategy_id = strategy_id
     db.commit()
@@ -2232,12 +2261,45 @@ def set_product_strategy(
 
 @app.post("/api/admin/approve-all-sourcing")
 def approve_all_sourcing(db: Session = Depends(get_db), current: dict = Depends(require_admin)):
-    """One-time migration: move all sourcing products to approved inventory."""
-    updated = db.query(models.Product).filter(
-        models.Product.status.in_(["sourcing", None])
-    ).update({"status": "approved"}, synchronize_session=False)
+    """Move all sourcing products to approved inventory, scoped to the current tenant."""
+    tid = current.get("tenant_id")
+    q = db.query(models.Product).filter(models.Product.status.in_(["sourcing", None]))
+    if tid and not current.get("is_superadmin"):
+        q = q.filter(models.Product.tenant_id == tid)
+    updated = q.update({"status": "approved"}, synchronize_session=False)
     db.commit()
     return {"approved": updated}
+
+
+@app.post("/api/admin/purge-system-products")
+async def purge_system_products(db: Session = Depends(get_db), current: dict = Depends(require_admin)):
+    """
+    Delete all Amazon-synced (created_by='system') products for the current tenant
+    so the next FBA sync re-imports them cleanly using the tenant's own credentials.
+    Only affects the calling admin's own tenant. Superadmin can optionally pass
+    ?tenant_id=X to purge a specific tenant.
+    """
+    tid = current.get("tenant_id")
+    if not tid:
+        raise HTTPException(400, "No tenant_id in token — cannot purge")
+    deleted = db.query(models.Product).filter(
+        models.Product.tenant_id == tid,
+        models.Product.created_by == "system",
+    ).delete(synchronize_session=False)
+    db.commit()
+    # Trigger a fresh sync for this tenant
+    import amazon_sync
+    sync_result = None
+    if amazon_sync.configured(tid):
+        try:
+            sync_result = await amazon_sync.run_sync(tid)
+        except Exception as e:
+            sync_result = {"error": str(e)}
+    return {
+        "purged": deleted,
+        "sync_triggered": sync_result is not None,
+        "sync_result": sync_result,
+    }
 
 
 # ─── Keepa Integration ────────────────────────────────────────────────────────
@@ -4097,7 +4159,13 @@ def _fill_template(body: str, subject: str, variables: dict) -> tuple[str, str]:
 @app.get("/api/ungate/templates")
 def get_ungate_templates(db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     _seed_ungate_templates(db)
-    return db.query(models.UngateTemplate).order_by(models.UngateTemplate.number).all()
+    tid = current.get("tenant_id")
+    # Return global templates (tenant_id IS NULL) plus tenant-specific overrides
+    from sqlalchemy import or_ as _or2
+    q = db.query(models.UngateTemplate)
+    if tid and not current.get("is_superadmin"):
+        q = q.filter(_or2(models.UngateTemplate.tenant_id == tid, models.UngateTemplate.tenant_id == None))
+    return q.order_by(models.UngateTemplate.number).all()
 
 
 @app.put("/api/ungate/templates/{template_id}")
@@ -4107,12 +4175,20 @@ def update_ungate_template(
     db: Session = Depends(get_db),
     current: dict = Depends(require_admin),
 ):
-    t = db.query(models.UngateTemplate).filter(models.UngateTemplate.id == template_id).first()
+    tid = current.get("tenant_id")
+    q = db.query(models.UngateTemplate).filter(models.UngateTemplate.id == template_id)
+    if tid and not current.get("is_superadmin"):
+        from sqlalchemy import or_ as _or2
+        q = q.filter(_or2(models.UngateTemplate.tenant_id == tid, models.UngateTemplate.tenant_id == None))
+    t = q.first()
     if not t:
         raise HTTPException(404, "Template not found")
     for field in ("name", "description", "subject", "body", "category", "is_active"):
         if field in body:
             setattr(t, field, body[field])
+    # Claim template for tenant if it was global
+    if t.tenant_id is None and tid:
+        t.tenant_id = tid
     db.commit()
     db.refresh(t)
     return t
@@ -4291,15 +4367,25 @@ Return ONLY valid JSON with these fields (use null if not mentioned):
 
 # ── Ungate requests ───────────────────────────────────────────────────────────
 
+def _ungate_req_query(db, current):
+    """Base query for ungate requests scoped to the current tenant."""
+    tid = current.get("tenant_id")
+    q = db.query(models.UngateRequest)
+    if tid and not current.get("is_superadmin"):
+        q = q.filter(models.UngateRequest.tenant_id == tid)
+    return q
+
+
 @app.get("/api/ungate/requests")
 def list_ungate_requests(db: Session = Depends(get_db), current: dict = Depends(require_auth)):
-    return db.query(models.UngateRequest).order_by(models.UngateRequest.created_at.desc()).all()
+    return _ungate_req_query(db, current).order_by(models.UngateRequest.created_at.desc()).all()
 
 
 @app.post("/api/ungate/requests")
 def create_ungate_request(body: dict, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     import json as _json
     req = models.UngateRequest(
+        tenant_id=current.get("tenant_id"),
         product_id=body.get("product_id"),
         asin=body.get("asin", "").strip().upper(),
         product_name=body.get("product_name", "").strip(),
@@ -4318,7 +4404,7 @@ def create_ungate_request(body: dict, db: Session = Depends(get_db), current: di
 
 @app.get("/api/ungate/requests/{req_id}")
 def get_ungate_request(req_id: int, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
-    req = db.query(models.UngateRequest).filter(models.UngateRequest.id == req_id).first()
+    req = _ungate_req_query(db, current).filter(models.UngateRequest.id == req_id).first()
     if not req:
         raise HTTPException(404, "Request not found")
     return req
@@ -4328,7 +4414,7 @@ def get_ungate_request(req_id: int, db: Session = Depends(get_db), current: dict
 def submit_ungate_request(req_id: int, body: dict, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     """Record that the current template was submitted to Amazon."""
     import json as _json
-    req = db.query(models.UngateRequest).filter(models.UngateRequest.id == req_id).first()
+    req = _ungate_req_query(db, current).filter(models.UngateRequest.id == req_id).first()
     if not req:
         raise HTTPException(404, "Request not found")
 
@@ -4351,7 +4437,7 @@ def submit_ungate_request(req_id: int, body: dict, db: Session = Depends(get_db)
 async def record_rejection(req_id: int, body: dict, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     """Record Amazon's rejection and AI-generate the next response."""
     import json as _json
-    req = db.query(models.UngateRequest).filter(models.UngateRequest.id == req_id).first()
+    req = _ungate_req_query(db, current).filter(models.UngateRequest.id == req_id).first()
     if not req:
         raise HTTPException(404, "Request not found")
 
@@ -4448,7 +4534,7 @@ Return ONLY the email body text, no subject line, no explanation.""",
 @app.post("/api/ungate/requests/{req_id}/approve")
 def approve_ungate_request(req_id: int, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     import json as _json
-    req = db.query(models.UngateRequest).filter(models.UngateRequest.id == req_id).first()
+    req = _ungate_req_query(db, current).filter(models.UngateRequest.id == req_id).first()
     if not req:
         raise HTTPException(404, "Request not found")
     history = _json.loads(req.history or "[]")
@@ -4457,10 +4543,11 @@ def approve_ungate_request(req_id: int, db: Session = Depends(get_db), current: 
         history[-1]["approved_at"] = datetime.utcnow().isoformat()
     req.history = _json.dumps(history)
     req.status  = "approved"
-    # Also mark the product as ungated
+    # Also mark the product as ungated — scoped to tenant
     if req.product_id:
         product = db.query(models.Product).filter(models.Product.id == req.product_id).first()
         if product:
+            _check_owner(product, current)
             product.ungated = True
     db.commit()
     db.refresh(req)
@@ -4469,7 +4556,7 @@ def approve_ungate_request(req_id: int, db: Session = Depends(get_db), current: 
 
 @app.delete("/api/ungate/requests/{req_id}")
 def delete_ungate_request(req_id: int, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
-    req = db.query(models.UngateRequest).filter(models.UngateRequest.id == req_id).first()
+    req = _ungate_req_query(db, current).filter(models.UngateRequest.id == req_id).first()
     if not req:
         raise HTTPException(404, "Request not found")
     db.delete(req)
@@ -4690,7 +4777,7 @@ def clock_in(db: Session = Depends(get_db), current: dict = Depends(require_auth
     )
     if open_entry:
         raise HTTPException(status_code=400, detail="Already clocked in")
-    entry = models.TimeEntry(username=username, clock_in=datetime.utcnow())
+    entry = models.TimeEntry(username=username, clock_in=datetime.utcnow(), tenant_id=current.get("tenant_id"))
     db.add(entry)
     db.commit()
     db.refresh(entry)
@@ -4765,9 +4852,12 @@ def timeclock_report(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     db: Session = Depends(get_db),
-    _: dict = Depends(require_admin),
+    current: dict = Depends(require_admin),
 ):
+    tid = current.get("tenant_id")
     q = db.query(models.TimeEntry)
+    if tid and not current.get("is_superadmin"):
+        q = q.filter(models.TimeEntry.tenant_id == tid)
     if user:
         q = q.filter(models.TimeEntry.username == user)
     if date_from:
@@ -4801,12 +4891,15 @@ def timeclock_export(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     db: Session = Depends(get_db),
-    _: dict = Depends(require_admin),
+    current: dict = Depends(require_admin),
 ):
     from fastapi.responses import StreamingResponse
     import io, csv as csv_mod
 
+    tid = current.get("tenant_id")
     q = db.query(models.TimeEntry)
+    if tid and not current.get("is_superadmin"):
+        q = q.filter(models.TimeEntry.tenant_id == tid)
     if user:
         q = q.filter(models.TimeEntry.username == user)
     if date_from:
