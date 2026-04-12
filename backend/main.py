@@ -533,6 +533,114 @@ def get_dashboard(db: Session = Depends(get_db), _ = Depends(require_auth)):
     )
 
 
+@app.get("/api/dashboard/amazon-sales")
+async def get_dashboard_amazon_sales(
+    period: str = "today",
+    _ = Depends(require_auth),
+):
+    """
+    Real-time Amazon sales figures from SP-API Orders endpoint.
+    period: "today" | "week" | "month"
+    Returns revenue, order_count, units_sold for the period,
+    plus open_orders_count (Pending/Unshipped/PartiallyShipped) and
+    pending_payment_amount (Unshipped orders = money awaiting fulfilment).
+    """
+    if not _amazon_sp_configured():
+        raise HTTPException(503, "Amazon SP-API credentials are not configured")
+
+    from datetime import timezone
+    import httpx as _httpx
+
+    now = datetime.now(timezone.utc)
+    if period == "month":
+        period_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    elif period == "week":
+        period_start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    else:  # today
+        period_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    created_after = period_start.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    access_token = await _get_amazon_access_token()
+
+    # ── Fetch all orders for period ──────────────────────────────────────────
+    all_orders: list[dict] = []
+    next_token = None
+
+    async with _httpx.AsyncClient(timeout=30) as client:
+        while True:
+            if next_token:
+                params = {"NextToken": next_token}
+            else:
+                params = {
+                    "MarketplaceIds": _AMAZON_MKT_ID,
+                    "CreatedAfter": created_after,
+                    "OrderStatuses": "Pending,Unshipped,PartiallyShipped,Shipped,InvoiceUnconfirmed",
+                }
+
+            resp = await client.get(
+                f"{_AMAZON_SP_BASE}/orders/v0/orders",
+                params=params,
+                headers={"x-amz-access-token": access_token},
+            )
+            if resp.status_code == 403:
+                raise HTTPException(403, "Amazon SP-API: insufficient permissions for Orders API")
+            if resp.status_code != 200:
+                raise HTTPException(502, f"Amazon Orders API error {resp.status_code}: {resp.text[:300]}")
+
+            body = resp.json().get("payload", {})
+            orders_page = body.get("Orders", [])
+            all_orders.extend(orders_page)
+
+            next_token = body.get("NextToken")
+            if not next_token:
+                break
+
+    # ── Aggregate metrics ────────────────────────────────────────────────────
+    open_statuses   = {"Pending", "Unshipped", "PartiallyShipped"}
+    revenue_statuses = {"Shipped", "PartiallyShipped", "InvoiceUnconfirmed"}
+
+    revenue         = 0.0
+    pending_payment = 0.0
+    units_sold      = 0
+    open_order_count = 0
+    shipped_count   = 0
+    currency        = "USD"
+
+    for o in all_orders:
+        status = o.get("OrderStatus", "")
+        total_obj = o.get("OrderTotal") or {}
+        amount = float(total_obj.get("Amount") or 0)
+        cur = total_obj.get("CurrencyCode", "USD")
+        if cur:
+            currency = cur
+        shipped  = int(o.get("NumberOfItemsShipped") or 0)
+        unshipped = int(o.get("NumberOfItemsUnshipped") or 0)
+
+        if status in open_statuses:
+            open_order_count += 1
+        if status in revenue_statuses:
+            revenue += amount
+            units_sold += shipped
+            shipped_count += 1
+        if status in {"Pending", "Unshipped"}:
+            pending_payment += amount
+
+    return {
+        "period":             period,
+        "period_start":       period_start.isoformat(),
+        "fetched_at":         now.isoformat(),
+        "currency":           currency,
+        "revenue":            round(revenue, 2),
+        "order_count":        len(all_orders),
+        "shipped_count":      shipped_count,
+        "units_sold":         units_sold,
+        "open_order_count":   open_order_count,
+        "pending_payment":    round(pending_payment, 2),
+        "total_orders":       len(all_orders),
+    }
+
+
 @app.get("/api/dashboard/amazon-live")
 async def get_dashboard_amazon_live(db: Session = Depends(get_db), _ = Depends(require_auth)):
     """

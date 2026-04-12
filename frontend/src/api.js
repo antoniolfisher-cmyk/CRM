@@ -31,6 +31,7 @@ export const api = {
   getDashboard: () => req('GET', '/dashboard'),
   getRepricerStats: () => req('GET', '/dashboard/repricer-stats'),
   getDashboardAmazonLive: () => req('GET', '/dashboard/amazon-live'),
+  getDashboardAmazonSales: (period = 'today') => req('GET', `/dashboard/amazon-sales?period=${period}`),
 
   // Accounts
   getAccounts: (params = {}) => {

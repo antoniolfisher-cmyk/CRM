@@ -71,6 +71,9 @@ export default function Dashboard() {
         />
       </div>
 
+      {/* Amazon Sales Panel */}
+      <AmazonSalesPanel />
+
       {/* Amazon Live FBA Section */}
       <AmazonLivePanel />
 
@@ -106,6 +109,180 @@ export default function Dashboard() {
               color="#8b5cf6"
               yLabel="Units sold"
             />
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Amazon Sales Panel ───────────────────────────────────────────────────────
+
+const PERIODS = [
+  { key: 'today', label: 'Today' },
+  { key: 'week',  label: 'This Week' },
+  { key: 'month', label: 'This Month' },
+]
+
+function AmazonSalesPanel() {
+  const [period, setPeriod] = useState('today')
+  const [data, setData]     = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError]   = useState(null)
+  const [open, setOpen]     = useState(false)   // period dropdown
+
+  const fetchData = useCallback(async (p) => {
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await api.getDashboardAmazonSales(p)
+      setData(result)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { fetchData(period) }, [period, fetchData])
+
+  const selectPeriod = (p) => { setPeriod(p); setOpen(false) }
+  const fmt$ = (n) => `$${(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const periodLabel = PERIODS.find(p => p.key === period)?.label ?? 'Today'
+  const fetchedAt = data?.fetched_at
+    ? new Date(data.fetched_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : null
+
+  return (
+    <div className="space-y-3">
+      {/* Header row */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <h2 className="text-base font-semibold text-gray-700">Amazon Sales</h2>
+          <span className="flex items-center gap-1 text-xs text-orange-600 bg-orange-50 px-2 py-0.5 rounded-full font-medium">
+            <span className="w-1.5 h-1.5 bg-orange-500 rounded-full inline-block"></span>
+            Live
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          {fetchedAt && <span className="text-xs text-gray-400">as of {fetchedAt}</span>}
+          {/* Period dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setOpen(o => !o)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              {periodLabel}
+              <ChevronDownIcon className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} />
+            </button>
+            {open && (
+              <div className="absolute right-0 mt-1 w-36 bg-white border border-gray-200 rounded-lg shadow-lg z-20 py-1">
+                {PERIODS.map(p => (
+                  <button
+                    key={p.key}
+                    onClick={() => selectPeriod(p.key)}
+                    className={`w-full text-left px-3 py-2 text-xs hover:bg-gray-50 transition-colors ${period === p.key ? 'font-semibold text-orange-600' : 'text-gray-700'}`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {loading && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 animate-pulse">
+          {[...Array(3)].map((_, i) => <div key={i} className="h-36 bg-gray-200 rounded-xl" />)}
+        </div>
+      )}
+
+      {!loading && error && (
+        <div className="card p-5 border border-red-100 bg-red-50">
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 bg-red-100 rounded-lg flex items-center justify-center shrink-0">
+              <AlertIcon className="w-4 h-4 text-red-600" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-red-700">Amazon Orders API Unavailable</p>
+              <p className="text-xs text-red-500 mt-0.5">{error}</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!loading && data && !error && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {/* Sales tile */}
+          <div className="card p-5 border-l-4 border-orange-400">
+            <div className="flex items-start justify-between mb-3">
+              <div>
+                <p className="text-xs font-semibold text-orange-600 uppercase tracking-wider">Sales — {periodLabel}</p>
+                <p className="text-4xl font-bold text-gray-900 mt-1">{fmt$(data.revenue)}</p>
+              </div>
+              <div className="w-10 h-10 bg-orange-50 text-orange-600 rounded-lg flex items-center justify-center shrink-0">
+                <SalesChartIcon />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3 pt-3 border-t border-gray-100">
+              <div>
+                <p className="text-xs text-gray-400">Orders</p>
+                <p className="text-lg font-bold text-gray-800">{data.total_orders.toLocaleString()}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-400">Units sold</p>
+                <p className="text-lg font-bold text-gray-800">{data.units_sold.toLocaleString()}</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Open Orders tile */}
+          <div className="card p-5 border-l-4 border-blue-400">
+            <div className="flex items-start justify-between mb-3">
+              <div>
+                <p className="text-xs font-semibold text-blue-600 uppercase tracking-wider">Open Orders</p>
+                <p className="text-4xl font-bold text-gray-900 mt-1">{data.open_order_count.toLocaleString()}</p>
+              </div>
+              <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-lg flex items-center justify-center shrink-0">
+                <OpenOrdersIcon />
+              </div>
+            </div>
+            <div className="pt-3 border-t border-gray-100">
+              <p className="text-xs text-gray-400 mb-1">Awaiting fulfilment</p>
+              <div className="flex items-center gap-2">
+                <div
+                  className="h-2 rounded-full bg-blue-400"
+                  style={{ width: data.total_orders > 0 ? `${Math.round((data.open_order_count / data.total_orders) * 100)}%` : '0%', minWidth: data.open_order_count > 0 ? 8 : 0, maxWidth: '100%', transition: 'width 0.4s' }}
+                />
+                <span className="text-xs text-gray-500">
+                  {data.total_orders > 0 ? `${Math.round((data.open_order_count / data.total_orders) * 100)}%` : '—'} of period orders
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Payments tile */}
+          <div className="card p-5 border-l-4 border-green-400">
+            <div className="flex items-start justify-between mb-3">
+              <div>
+                <p className="text-xs font-semibold text-green-600 uppercase tracking-wider">Payments</p>
+                <p className="text-4xl font-bold text-gray-900 mt-1">{fmt$(data.pending_payment)}</p>
+              </div>
+              <div className="w-10 h-10 bg-green-50 text-green-600 rounded-lg flex items-center justify-center shrink-0">
+                <PaymentIcon />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3 pt-3 border-t border-gray-100">
+              <div>
+                <p className="text-xs text-gray-400">Collected</p>
+                <p className="text-lg font-bold text-green-700">{fmt$(data.revenue)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-400">Pending</p>
+                <p className="text-lg font-bold text-amber-600">{fmt$(data.pending_payment)}</p>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -458,6 +635,34 @@ function RefreshIcon({ spinning }) {
       strokeWidth={2}
     >
       <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+    </svg>
+  )
+}
+function ChevronDownIcon({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+    </svg>
+  )
+}
+function SalesChartIcon() {
+  return (
+    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+    </svg>
+  )
+}
+function OpenOrdersIcon() {
+  return (
+    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+    </svg>
+  )
+}
+function PaymentIcon() {
+  return (
+    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
     </svg>
   )
 }
