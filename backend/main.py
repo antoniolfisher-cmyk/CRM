@@ -506,7 +506,7 @@ def list_users(db: Session = Depends(get_db), _=Depends(require_admin)):
 
 
 @app.post("/api/users", response_model=schemas.UserOut, status_code=201)
-def create_user(data: schemas.UserCreate, db: Session = Depends(get_db), _=Depends(require_admin)):
+def create_user(data: schemas.UserCreate, db: Session = Depends(get_db), current: dict = Depends(require_admin)):
     if db.query(models.User).filter(models.User.username == data.username).first():
         raise HTTPException(status_code=409, detail="Username already exists")
     if data.role not in ("admin", "user"):
@@ -518,6 +518,7 @@ def create_user(data: schemas.UserCreate, db: Session = Depends(get_db), _=Depen
         is_active=data.is_active,
         email=data.email,
         notify_email=data.notify_email,
+        tenant_id=current.get("tenant_id"),  # inherit tenant from the creating admin
     )
     db.add(user)
     db.commit()
@@ -846,7 +847,23 @@ def _is_admin(current: dict) -> bool:
     return current.get("role") == "admin"
 
 def _filter_owned(q, model, current: dict):
-    """Filter query to records owned by current user (admin sees all)."""
+    """Filter query to records scoped to the current user's tenant.
+
+    Isolation tiers:
+      - Superadmin: sees everything across all tenants (admin panel use).
+      - Tenant admin: sees all records within their tenant only.
+      - Regular user: sees only their own records within their tenant.
+    """
+    # Superadmin bypasses all tenant scoping
+    if current.get("is_superadmin"):
+        return q
+
+    # Always scope to tenant first — prevents cross-tenant data leakage
+    tid = current.get("tenant_id")
+    if tid:
+        q = q.filter(model.tenant_id == tid)
+
+    # Non-admin users are further restricted to their own records
     if not _is_admin(current):
         q = q.filter(
             (model.created_by == current["sub"]) | (model.created_by == None)
@@ -854,7 +871,16 @@ def _filter_owned(q, model, current: dict):
     return q
 
 def _check_owner(record, current: dict):
-    """Raise 403 if current user doesn't own the record (admin bypasses)."""
+    """Raise 403 if current user doesn't own the record.
+
+    Superadmin bypasses. Tenant admins can access any record within their tenant.
+    Regular users can only access their own records.
+    """
+    if current.get("is_superadmin"):
+        return
+    tid = current.get("tenant_id")
+    if tid and hasattr(record, "tenant_id") and record.tenant_id and record.tenant_id != tid:
+        raise HTTPException(status_code=403, detail="Access denied")
     if not _is_admin(current) and record.created_by and record.created_by != current["sub"]:
         raise HTTPException(status_code=403, detail="Access denied")
 
