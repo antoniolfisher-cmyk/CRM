@@ -41,6 +41,7 @@ class AmazonCredential(Base):
     lwa_client_secret = Column(String, nullable=True)   # app-level (shared) or per-seller
     sp_refresh_token  = Column(String, nullable=True)   # per-seller, from OAuth
     seller_id         = Column(String, nullable=True)
+    store_name        = Column(String, nullable=True)   # Amazon storefront/business name
     marketplace_id    = Column(String, default="ATVPDKIKX0DER")
     is_sandbox        = Column(Boolean, default=False)
 

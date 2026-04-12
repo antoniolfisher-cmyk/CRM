@@ -168,20 +168,22 @@ function fillTemplate(text, vars) {
   return text
     .replace(/\{\{account_name\}\}/g, vars.account_name || 'your company')
     .replace(/\{\{contact_name\}\}/g, vars.contact_name || 'there')
-    .replace(/\{\{sender_name\}\}/g, vars.sender_name || 'The SellerPulse Team')
-    .replace(/\{\{company_name\}\}/g, 'SellerPulse')
+    .replace(/\{\{sender_name\}\}/g, vars.sender_name || vars.company_name || 'The Team')
+    .replace(/\{\{company_name\}\}/g, vars.company_name || vars.sender_name || 'Our Company')
 }
 
-function EmailComposer({ account, onClose, onSent }) {
+function EmailComposer({ account, onClose, onSent, storeName }) {
   const { user } = useAuth()
   const primaryContact = account.contacts?.find(c => c.is_primary) || account.contacts?.[0]
   const defaultTo = account.email || primaryContact?.email || ''
   const contactName = primaryContact ? primaryContact.first_name : ''
+  const companyName = storeName || user?.tenant_name || 'Our Company'
 
   const vars = {
     account_name: account.name,
     contact_name: contactName || 'there',
-    sender_name: user?.username || 'The SellerPulse Team',
+    sender_name:  user?.username || companyName,
+    company_name: companyName,
   }
 
   const [templateId, setTemplateId] = useState(TEMPLATES[0].id)
@@ -211,7 +213,7 @@ function EmailComposer({ account, onClose, onSent }) {
       await api.sendAccountEmail(account.id, {
         to, subject, body,
         template_id: templateId,
-        sender_name: user?.username || 'SellerPulse',
+        sender_name: user?.username || companyName,
       })
       setMsg('✓ Email sent successfully!')
       onSent?.()  // refresh thread in parent
@@ -328,7 +330,15 @@ export default function Accounts() {
   const [editing, setEditing] = useState(null)
   const [selected, setSelected] = useState(null)
   const [emailAccount, setEmailAccount] = useState(null)
+  const [storeName, setStoreName] = useState('')
   const navigate = useNavigate()
+
+  // Fetch the Amazon store name once so email templates use the real business name
+  useEffect(() => {
+    api.getAmazonCredentials()
+      .then(c => { if (c.store_name) setStoreName(c.store_name) })
+      .catch(() => {})
+  }, [])
 
   const load = useCallback(() => {
     setLoading(true)
@@ -450,6 +460,7 @@ export default function Accounts() {
       {selected && (
         <AccountDetail
           accountId={selected.id}
+          storeName={storeName}
           onClose={() => setSelected(null)}
           onEdit={() => { setEditing(selected); setShowForm(true) }}
           onDeleted={() => { setSelected(null); load() }}
@@ -467,13 +478,13 @@ export default function Accounts() {
 
       {/* Email Composer */}
       {emailAccount && (
-        <EmailComposer account={emailAccount} onClose={() => setEmailAccount(null)} />
+        <EmailComposer account={emailAccount} onClose={() => setEmailAccount(null)} storeName={storeName} />
       )}
     </div>
   )
 }
 
-function AccountDetail({ accountId, onClose, onEdit, onDeleted }) {
+function AccountDetail({ accountId, onClose, onEdit, onDeleted, storeName }) {
   const [account, setAccount] = useState(null)
   const [followUps, setFollowUps] = useState([])
   const [orders, setOrders] = useState([])
@@ -704,6 +715,7 @@ function AccountDetail({ accountId, onClose, onEdit, onDeleted }) {
       {showEmail && (
         <EmailComposer
           account={account}
+          storeName={storeName}
           onClose={() => setShowEmail(false)}
           onSent={() => {
             setShowEmail(false)

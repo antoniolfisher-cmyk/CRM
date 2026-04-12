@@ -149,6 +149,16 @@ try:
                 _conn.commit()
     except Exception:
         pass
+    # ── Add store_name to amazon_credentials ────────────────────────────────
+    try:
+        if "amazon_credentials" in _inspector.get_table_names():
+            _ac_cols = [c["name"] for c in _inspector.get_columns("amazon_credentials")]
+            if "store_name" not in _ac_cols:
+                with engine.connect() as _conn:
+                    _conn.execute(text("ALTER TABLE amazon_credentials ADD COLUMN store_name VARCHAR"))
+                    _conn.commit()
+    except Exception:
+        pass
     # order_number unique constraint relaxed for multi-tenant
     try:
         _cols = [c["name"] for c in _inspector.get_columns("orders")]
@@ -2831,6 +2841,32 @@ async def _get_tenant_access_token(cred: models.AmazonCredential) -> str:
     return r.json()["access_token"]
 
 
+async def _fetch_amazon_store_name(cred) -> str:
+    """Fetch the seller's storefront/business name from SP-API after OAuth."""
+    import httpx as _httpx
+    try:
+        token = await _get_tenant_access_token(cred)
+        is_sandbox = getattr(cred, "is_sandbox", False)
+        sp_base = (
+            "https://sandbox.sellingpartnerapi-na.amazon.com"
+            if is_sandbox
+            else "https://sellingpartnerapi-na.amazon.com"
+        )
+        async with _httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"{sp_base}/sellers/v1/marketplaceParticipations",
+                headers={"x-amz-access-token": token},
+            )
+        if r.status_code == 200:
+            for entry in r.json().get("payload", []):
+                name = (entry.get("marketplace") or {}).get("storeName", "")
+                if name:
+                    return name
+    except Exception:
+        pass
+    return ""
+
+
 # ── Amazon OAuth endpoints ────────────────────────────────────────────────────
 
 # App-level OAuth credentials (registered in Amazon Developer Central)
@@ -2918,6 +2954,29 @@ async def amazon_oauth_callback(
         )
         db.add(cred)
     db.commit()
+    db.refresh(cred)
+
+    # Fetch the seller's Amazon store name and save it
+    try:
+        import asyncio as _aio
+        store_name = _aio.get_event_loop().run_until_complete(_fetch_amazon_store_name(cred))
+        if not store_name:
+            # Fall back to the company name the tenant registered with
+            _tenant = db.query(models.Tenant).filter_by(id=tenant_id).first()
+            store_name = _tenant.name if _tenant else ""
+        if store_name:
+            cred.store_name = store_name
+            db.commit()
+    except Exception as _e:
+        log.warning("Could not fetch Amazon store name for tenant %s: %s", tenant_id, _e)
+        # Fall back to tenant company name
+        try:
+            _tenant = db.query(models.Tenant).filter_by(id=tenant_id).first()
+            if _tenant and not cred.store_name:
+                cred.store_name = _tenant.name
+                db.commit()
+        except Exception:
+            pass
 
     # Fire initial data pull in the background so the redirect is instant
     import amazon_sync as _amazon_sync
@@ -2945,6 +3004,7 @@ def get_amazon_credentials(
     return {
         "connected":      bool(cred and cred.sp_refresh_token),
         "seller_id":      cred.seller_id if cred else None,
+        "store_name":     cred.store_name if cred else None,
         "marketplace_id": cred.marketplace_id if cred else "ATVPDKIKX0DER",
         "connected_at":   cred.connected_at.isoformat() if cred and cred.connected_at else None,
         "is_sandbox":     cred.is_sandbox if cred else False,
@@ -2972,9 +3032,15 @@ def save_amazon_credentials(
     if body.get("sp_refresh_token"):  cred.sp_refresh_token  = body["sp_refresh_token"]
     if body.get("seller_id"):         cred.seller_id         = body["seller_id"]
     if body.get("marketplace_id"):    cred.marketplace_id    = body["marketplace_id"]
+    if body.get("store_name"):        cred.store_name        = body["store_name"]
     if "is_sandbox" in body:          cred.is_sandbox        = bool(body["is_sandbox"])
     cred.connected_at  = datetime.utcnow()
     cred.connected_by  = current["sub"]
+    # Default store_name to tenant company name if not provided
+    if not cred.store_name:
+        _t = db.query(models.Tenant).filter_by(id=tenant_id).first()
+        if _t:
+            cred.store_name = _t.name
     db.commit()
     return {"ok": True}
 
@@ -3720,14 +3786,26 @@ async def record_rejection(req_id: int, body: dict, db: Session = Depends(get_db
     # AI-customize the next template based on the rejection
     groq_key = os.getenv("GROQ_API_KEY", "").strip()
     requirements = _json.loads(req.requirements or "{}")
+    # Resolve store name from tenant Amazon credentials
+    _tid = current.get("tenant_id")
+    _store_name = body.get("seller_name") or ""
+    _seller_id  = body.get("seller_id") or os.getenv("AMAZON_SELLER_ID", "[Seller ID]")
+    if _tid and not _store_name:
+        _cred = db.query(models.AmazonCredential).filter_by(tenant_id=_tid).first()
+        if _cred:
+            _store_name = _cred.store_name or ""
+            _seller_id  = _cred.seller_id or _seller_id
+    if not _store_name:
+        _ten = db.query(models.Tenant).filter_by(id=_tid).first() if _tid else None
+        _store_name = (_ten.name if _ten else None) or "[Your Business Name]"
     variables = {
         "PRODUCT_NAME":  req.product_name,
         "ASIN":          req.asin,
         "CATEGORY":      req.category or "",
         "QUANTITY":      requirements.get("quantity") or "150",
         "SUPPLIER_NAME": body.get("supplier_name") or "our authorized distributor",
-        "SELLER_NAME":   body.get("seller_name") or "[Your Business Name]",
-        "SELLER_ID":     body.get("seller_id") or os.getenv("AMAZON_SELLER_ID", "[Seller ID]"),
+        "SELLER_NAME":   _store_name,
+        "SELLER_ID":     _seller_id,
     }
 
     base_body    = next_template.body    if next_template else ""
@@ -3824,13 +3902,26 @@ def render_template(
     t = db.query(models.UngateTemplate).filter(models.UngateTemplate.number == template_num).first()
     if not t:
         raise HTTPException(404, "Template not found")
+    # Resolve seller name: query param > tenant Amazon store_name > tenant name > fallback
+    tid = current.get("tenant_id")
+    resolved_seller_name = seller_name
+    resolved_seller_id   = os.getenv("AMAZON_SELLER_ID", "[Seller ID]")
+    if tid and not resolved_seller_name:
+        cred = db.query(models.AmazonCredential).filter_by(tenant_id=tid).first()
+        if cred:
+            resolved_seller_name = cred.store_name or ""
+            resolved_seller_id   = cred.seller_id or resolved_seller_id
+    if not resolved_seller_name:
+        tenant = db.query(models.Tenant).filter_by(id=tid).first() if tid else None
+        resolved_seller_name = (tenant.name if tenant else None) or "[Your Business Name]"
+
     variables = {
         "PRODUCT_NAME":  product_name,
         "ASIN":          asin,
         "QUANTITY":      quantity,
         "SUPPLIER_NAME": supplier_name,
-        "SELLER_NAME":   seller_name or "[Your Business Name]",
-        "SELLER_ID":     os.getenv("AMAZON_SELLER_ID", "[Seller ID]"),
+        "SELLER_NAME":   resolved_seller_name,
+        "SELLER_ID":     resolved_seller_id,
         "CATEGORY":      "",
     }
     body, subject = _fill_template(t.body, t.subject or "", variables)
