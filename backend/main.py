@@ -588,7 +588,11 @@ def update_user(
     db: Session = Depends(get_db),
     payload: dict = Depends(require_admin),
 ):
-    user = db.query(models.User).filter(models.User.id == user_id).first()
+    tid = payload.get("tenant_id")
+    q = db.query(models.User).filter(models.User.id == user_id)
+    if tid and not payload.get("is_superadmin"):
+        q = q.filter(models.User.tenant_id == tid)
+    user = q.first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if data.username is not None:
@@ -622,7 +626,11 @@ def update_user(
 
 @app.delete("/api/users/{user_id}", status_code=204)
 def delete_user(user_id: int, db: Session = Depends(get_db), payload: dict = Depends(require_admin)):
-    user = db.query(models.User).filter(models.User.id == user_id).first()
+    tid = payload.get("tenant_id")
+    q = db.query(models.User).filter(models.User.id == user_id)
+    if tid and not payload.get("is_superadmin"):
+        q = q.filter(models.User.tenant_id == tid)
+    user = q.first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if user.username == payload["sub"]:
