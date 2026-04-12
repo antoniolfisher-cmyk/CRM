@@ -644,13 +644,28 @@ def delete_repricer_strategy(strategy_id: int, db: Session = Depends(get_db), cu
     db.commit()
 
 
+def _tenant_inbound_email(tenant_id: int) -> str | None:
+    """Return a tenant-specific reply-to address using subaddressing.
+    e.g. CRM_INBOUND_EMAIL=crm@inbound.delightshoppe.org, tenant 2
+         → crm+t2@inbound.delightshoppe.org
+    """
+    base = os.getenv("CRM_INBOUND_EMAIL", "").strip()
+    if not base or "@" not in base:
+        return None
+    local, domain = base.split("@", 1)
+    local = local.split("+")[0]   # strip any existing subaddress
+    return f"{local}+t{tenant_id}@{domain}"
+
+
 @app.get("/api/notifications/status")
 def notification_status(db: Session = Depends(get_db), current: dict = Depends(require_admin)):
     user = db.query(models.User).filter(models.User.username == current["sub"]).first()
     inbound_email = os.getenv("CRM_INBOUND_EMAIL", "").strip()
+    tid = current.get("tenant_id")
     app_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
     if app_domain and not app_domain.startswith("http"):
         app_domain = f"https://{app_domain}"
+    tenant_inbound = _tenant_inbound_email(tid) if tid else inbound_email or None
     return {
         "smtp_configured": _smtp_configured(),
         "smtp_host": os.getenv("SMTP_HOST", ""),
@@ -658,7 +673,7 @@ def notification_status(db: Session = Depends(get_db), current: dict = Depends(r
         "notify_hour_utc": int(os.getenv("NOTIFY_HOUR", "8")),
         "admin_email": user.email if user else None,
         "inbound_configured": bool(inbound_email),
-        "inbound_email": inbound_email or None,
+        "inbound_email": tenant_inbound,
         "inbound_webhook_url": f"{app_domain}/api/webhooks/inbound-email" if app_domain else "/api/webhooks/inbound-email",
         "followup_days": int(os.getenv("FOLLOWUP_DAYS", "4")),
     }
@@ -1809,10 +1824,13 @@ def send_account_email(
     sender = data.sender_name or current.get("sub", "SellerPulse")
     html = _build_wholesale_email_html(data.body, data.template_id or "", sender)
 
-    # Set Reply-To to CRM inbound address and embed account id in header
-    inbound_email = os.getenv("CRM_INBOUND_EMAIL", "").strip()
-    reply_to = inbound_email if inbound_email else None
-    custom_headers = {"X-Crm-Account-Id": str(account_id)}
+    # Set Reply-To to tenant-scoped subaddress so inbound replies route correctly
+    _tid = current.get("tenant_id")
+    reply_to = _tenant_inbound_email(_tid) if _tid else os.getenv("CRM_INBOUND_EMAIL", "").strip() or None
+    custom_headers = {
+        "X-Crm-Account-Id": str(account_id),
+        "X-Crm-Tenant-Id":  str(_tid or ""),
+    }
 
     try:
         _send_email(data.to, data.subject, html,
@@ -1843,6 +1861,7 @@ def send_account_email(
 
     # Log sent email to thread
     log_entry = models.EmailMessage(
+        tenant_id=current.get("tenant_id"),
         account_id=account_id,
         direction="sent",
         from_email=current.get("sub", ""),
@@ -1961,8 +1980,25 @@ async def inbound_email_webhook(request: Request, db: Session = Depends(get_db))
         return (m.group(1) if m else s).strip().lower()
 
     from_addr = _extract_addr(from_raw)
+    to_addr   = _extract_addr(to_raw)
 
-    # 1. Look for X-Crm-Account-Id header (set by CRM when sending)
+    # ── Resolve tenant from To address subaddressing (crm+t{N}@domain) ──────
+    inbound_tenant_id = None
+    _sub_match = _re.search(r'\+t(\d+)@', to_addr)
+    if _sub_match:
+        inbound_tenant_id = int(_sub_match.group(1))
+
+    # Also check X-Crm-Tenant-Id header as fallback
+    if not inbound_tenant_id:
+        for _hline in headers_raw.splitlines():
+            if _hline.lower().startswith("x-crm-tenant-id:"):
+                try:
+                    inbound_tenant_id = int(_hline.split(":", 1)[1].strip())
+                except (ValueError, IndexError):
+                    pass
+                break
+
+    # ── 1. Look for X-Crm-Account-Id header (set by CRM when sending) ───────
     account_id = None
     for line in headers_raw.splitlines():
         if line.lower().startswith("x-crm-account-id:"):
@@ -1972,17 +2008,28 @@ async def inbound_email_webhook(request: Request, db: Session = Depends(get_db))
                 pass
             break
 
-    # 2. Fall back: match from address to account.email or contact.email
-    if not account_id and from_addr:
-        acc_match = db.query(models.Account).filter(
-            func.lower(models.Account.email) == from_addr
+    # If we have an account_id from header, verify it belongs to the resolved tenant
+    if account_id and inbound_tenant_id:
+        _verify = db.query(models.Account).filter(
+            models.Account.id == account_id,
+            models.Account.tenant_id == inbound_tenant_id,
         ).first()
+        if not _verify:
+            account_id = None   # header mismatch — don't trust it
+
+    # ── 2. Fall back: match from address scoped to the resolved tenant ───────
+    if not account_id and from_addr:
+        _acc_q = db.query(models.Account).filter(func.lower(models.Account.email) == from_addr)
+        if inbound_tenant_id:
+            _acc_q = _acc_q.filter(models.Account.tenant_id == inbound_tenant_id)
+        acc_match = _acc_q.first()
         if acc_match:
             account_id = acc_match.id
         else:
-            contact_match = db.query(models.Contact).filter(
-                func.lower(models.Contact.email) == from_addr
-            ).first()
+            _con_q = db.query(models.Contact).filter(func.lower(models.Contact.email) == from_addr)
+            if inbound_tenant_id:
+                _con_q = _con_q.filter(models.Contact.tenant_id == inbound_tenant_id)
+            contact_match = _con_q.first()
             if contact_match:
                 account_id = contact_match.account_id
 
@@ -1994,8 +2041,9 @@ async def inbound_email_webhook(request: Request, db: Session = Depends(get_db))
             _acc.pipeline_updated_at = datetime.utcnow()
             # no commit yet — will commit with the message below
 
-    # Store the inbound message
+    # Store the inbound message (tenant-scoped)
     msg = models.EmailMessage(
+        tenant_id=inbound_tenant_id,
         account_id=account_id,
         direction="received",
         from_email=from_raw,

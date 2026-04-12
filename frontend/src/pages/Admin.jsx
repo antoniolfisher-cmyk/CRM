@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import Modal from '../components/Modal'
 import { formatDate } from '../utils'
 
-function InboundEmailSetup({ status }) {
+function InboundEmailSetup({ status, isSuperAdmin }) {
   const webhookUrl = status.inbound_webhook_url || '/api/webhooks/inbound-email'
   const configured = status.inbound_configured
 
@@ -14,21 +14,28 @@ function InboundEmailSetup({ status }) {
         <div>
           <h2 className="font-semibold text-gray-900">Inbound Email (Reply Capture)</h2>
           <p className="text-sm text-gray-500 mt-0.5">
-            Route replies from suppliers back into the CRM — matched to the right account automatically.
+            Supplier replies are routed back into each account's Email tab automatically.
           </p>
         </div>
         <span className={`badge ${configured ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
-          {configured ? 'Configured' : 'Not Set Up'}
+          {configured ? 'Active' : 'Not Set Up'}
         </span>
       </div>
 
       {configured ? (
-        <div className="text-sm text-gray-600 bg-green-50 rounded-lg p-3">
-          Replies to <span className="font-mono font-medium">{status.inbound_email}</span> will flow into each account's Email tab and notify the assigned user.
+        <div className="text-sm text-gray-600 bg-green-50 rounded-lg p-3 space-y-1">
+          <p>Your unique reply address:</p>
+          <code className="block font-mono font-medium text-green-800 bg-green-100 px-2 py-1 rounded text-xs break-all">
+            {status.inbound_email}
+          </code>
+          <p className="text-xs text-green-700 mt-1">
+            Every outbound email uses this as Reply-To. Replies land in the account's Email tab and notify you. Each seller on the platform gets their own unique address — replies never cross between accounts.
+          </p>
         </div>
-      ) : (
+      ) : isSuperAdmin ? (
+        /* Platform admin sees the full setup instructions */
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 space-y-3 text-sm">
-          <p className="font-medium text-amber-900">3 steps to capture reply emails:</p>
+          <p className="font-medium text-amber-900">3 steps to enable reply capture for all sellers:</p>
           <ol className="space-y-3 text-amber-800">
             <li className="flex gap-2">
               <span className="font-bold shrink-0">1.</span>
@@ -42,7 +49,6 @@ function InboundEmailSetup({ status }) {
               <span className="font-bold shrink-0">2.</span>
               <span>
                 Add an <strong>MX record</strong> on your domain (e.g. <code>inbound.delightshoppe.org</code>) pointing to <code>mx.sendgrid.net</code> (priority 10).
-                This is the address your wholesale contacts will reply to.
               </span>
             </li>
             <li className="flex gap-2">
@@ -50,13 +56,18 @@ function InboundEmailSetup({ status }) {
               <span>
                 In <strong>Railway Variables</strong>, set:<br />
                 <code className="inline-block mt-1 bg-amber-100 px-2 py-0.5 rounded text-xs">CRM_INBOUND_EMAIL = crm@inbound.delightshoppe.org</code><br />
-                <span className="text-xs text-amber-600 mt-1 block">This becomes the Reply-To on every outbound email.</span>
+                <span className="text-xs text-amber-600 mt-1 block">
+                  Each seller automatically gets their own subaddress (e.g. crm+t2@inbound.delightshoppe.org).
+                  Replies are isolated per seller — no cross-tenant leakage.
+                </span>
               </span>
             </li>
           </ol>
-          <p className="text-xs text-amber-600">
-            Once configured, every reply from a supplier lands in the account's Email tab and triggers a notification to the assigned user.
-          </p>
+        </div>
+      ) : (
+        /* Non-platform sellers see a simple message */
+        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-sm text-gray-600">
+          Reply capture is managed by the platform. Once your platform admin enables it, supplier replies will automatically appear in each account's Email tab. No configuration needed on your end.
         </div>
       )}
     </div>
@@ -231,7 +242,7 @@ function DownloadIcon() {
 }
 
 export default function Admin() {
-  const { user: currentUser } = useAuth()
+  const { user: currentUser, isSuperAdmin } = useAuth()
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
@@ -367,7 +378,7 @@ export default function Admin() {
       </div>
 
       {/* ── Inbound Email Setup ── */}
-      {notifStatus && <InboundEmailSetup status={notifStatus} />}
+      {notifStatus && <InboundEmailSetup status={notifStatus} isSuperAdmin={isSuperAdmin} />}
 
       {/* ── Time Clock Report ── */}
       <TimeClockReport />
