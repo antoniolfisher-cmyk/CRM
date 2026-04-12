@@ -44,6 +44,19 @@ export const api = {
   saveAmazonCredentials: (data) => req('PUT', '/amazon/credentials', data),
   disconnectAmazon: () => req('DELETE', '/amazon/credentials'),
   purgeAndResyncAmazon: () => req('POST', '/admin/purge-system-products'),
+  uploadFbmListings: (file) => {
+    const token = localStorage.getItem(TOKEN_KEY)
+    const fd = new FormData()
+    fd.append('file', file)
+    return fetch(`${BASE}/amazon/fbm-upload`, {
+      method: 'POST',
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: fd,
+    }).then(async r => {
+      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText) }
+      return r.json()
+    })
+  },
   triggerInitialSync: () => req('POST', '/amazon/trigger-initial-sync', {}),
   getOnboardingSyncStatus: () => req('GET', '/onboarding/sync-status'),
 

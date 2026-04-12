@@ -4252,11 +4252,90 @@ async def amazon_inventory_sync_now(current: dict = Depends(require_auth)):
         raise HTTPException(502, str(e))
 
 
+@app.post("/api/amazon/fbm-upload")
+async def upload_fbm_listings(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_admin),
+):
+    """
+    Import FBM listings from an Amazon Seller Central Active Listings Report (TSV).
+    Download from: Seller Central → Reports → Inventory Reports → Active Listings Report.
+    Parses tab-delimited or comma-delimited files. Columns used:
+      asin1 (or asin), item-name, quantity, seller-sku, fulfillment-channel, status.
+    """
+    import csv, io as _io
+    tid = current.get("tenant_id")
+    data = await file.read()
+    text = data.decode("utf-8-sig", errors="replace")   # strip BOM if present
+
+    # Detect delimiter — Amazon reports are tab-delimited
+    sample = text[:4000]
+    delimiter = "\t" if text.count("\t") > text.count(",") else ","
+
+    reader = csv.DictReader(_io.StringIO(text), delimiter=delimiter)
+    created = updated = skipped = 0
+    errors = []
+
+    for row in reader:
+        asin = (row.get("asin1") or row.get("asin") or row.get("ASIN") or "").strip()
+        if not asin or len(asin) != 10:
+            skipped += 1
+            continue
+
+        # Skip FBA rows (FBA sync handles those)
+        fc_raw = (row.get("fulfillment-channel") or row.get("fulfillment_channel") or "").strip().upper()
+        if fc_raw in ("AMAZON", "AFN", "FBA"):
+            skipped += 1
+            continue
+
+        # Skip inactive rows
+        status_raw = (row.get("status") or row.get("Status") or "Active").strip().lower()
+        if status_raw and status_raw not in ("active", ""):
+            skipped += 1
+            continue
+
+        name = (row.get("item-name") or row.get("product-name") or row.get("title") or "").strip()
+        sku  = (row.get("seller-sku") or row.get("seller_sku") or "").strip()
+        try:
+            qty = int(float(row.get("quantity") or 0))
+        except (ValueError, TypeError):
+            qty = 0
+
+        try:
+            q = db.query(models.Product).filter(models.Product.asin == asin)
+            if tid:
+                q = q.filter(models.Product.tenant_id == tid)
+            existing = q.first()
+            if existing:
+                existing.quantity            = qty
+                existing.fulfillment_channel = "FBM"
+                if name and not existing.product_name:
+                    existing.product_name = name
+                updated += 1
+            else:
+                p = models.Product(
+                    tenant_id=tid,
+                    asin=asin,
+                    product_name=name or asin,
+                    quantity=qty,
+                    order_number=sku or None,
+                    status="approved",
+                    fulfillment_channel="FBM",
+                    created_by="system",
+                )
+                db.add(p)
+                created += 1
+        except Exception as e:
+            errors.append(f"ASIN {asin}: {e}")
+
+    db.commit()
+    return {"created": created, "updated": updated, "skipped": skipped, "errors": errors[:10]}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # UNGATING SYSTEM
 # ═══════════════════════════════════════════════════════════════════════════════
-
-_DEFAULT_TEMPLATES = [
     {
         "number": 1, "name": "Initial Application", "category": "general",
         "subject": "Request to Sell {PRODUCT_NAME} (ASIN: {ASIN})",
