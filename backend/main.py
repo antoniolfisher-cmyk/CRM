@@ -1954,6 +1954,172 @@ async def keepa_upc_lookup(code: str, current: dict = Depends(require_auth)):
     }
 
 
+@app.post("/api/keepa/batch")
+async def keepa_batch_lookup(body: dict, current: dict = Depends(require_auth)):
+    """Batch lookup of ASINs or UPC/EAN/GTIN codes — up to 100 per Keepa API call."""
+    api_key = os.getenv("KEEPA_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(503, "KEEPA_API_KEY is not configured")
+
+    mode = body.get("mode", "asin")   # "asin" | "upc"
+    raw  = body.get("codes") or []
+    if mode == "asin":
+        codes = list(dict.fromkeys(str(c).strip().upper() for c in raw if str(c).strip()))
+    else:
+        codes = list(dict.fromkeys(str(c).strip() for c in raw if str(c).strip()))
+
+    if not codes:
+        raise HTTPException(400, "No codes provided")
+    if len(codes) > 500:
+        raise HTTPException(400, "Maximum 500 codes per request")
+
+    _EPOCH_B = datetime(2011, 1, 1)
+
+    def _proc_b(kp):
+        stats = kp.get("stats") or {}
+        cur   = stats.get("current") or []
+        min90 = stats.get("min90")   or []
+        max90 = stats.get("max90")   or []
+        avg90 = stats.get("avg90")   or []
+
+        def _p(idx, arr):
+            if idx < len(arr) and arr[idx] is not None and arr[idx] > 0:
+                return round(arr[idx] / 100, 2)
+            return None
+
+        asin     = kp.get("asin", "")
+        cat_tree = kp.get("categoryTree") or []
+        category = (cat_tree[-1].get("name") if cat_tree else "") or ""
+        buy_box  = _keepa_buy_box(kp)
+
+        offers   = kp.get("offers") or []
+        num_fba  = num_fbm = 0
+        for o in offers:
+            if o.get("isFBA"): num_fba += 1
+            else:              num_fbm += 1
+
+        def _csv_pts(arr):
+            pts, i = [], 0
+            while i + 1 < len(arr):
+                t, p = arr[i], arr[i + 1]
+                if t is not None and p is not None and 0 < p < 1_000_000:
+                    pts.append(round(p / 100, 2))
+                i += 2
+            return pts[-50:]
+
+        csv      = kp.get("csv") or []
+        fba_hist = _csv_pts(csv[7] if len(csv) > 7 else [])
+
+        overall_median  = _p(7, avg90) or _p(1, avg90)
+        if fba_hist:
+            overall_90_high = round(max(fba_hist), 2)
+            overall_90_low  = round(min(fba_hist), 2)
+        else:
+            overall_90_high = _p(7, max90) or _p(1, max90)
+            overall_90_low  = _p(7, min90) or _p(1, min90)
+
+        bsr_val = int(cur[3]) if len(cur) > 3 and cur[3] and cur[3] > 0 else None
+
+        # EAN/UPC from product
+        ean_list = kp.get("eanList") or []
+        upc_val  = str(ean_list[0]) if ean_list else ""
+
+        return {
+            "asin":            asin,
+            "upc":             upc_val,
+            "title":           (kp.get("title") or "").strip(),
+            "buy_box":         buy_box,
+            "bsr":             bsr_val,
+            "category":        category,
+            "amazon_url":      f"https://www.amazon.com/dp/{asin}" if asin else "",
+            "keepa_chart_url": f"https://graph.keepa.com/pricehistory.png?asin={asin}&domain=1&salesrank=1&bb=1&fbafba=1&range=90" if asin else "",
+            "num_fba_sellers": num_fba if offers else None,
+            "num_fbm_sellers": num_fbm if offers else None,
+            "median_price":    overall_median,
+            "price_90_high":   overall_90_high,
+            "price_90_low":    overall_90_low,
+        }
+
+    all_products = []
+    tokens_left  = None
+    errors       = []
+    param_key    = "asin" if mode == "asin" else "code"
+
+    import httpx as _httpx
+    async with _httpx.AsyncClient(timeout=90) as client:
+        for i in range(0, len(codes), 100):
+            batch = codes[i: i + 100]
+            try:
+                resp = await client.get(
+                    "https://api.keepa.com/product",
+                    params={
+                        "key":    api_key,
+                        "domain": _KEEPA_DOMAIN,
+                        param_key: ",".join(batch),
+                        "stats":  90,
+                        "offers": 20,
+                    },
+                )
+                if resp.status_code == 429:
+                    try:
+                        refill = resp.json().get("refillIn", 0)
+                        errors.append(f"Keepa token limit reached. Refills in ~{round(refill/3600,1)}h.")
+                    except Exception:
+                        errors.append("Keepa token limit reached.")
+                    break
+                if resp.status_code != 200:
+                    errors.append(f"Keepa error {resp.status_code} on batch {i//100+1}")
+                    continue
+                data        = resp.json()
+                tokens_left = data.get("tokensLeft")
+                for kp in (data.get("products") or []):
+                    all_products.append(_proc_b(kp))
+            except Exception as e:
+                errors.append(f"Batch {i//100+1}: {str(e)}")
+
+    return {"products": all_products, "tokens_left": tokens_left, "errors": errors}
+
+
+@app.post("/api/keepa/amazon-search")
+async def keepa_amazon_search(body: dict, current: dict = Depends(require_auth)):
+    """Search Amazon catalog by keyword, then enrich matching ASINs via Keepa."""
+    if not _amazon_sp_configured():
+        raise HTTPException(503, "Amazon SP-API is not configured")
+
+    query = (body.get("query") or "").strip()
+    if not query:
+        raise HTTPException(400, "query required")
+
+    api_key = os.getenv("KEEPA_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(503, "KEEPA_API_KEY is not configured")
+
+    token = await _get_amazon_access_token()
+    import httpx as _httpx
+    async with _httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            f"{_AMAZON_SP_BASE}/catalog/2022-04-01/items",
+            headers={"x-amz-access-token": token},
+            params={
+                "keywords":      query,
+                "marketplaceIds": _AMAZON_MKT_ID,
+                "includedData":  "summaries",
+                "pageSize":      20,
+            },
+        )
+
+    if resp.status_code != 200:
+        raise HTTPException(502, f"Amazon catalog search failed ({resp.status_code})")
+
+    items = resp.json().get("items") or []
+    asins = [item.get("asin") for item in items if item.get("asin")]
+    if not asins:
+        return {"products": [], "tokens_left": None, "errors": []}
+
+    # Reuse batch logic directly
+    return await keepa_batch_lookup({"mode": "asin", "codes": asins}, current)
+
+
 @app.post("/api/products/{product_id}/keepa-refresh", response_model=schemas.ProductOut)
 async def keepa_refresh_one(
     product_id: int,
