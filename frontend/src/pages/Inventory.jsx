@@ -351,7 +351,7 @@ function ProductDrawer({ product, strategies, keepaConfigured, onClose, onSave, 
 
 // ── Status cards ───────────────────────────────────────────────────────────────
 
-function AmazonSyncCard({ status, onSync, syncing }) {
+function AmazonSyncCard({ status, onSync, syncing, onPurge, purging, isAdmin }) {
   if (!status) return null
   if (!status.configured) {
     return (
@@ -383,10 +383,22 @@ function AmazonSyncCard({ status, onSync, syncing }) {
         {hasError && <span className="text-xs text-red-600 font-medium">Last error: {status.error}</span>}
         {status.running && <span className="text-xs text-blue-600 animate-pulse">Syncing…</span>}
       </div>
-      <button onClick={onSync} disabled={syncing || status.running} className="btn-secondary text-sm flex items-center gap-1.5">
-        <SyncIcon spinning={syncing || status.running} />
-        {syncing || status.running ? 'Syncing…' : 'Sync Now'}
-      </button>
+      <div className="flex items-center gap-2">
+        {isAdmin && (
+          <button
+            onClick={onPurge}
+            disabled={purging || syncing || status.running}
+            className="btn-secondary text-sm text-red-600 hover:bg-red-50 border-red-200"
+            title="Delete all auto-synced products and re-import from your Amazon account"
+          >
+            {purging ? 'Clearing…' : 'Clear & Re-import'}
+          </button>
+        )}
+        <button onClick={onSync} disabled={syncing || status.running} className="btn-secondary text-sm flex items-center gap-1.5">
+          <SyncIcon spinning={syncing || status.running} />
+          {syncing || status.running ? 'Syncing…' : 'Sync Now'}
+        </button>
+      </div>
     </div>
   )
 }
@@ -441,6 +453,7 @@ export default function Inventory() {
   const [bulkResult, setBulkResult] = useState(null)
   const [amazonSyncStatus, setAmazonSyncStatus] = useState(null)
   const [amazonSyncing, setAmazonSyncing] = useState(false)
+  const [amazonPurging, setAmazonPurging] = useState(false)
   const [strategyMap, setStrategyMap] = useState({})
   const [selectedProduct, setSelectedProduct] = useState(null)
 
@@ -514,6 +527,24 @@ export default function Inventory() {
     }
   }
 
+  const handleAmazonPurge = async () => {
+    if (!window.confirm(
+      'This will delete all auto-imported Amazon products and re-import from your connected Amazon account.\n\n' +
+      'Products you added manually will NOT be affected.\n\nContinue?'
+    )) return
+    setAmazonPurging(true)
+    try {
+      const result = await api.purgeAndResyncAmazon()
+      load()
+      loadAmazonSyncStatus()
+      alert(`Done — ${result.purged} old products removed, ${(result.sync_result?.created || 0) + (result.sync_result?.updated || 0)} re-imported from your Amazon account.`)
+    } catch (e) {
+      alert(`Failed: ${e.message}`)
+    } finally {
+      setAmazonPurging(false)
+    }
+  }
+
   const handleStrategyChange = async (productId, value, e) => {
     e.stopPropagation()
     const strategyId = value === '' ? null : Number(value)
@@ -543,7 +574,7 @@ export default function Inventory() {
         <p className="text-gray-500 text-sm mt-1">All approved products — auto-synced from Amazon FBA hourly</p>
       </div>
 
-      <AmazonSyncCard status={amazonSyncStatus} onSync={handleAmazonSync} syncing={amazonSyncing} />
+      <AmazonSyncCard status={amazonSyncStatus} onSync={handleAmazonSync} syncing={amazonSyncing} onPurge={handleAmazonPurge} purging={amazonPurging} isAdmin={isAdmin} />
       <KeepaStatusCard status={keepaStatus} onBulkSync={handleBulkSync} bulkLoading={bulkLoading} bulkResult={bulkResult} isAdmin={isAdmin} />
 
       {/* KPIs */}
