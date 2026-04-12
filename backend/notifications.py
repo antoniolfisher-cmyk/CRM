@@ -227,7 +227,19 @@ def _send_via_sendgrid(to: str, subject: str, html: str, api_key: str,
         timeout=30,
     )
     if resp.status_code >= 400:
-        raise Exception(f"SendGrid {resp.status_code}: {resp.text}")
+        try:
+            err_body = resp.json()
+            msgs = [e.get("message", "") for e in err_body.get("errors", [])]
+            combined = " ".join(msgs)
+        except Exception:
+            raise Exception(f"SendGrid {resp.status_code}: {resp.text}")
+        if "does not match a verified Sender Identity" in combined:
+            raise Exception(
+                "SendGrid rejected the email: the From address isn't verified. "
+                "Go to SendGrid → Settings → Sender Authentication and verify the "
+                "address set in your SMTP_FROM Railway variable."
+            )
+        raise Exception(f"SendGrid {resp.status_code}: {msgs[0] if msgs else resp.text}")
     log.info("Email sent via SendGrid to %s: %s", to, subject)
 
 
