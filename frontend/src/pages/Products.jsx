@@ -860,13 +860,12 @@ function MarketAnalysis({ data, asin }) {
                 <p className="text-2xl font-bold text-gray-500 mt-0.5">{(data.num_fba_sellers ?? 0) + (data.num_fbm_sellers ?? 0)}</p>
               </div>
             </>
-          ) : (
+          ) : data.num_sellers ? (
             <div>
               <p className="text-xs text-gray-500">Total New Sellers</p>
-              <p className="text-2xl font-bold text-gray-700 mt-0.5">{data.num_sellers ?? '—'}</p>
-              <p className="text-xs text-gray-400 mt-1">FBA/FBM breakdown requires Keepa offer data (check plan)</p>
+              <p className="text-2xl font-bold text-gray-700 mt-0.5">{data.num_sellers}</p>
             </div>
-          )}
+          ) : null}
           {(data.price_90_high != null || data.median_price != null || data.price_90_low != null) && (
             <div className="flex gap-6 border-l border-gray-200 pl-6">
               {data.price_90_high != null && (
