@@ -13,6 +13,7 @@ import Approvals from './pages/Approvals'
 import Repricer from './pages/Repricer'
 import TimeClock from './pages/TimeClock'
 import Support from './pages/Support'
+import UpcScanner from './pages/UpcScanner'
 
 export default function App() {
   return (
@@ -53,6 +54,7 @@ function PrivateRoute() {
         <Route path="/products" element={<Navigate to="/sourcing" replace />} />
         <Route path="/timeclock" element={<TimeClock />} />
         <Route path="/support" element={<Support />} />
+        <Route path="/upc-scanner" element={<UpcScanner />} />
         <Route
           path="/approvals"
           element={isAdmin ? <Approvals /> : <Navigate to="/" replace />}

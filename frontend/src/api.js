@@ -83,6 +83,7 @@ export const api = {
   setProductStrategy: (id, strategyId) => req('PUT', `/products/${id}/strategy`, { strategy_id: strategyId }),
   keepaStatus: () => req('GET', '/keepa/status'),
   keepaLookup: (asin) => req('GET', `/keepa/lookup/${asin}`),
+  keepaUpcLookup: (code) => req('GET', `/keepa/upc/${encodeURIComponent(code)}`),
   keepaRefreshOne: (id) => req('POST', `/products/${id}/keepa-refresh`),
   keepaBulkRefresh: () => req('POST', '/keepa/bulk-refresh'),
   amazonStatus: () => req('GET', '/amazon/status'),

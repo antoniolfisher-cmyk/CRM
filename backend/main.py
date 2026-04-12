@@ -1815,6 +1815,145 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth)):
     }
 
 
+@app.get("/api/keepa/upc/{code}")
+async def keepa_upc_lookup(code: str, current: dict = Depends(require_auth)):
+    """Look up product(s) by UPC / EAN / ISBN via Keepa."""
+    api_key = os.getenv("KEEPA_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(503, "KEEPA_API_KEY is not configured")
+
+    code = code.strip()
+    import httpx as _httpx
+    async with _httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            "https://api.keepa.com/product",
+            params={"key": api_key, "domain": _KEEPA_DOMAIN, "code": code, "stats": 90, "offers": 20},
+        )
+
+    if resp.status_code == 429:
+        try:
+            kd = resp.json()
+            refill_secs = kd.get("refillIn", 0)
+            raise HTTPException(429, f"Keepa token limit reached. Refills in ~{round(refill_secs/3600,1)}h.")
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(429, "Keepa token limit reached.")
+    if resp.status_code != 200:
+        raise HTTPException(502, f"Keepa returned {resp.status_code}")
+
+    data = resp.json()
+    if data.get("error"):
+        raise HTTPException(502, f"Keepa error: {data.get('status', 'unknown')}")
+
+    products_data = data.get("products") or []
+    if not products_data:
+        raise HTTPException(404, f"No products found for code {code}")
+
+    _KEEPA_EPOCH_UPC = datetime(2011, 1, 1)
+
+    def _process(kp):
+        stats  = kp.get("stats") or {}
+        cur    = stats.get("current") or []
+        min90  = stats.get("min90")   or []
+        max90  = stats.get("max90")   or []
+        avg90  = stats.get("avg90")   or []
+
+        def _p(idx, arr):
+            if idx < len(arr) and arr[idx] is not None and arr[idx] > 0:
+                return round(arr[idx] / 100, 2)
+            return None
+
+        asin = kp.get("asin", "")
+        cat_tree = kp.get("categoryTree") or []
+        category = (cat_tree[-1].get("name") or cat_tree[0].get("name") or "").strip() if cat_tree else ""
+
+        buy_box_price = _keepa_buy_box(kp)
+
+        # FBA / FBM offer breakdown
+        offers = kp.get("offers") or []
+        num_fba, num_fbm = 0, 0
+        fba_prices, fbm_prices = [], []
+        for o in offers:
+            is_fba = bool(o.get("isFBA"))
+            cond   = o.get("condition")
+            if is_fba: num_fba += 1
+            else:      num_fbm += 1
+            if cond != 0:
+                continue
+            price_cents = o.get("price") or 0
+            if price_cents > 0:
+                p_d = round(price_cents / 100, 2)
+                (fba_prices if is_fba else fbm_prices).append(p_d)
+
+        def _range(prices):
+            if not prices: return None, None, None
+            s = sorted(prices)
+            mid = len(s) // 2
+            med = (s[mid-1]+s[mid])/2 if len(s)%2==0 else s[mid]
+            return round(min(s),2), round(max(s),2), round(med,2)
+
+        fba_low, fba_high, fba_median = _range(fba_prices)
+        fbm_low, fbm_high, fbm_median = _range(fbm_prices)
+        if fba_low is None:
+            fba_low, fba_high, fba_median = _p(7,min90) or _p(11,min90), _p(7,max90) or _p(11,max90), _p(7,avg90) or _p(11,avg90)
+        if fbm_low is None:
+            fbm_low, fbm_high, fbm_median = _p(12,min90), _p(12,max90), _p(12,avg90)
+
+        # Price history
+        def _csv_to_pts(csv_arr, max_pts=50):
+            pts, i = [], 0
+            while i + 1 < len(csv_arr):
+                t, p = csv_arr[i], csv_arr[i+1]
+                if t is not None and p is not None and 0 < p < 1_000_000:
+                    dt = _KEEPA_EPOCH_UPC + timedelta(minutes=int(t))
+                    pts.append({"date": dt.strftime("%b %-d"), "price": round(p/100, 2)})
+                i += 2
+            return pts[-max_pts:]
+
+        csv = kp.get("csv") or []
+        fba_history = _csv_to_pts(csv[7] if len(csv) > 7 else [])
+
+        overall_median  = _p(7, avg90) or _p(1, avg90)
+        if fba_history:
+            _hp = [p["price"] for p in fba_history]
+            overall_90_high = round(max(_hp), 2)
+            overall_90_low  = round(min(_hp), 2)
+        else:
+            overall_90_high = _p(7, max90) or _p(1, max90)
+            overall_90_low  = _p(7, min90) or _p(1, min90)
+
+        bsr_val = None
+        if len(cur) > 3 and cur[3] is not None and cur[3] > 0:
+            bsr_val = int(cur[3])
+
+        return {
+            "asin":            asin,
+            "title":           (kp.get("title") or "").strip(),
+            "buy_box":         buy_box_price,
+            "bsr":             bsr_val,
+            "category":        category,
+            "amazon_url":      f"https://www.amazon.com/dp/{asin}",
+            "keepa_chart_url": f"https://graph.keepa.com/pricehistory.png?asin={asin}&domain=1&salesrank=1&bb=1&fbafba=1&range=90",
+            "num_fba_sellers": num_fba if offers else None,
+            "num_fbm_sellers": num_fbm if offers else None,
+            "median_price":    overall_median,
+            "price_90_high":   overall_90_high,
+            "price_90_low":    overall_90_low,
+            "fba_low":         fba_low,
+            "fba_high":        fba_high,
+            "fba_median":      fba_median,
+            "fbm_low":         fbm_low,
+            "fbm_high":        fbm_high,
+            "fbm_median":      fbm_median,
+        }
+
+    return {
+        "products":    [_process(kp) for kp in products_data],
+        "tokens_left": data.get("tokensLeft"),
+    }
+
+
 @app.post("/api/products/{product_id}/keepa-refresh", response_model=schemas.ProductOut)
 async def keepa_refresh_one(
     product_id: int,
