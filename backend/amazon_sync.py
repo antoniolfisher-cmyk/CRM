@@ -176,42 +176,101 @@ async def _fetch_fba_inventory(tenant_id: Optional[int] = None) -> list:
 
 # ── FBM listings fetch ─────────────────────────────────────────────────────────
 
+async def _resolve_seller_id(tenant_id: Optional[int], token: str, base: str) -> Optional[str]:
+    """Return the seller's Merchant ID, looking in DB → env var → SP-API."""
+    import httpx
+
+    # 1. DB credential record
+    if tenant_id:
+        db = SessionLocal()
+        try:
+            cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
+            if cred and cred.seller_id:
+                return cred.seller_id
+        finally:
+            db.close()
+
+    # 2. Env var fallback
+    env_id = os.getenv("AMAZON_SELLER_ID", "").strip()
+    if env_id:
+        return env_id
+
+    # 3. Ask SP-API — GET /sellers/v1/marketplaceParticipations
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(
+                f"{base}/sellers/v1/marketplaceParticipations",
+                headers={"x-amz-access-token": token},
+            )
+        if r.status_code == 200:
+            participations = r.json().get("payload", {}).get("participations") or []
+            for p in participations:
+                mid = (p.get("sellerParticipation") or {}).get("sellerId") \
+                    or (p.get("marketplace") or {}).get("id")
+                if mid:
+                    # Persist it so we don't need to fetch again
+                    if tenant_id:
+                        db = SessionLocal()
+                        try:
+                            cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
+                            if cred:
+                                cred.seller_id = mid
+                                db.commit()
+                        finally:
+                            db.close()
+                    log.info("Resolved seller_id %s for tenant %s via SP-API", mid, tenant_id)
+                    return mid
+        else:
+            log.debug("marketplaceParticipations %s for tenant %s", r.status_code, tenant_id)
+    except Exception as e:
+        log.debug("Could not resolve seller_id via SP-API for tenant %s: %s", tenant_id, e)
+
+    return None
+
+
 async def _fetch_fbm_listings(tenant_id: Optional[int] = None) -> list:
     """
-    Fetch all active FBM (merchant-fulfilled) listings via the Listings Items API.
+    Fetch all ACTIVE FBM (merchant-fulfilled) listings via the Listings Items API.
+    Strategy:
+      1. Listings Items API v2021-08-01 (fast, real-time) — primary path
+      2. If 403/404 (permission not granted), fall back to the Reports API
+         using GET_FLAT_FILE_OPEN_LISTINGS_DATA (async but widely available)
     Returns list of dicts: asin, product_name, seller_sku, quantity, fulfillment_channel='FBM'.
-    Requires seller_id to be stored in AmazonCredential or AMAZON_SELLER_ID env var.
-    Silently returns [] if seller_id is unavailable or the API permission is not granted.
     """
     import httpx
 
     token, mkt_id, base = await _get_access_token_for_tenant(tenant_id)
 
-    # Resolve seller_id
-    seller_id = None
-    if tenant_id:
-        db = SessionLocal()
-        try:
-            cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
-            seller_id = cred.seller_id if cred else None
-        finally:
-            db.close()
+    seller_id = await _resolve_seller_id(tenant_id, token, base)
     if not seller_id:
-        seller_id = os.getenv("AMAZON_SELLER_ID", "").strip()
-
-    if not seller_id:
-        log.info("FBM sync skipped for tenant %s — no seller_id", tenant_id)
+        log.info("FBM sync skipped for tenant %s — could not resolve seller_id", tenant_id)
         return []
 
+    items = await _listings_api_fbm(seller_id, tenant_id, token, mkt_id, base)
+    if items is None:
+        # Listings API unavailable — fall back to Reports API
+        log.info("Falling back to Reports API for FBM listings (tenant %s)", tenant_id)
+        items = await _reports_api_fbm(tenant_id, token, mkt_id, base) or []
+
+    log.info("FBM sync tenant %s: %d items", tenant_id, len(items))
+    return items
+
+
+async def _listings_api_fbm(seller_id: str, tenant_id, token: str, mkt_id: str, base: str):
+    """
+    Primary FBM path: Listings Items API.
+    Returns list on success, None if the API permission is not available (403/404).
+    """
+    import httpx
     items = []
     page_token = None
 
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
             params = {
-                "marketplaceIds":  mkt_id,
-                "includedData":    "summaries,fulfillmentAvailability",
-                "pageSize":        20,
+                "marketplaceIds": mkt_id,
+                "includedData":   "summaries,fulfillmentAvailability",
+                "pageSize":       200,
             }
             if page_token:
                 params["pageToken"] = page_token
@@ -221,29 +280,36 @@ async def _fetch_fbm_listings(tenant_id: Optional[int] = None) -> list:
                 headers={"x-amz-access-token": token},
                 params=params,
             )
-            if resp.status_code == 403:
-                log.info("FBM listings API 403 for tenant %s — seller may not have listings permission", tenant_id)
-                break
+            if resp.status_code in (403, 404):
+                log.info("Listings Items API %s for tenant %s — will try Reports API", resp.status_code, tenant_id)
+                return None
             if resp.status_code != 200:
-                log.warning("FBM listings API %s for tenant %s: %s", resp.status_code, tenant_id, resp.text[:120])
-                break
+                log.warning("Listings Items API %s for tenant %s: %s", resp.status_code, tenant_id, resp.text[:150])
+                return []
 
             data = resp.json()
             for listing in data.get("items", []):
                 summaries = listing.get("summaries") or []
-                # Only include merchant-fulfilled (FBM) items
-                is_fbm = any(
-                    s.get("fulfillmentChannel") in ("MERCHANT", "DEFAULT")
-                    for s in summaries
-                )
-                if not is_fbm:
+
+                # Skip if not active
+                if not any("ACTIVE" in (s.get("status") or []) for s in summaries):
                     continue
 
-                asin = (summaries[0].get("asin") or "") if summaries else ""
-                product_name = (summaries[0].get("itemName") or "") if summaries else ""
-                seller_sku = listing.get("sku", "")
+                # Only merchant-fulfilled items
+                channel = next(
+                    (s.get("fulfillmentChannel") for s in summaries if s.get("fulfillmentChannel")),
+                    None
+                )
+                if channel not in ("MERCHANT", "DEFAULT", None):
+                    # "AMAZON" = FBA — skip here, already covered by FBA sync
+                    if channel == "AMAZON":
+                        continue
 
-                # Quantity from fulfillmentAvailability for the MERCHANT channel
+                asin         = next((s.get("asin") for s in summaries if s.get("asin")), "")
+                product_name = next((s.get("itemName") for s in summaries if s.get("itemName")), "")
+                seller_sku   = listing.get("sku", "")
+
+                # Quantity: prefer fulfillmentAvailability DEFAULT channel
                 qty = 0
                 for fa in (listing.get("fulfillmentAvailability") or []):
                     if fa.get("fulfillmentChannelCode") in ("DEFAULT", "MERCHANT"):
@@ -252,10 +318,10 @@ async def _fetch_fbm_listings(tenant_id: Optional[int] = None) -> list:
 
                 if asin:
                     items.append({
-                        "asin":               asin,
-                        "product_name":       product_name,
-                        "seller_sku":         seller_sku,
-                        "quantity":           qty,
+                        "asin":                asin,
+                        "product_name":        product_name,
+                        "seller_sku":          seller_sku,
+                        "quantity":            qty,
                         "fulfillment_channel": "FBM",
                     })
 
@@ -263,7 +329,93 @@ async def _fetch_fbm_listings(tenant_id: Optional[int] = None) -> list:
             if not page_token:
                 break
 
-    log.info("FBM listings fetched for tenant %s: %d items", tenant_id, len(items))
+    return items
+
+
+async def _reports_api_fbm(tenant_id, token: str, mkt_id: str, base: str):
+    """
+    Fallback FBM path: Reports API — GET_FLAT_FILE_OPEN_LISTINGS_DATA.
+    Widely available, gives all active MFN listings with quantity.
+    This is an async operation: create → poll → download → parse.
+    Timeout: 3 minutes total.
+    """
+    import httpx, csv, io, time as _t
+
+    headers = {"x-amz-access-token": token, "Content-Type": "application/json"}
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        # 1. Create report
+        r = await client.post(
+            f"{base}/reports/2021-06-30/reports",
+            json={
+                "reportType":     "GET_FLAT_FILE_OPEN_LISTINGS_DATA",
+                "marketplaceIds": [mkt_id],
+            },
+            headers=headers,
+        )
+        if r.status_code not in (200, 202):
+            log.warning("FBM Reports API create failed %s for tenant %s: %s", r.status_code, tenant_id, r.text[:150])
+            return []
+        report_id = r.json().get("reportId")
+        if not report_id:
+            return []
+
+        # 2. Poll for completion (max 3 min)
+        deadline = _t.time() + 180
+        doc_id = None
+        while _t.time() < deadline:
+            await asyncio.sleep(10)
+            rr = await client.get(f"{base}/reports/2021-06-30/reports/{report_id}", headers=headers)
+            if rr.status_code != 200:
+                continue
+            status = rr.json().get("processingStatus", "")
+            if status == "DONE":
+                doc_id = rr.json().get("reportDocumentId")
+                break
+            if status in ("CANCELLED", "FATAL"):
+                log.warning("FBM report %s for tenant %s", status, tenant_id)
+                return []
+
+        if not doc_id:
+            log.warning("FBM report timed out for tenant %s", tenant_id)
+            return []
+
+        # 3. Get download URL
+        dr = await client.get(f"{base}/reports/2021-06-30/documents/{doc_id}", headers=headers)
+        if dr.status_code != 200:
+            return []
+        download_url = dr.json().get("url")
+        if not download_url:
+            return []
+
+        # 4. Download and parse TSV
+        raw = await client.get(download_url, timeout=60)
+        if raw.status_code != 200:
+            return []
+
+    items = []
+    try:
+        text = raw.text
+        reader = csv.DictReader(io.StringIO(text), delimiter="\t")
+        for row in reader:
+            asin     = (row.get("asin1") or row.get("asin") or "").strip()
+            sku      = (row.get("seller-sku") or "").strip()
+            name     = (row.get("item-name") or "").strip()
+            try:
+                qty = int(row.get("quantity", 0) or 0)
+            except (ValueError, TypeError):
+                qty = 0
+            if asin:
+                items.append({
+                    "asin":                asin,
+                    "product_name":        name,
+                    "seller_sku":          sku,
+                    "quantity":            qty,
+                    "fulfillment_channel": "FBM",
+                })
+    except Exception as e:
+        log.warning("FBM report parse error for tenant %s: %s", tenant_id, e)
+
     return items
 
 
