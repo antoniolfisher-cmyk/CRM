@@ -59,12 +59,20 @@ def configured(tenant_id: Optional[int] = None) -> bool:
     A tenant is considered configured if they have a refresh token stored
     (from OAuth) AND the LWA client credentials are available either in
     the DB record or as env vars.
+    Falls back to env vars when no DB credential record exists (e.g. fresh DB).
     """
+    _env_configured = all(os.getenv(k, "").strip() for k in (
+        "AMAZON_LWA_CLIENT_ID", "AMAZON_LWA_CLIENT_SECRET",
+        "AMAZON_SP_REFRESH_TOKEN",
+    ))
     if tenant_id:
         db = SessionLocal()
         try:
             cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
-            if not cred or not cred.sp_refresh_token:
+            if not cred:
+                # No DB record — fall back to env vars (e.g. self-hosted / fresh install)
+                return _env_configured
+            if not cred.sp_refresh_token:
                 return False
             # Client ID/secret can be in the DB (manual entry) or env vars (shared app creds)
             lwa_id     = cred.lwa_client_id     or os.getenv("AMAZON_LWA_CLIENT_ID", "")
@@ -74,10 +82,7 @@ def configured(tenant_id: Optional[int] = None) -> bool:
             return bool(lwa_id or lwa_secret)
         finally:
             db.close()
-    return all(os.getenv(k, "").strip() for k in (
-        "AMAZON_LWA_CLIENT_ID", "AMAZON_LWA_CLIENT_SECRET",
-        "AMAZON_SP_REFRESH_TOKEN", "AMAZON_SELLER_ID",
-    ))
+    return _env_configured
 
 
 async def _get_access_token_for_tenant(tenant_id: Optional[int] = None) -> tuple[str, str, str]:
