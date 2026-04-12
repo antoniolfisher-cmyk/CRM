@@ -2362,6 +2362,7 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
             import httpx as _hx
             _cred = _get_tenant_amazon_creds(_tenant_id, db)
             if not _cred or not _cred.sp_refresh_token:
+                log.warning("keepa_lookup _sp_data: no creds for tenant %s", _tenant_id)
                 return {}
             _tok  = await _get_tenant_access_token(_cred)
             _mkt  = _cred.marketplace_id or _AMAZON_MKT_ID
@@ -2375,6 +2376,7 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
                     headers={"x-amz-access-token": _tok},
                     params={"MarketplaceId": _mkt, "ItemCondition": "New", "CustomerType": "Consumer"},
                 )
+                log.info("keepa_lookup _sp_data: offers status=%s asin=%s", _or.status_code, asin)
                 if _or.status_code == 200:
                     _payload_data = _or.json().get("payload", {})
                     _summary      = _payload_data.get("Summary", {})
@@ -2479,8 +2481,10 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
                         result["bsr"] = (_rank_entry.get("ranks") or [{}])[0].get("value")
                         result["category"] = _rank_entry.get("displayGroupName") or ""
 
+            log.info("keepa_lookup _sp_data: result keys=%s asin=%s", list(result.keys()), asin)
             return result
-        except Exception:
+        except Exception as _e:
+            log.error("keepa_lookup _sp_data failed asin=%s: %s", asin, _e)
             return {}
 
     # ── Run Amazon SP-API fetch first — always, zero Keepa tokens ─────────────
