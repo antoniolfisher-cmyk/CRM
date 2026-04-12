@@ -72,7 +72,7 @@ export default function Register() {
             <RocketIcon className="w-6 h-6 text-white" />
           </div>
           <div>
-            <p className="text-white font-bold text-xl leading-tight">SellerSuite</p>
+            <p className="text-white font-bold text-xl leading-tight">SellerPulse</p>
             <p className="text-slate-400 text-sm">Amazon Seller CRM</p>
           </div>
         </div>
@@ -104,7 +104,7 @@ export default function Register() {
               <div className="space-y-4">
                 <div>
                   <h2 className="text-xl font-semibold text-gray-900">Create your workspace</h2>
-                  <p className="text-gray-500 text-sm mt-1">Your team's home in SellerSuite</p>
+                  <p className="text-gray-500 text-sm mt-1">Your team's home in SellerPulse</p>
                 </div>
                 <div>
                   <label className="label">Company / Store Name</label>

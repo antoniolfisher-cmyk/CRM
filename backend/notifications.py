@@ -1,5 +1,5 @@
 """
-Email notification system for Delight Shoppe CRM.
+Email notification system for SellerPulse.
 
 Sends a daily follow-up digest to each active user who has an email address
 and has notifications enabled.
@@ -9,7 +9,7 @@ Required env vars:
   SMTP_PORT      e.g. 587
   SMTP_USER      your sending email address
   SMTP_PASSWORD  your email app password
-  SMTP_FROM      display name + address, e.g. "Delight Shoppe <you@gmail.com>"
+  SMTP_FROM      display name + address, e.g. "SellerPulse <you@gmail.com>"
   NOTIFY_HOUR    UTC hour to send daily digest (default: 8  = 8:00 AM UTC)
 """
 
@@ -52,12 +52,12 @@ def _auto_followup_body(stage: str, account_name: str, contact_name: str, sender
     sender = sender_name
 
     if stage == "outreach_sent":
-        subject = f"Still Interested — Delight Shoppe × {acct}"
+        subject = f"Still Interested — SellerPulse × {acct}"
         body = f"""Dear {contact},
 
-I wanted to follow up on my earlier note about a potential wholesale partnership between Delight Shoppe and {acct}. I understand how busy things get, and I didn't want my message to get buried.
+I wanted to follow up on my earlier note about a potential wholesale partnership between SellerPulse and {acct}. I understand how busy things get, and I didn't want my message to get buried.
 
-[CALLOUT]We're a curated e-commerce retailer actively looking to carry quality products for a loyal and growing customer base. We believe {acct} could be a great fit, and we'd love the chance to show you why Delight Shoppe is a different kind of retail partner.
+[CALLOUT]We're a curated e-commerce retailer actively looking to carry quality products for a loyal and growing customer base. We believe {acct} could be a great fit, and we'd love the chance to show you why SellerPulse is a different kind of retail partner.
 
 If the timing isn't right at the moment, no pressure at all — just let me know and I'll circle back when it suits you better.
 
@@ -65,13 +65,13 @@ But if there's any interest, even just a quick reply or a catalog to review, tha
 
 Warm regards,
 {sender}
-Delight Shoppe Wholesale"""
+SellerPulse Wholesale"""
 
     elif stage == "catalog_sent":
-        subject = f"Any Questions About Our Inquiry? — Delight Shoppe × {acct}"
+        subject = f"Any Questions About Our Inquiry? — SellerPulse × {acct}"
         body = f"""Dear {contact},
 
-Just a quick follow-up to see if you had a chance to review our earlier message about a wholesale partnership with Delight Shoppe.
+Just a quick follow-up to see if you had a chance to review our earlier message about a wholesale partnership with SellerPulse.
 
 We know your inbox is busy, so we'll keep this short: we're genuinely interested in carrying {acct}'s products, and we're flexible on how we get started — whether that's a small initial order, a call to talk through terms, or simply receiving your catalog so we can review what you offer.
 
@@ -81,19 +81,19 @@ Would this week work for a quick email exchange or call? We'll follow your lead.
 
 Warm regards,
 {sender}
-Delight Shoppe Wholesale"""
+SellerPulse Wholesale"""
 
     else:
-        subject = f"Checking In — Delight Shoppe × {acct}"
+        subject = f"Checking In — SellerPulse × {acct}"
         body = f"""Dear {contact},
 
-Just checking in on our ongoing conversation about a possible partnership between Delight Shoppe and {acct}. We remain genuinely interested and would love to move things forward at whatever pace works best for you.
+Just checking in on our ongoing conversation about a possible partnership between SellerPulse and {acct}. We remain genuinely interested and would love to move things forward at whatever pace works best for you.
 
 Please don't hesitate to reply with any questions, and thank you again for your time.
 
 Warm regards,
 {sender}
-Delight Shoppe Wholesale"""
+SellerPulse Wholesale"""
 
     return subject, body
 
@@ -135,7 +135,7 @@ def send_auto_followups():
             owner = db.query(_models.User).filter(
                 _models.User.username == acc.created_by
             ).first() if acc.created_by else None
-            sender_name = owner.username if owner else "Delight Shoppe"
+            sender_name = owner.username if owner else "SellerPulse"
 
             # Get primary contact name
             primary = next((c for c in acc.contacts if c.is_primary), None)
@@ -199,12 +199,12 @@ def _smtp_configured() -> bool:
 def _send_via_sendgrid(to: str, subject: str, html: str, api_key: str,
                        reply_to: str = None, custom_headers: dict = None):
     import httpx
-    from_raw = os.getenv("SMTP_FROM", "Delight Shoppe <noreply@delightshoppe.org>")
+    from_raw = os.getenv("SMTP_FROM", "SellerPulse <noreply@sellerpulse.io>")
     if '<' in from_raw:
         name_part = from_raw[:from_raw.index('<')].strip().strip('"')
         email_part = from_raw[from_raw.index('<')+1:from_raw.index('>')].strip().lower()
     else:
-        name_part = "Delight Shoppe"
+        name_part = "SellerPulse"
         email_part = from_raw.strip().lower()
 
     payload = {
@@ -230,7 +230,7 @@ def _send_via_sendgrid(to: str, subject: str, html: str, api_key: str,
 
 def _send_via_resend(to: str, subject: str, html: str, api_key: str):
     # Build a clean lowercase from address
-    from_addr = SMTP_FROM or f"Delight Shoppe <noreply@delightshoppe.org>"
+    from_addr = SMTP_FROM or f"SellerPulse <noreply@sellerpulse.io>"
     # Resend requires lowercase email addresses
     if '<' in from_addr and '>' in from_addr:
         name_part = from_addr[:from_addr.index('<')].strip()
@@ -341,7 +341,7 @@ def build_digest_html(username: str, overdue: list, due_today: list, due_soon: l
 
         <!-- Header -->
         <div style="background:#1e293b;padding:24px 32px;">
-          <p style="margin:0;color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:.05em;">Delight Shoppe</p>
+          <p style="margin:0;color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:.05em;">SellerPulse</p>
           <h1 style="margin:4px 0 0;color:#fff;font-size:22px;">Daily Follow-Up Digest</h1>
           <p style="margin:4px 0 0;color:#64748b;font-size:13px;">{date_str}</p>
         </div>
@@ -370,7 +370,7 @@ def build_digest_html(username: str, overdue: list, due_today: list, due_soon: l
         <!-- Footer -->
         <div style="background:#f9fafb;padding:16px 32px;border-top:1px solid #e5e7eb;">
           <p style="margin:0;color:#9ca3af;font-size:12px;text-align:center;">
-            Delight Shoppe CRM · You're receiving this because notifications are enabled for your account.
+            SellerPulse · You're receiving this because notifications are enabled for your account.
           </p>
         </div>
       </div>
@@ -420,7 +420,7 @@ def send_daily_digests():
             return
 
         total = len(overdue) + len(due_today)
-        subject = f"Delight Shoppe · {total} follow-up{'s' if total != 1 else ''} need attention today"
+        subject = f"SellerPulse · {total} follow-up{'s' if total != 1 else ''} need attention today"
 
         for user in users:
             html = build_digest_html(user.username, overdue, due_today, due_soon)

@@ -12,18 +12,18 @@ const TEMPLATES = [
   {
     id: 'intro',
     label: 'Introduction / First Outreach',
-    subject: 'A Wholesale Partnership Built Around Products People Love — Delight Shoppe',
+    subject: 'A Wholesale Partnership Built Around Products People Love — SellerPulse',
     body: `Dear {{contact_name}},
 
 [H2]A wholesale partnership built around products people love
 
-My name is {{sender_name}}, and I'm reaching out on behalf of Delight Shoppe — an e-commerce retailer dedicated to sourcing thoughtful, high-quality products for customers who care about what they bring into their homes.
+My name is {{sender_name}}, and I'm reaching out on behalf of SellerPulse — an e-commerce retailer dedicated to sourcing thoughtful, high-quality products for customers who care about what they bring into their homes.
 
 We've built a loyal online community around our curated selections, and as we continue to grow, we're actively seeking wholesale partnerships with brands whose values align with ours — quality, authenticity, and a genuine delight in the details.
 
 [CALLOUT]We'd love to explore carrying {{account_name}}'s products within our store. Based on what we know of your line, we believe it's an excellent fit for our customer base and would perform well across our channels.
 
-Here's a little more about what a partnership with Delight Shoppe looks like:
+Here's a little more about what a partnership with SellerPulse looks like:
 
 [FEATURE_CARDS]
 
@@ -36,10 +36,10 @@ Thank you so much for your time — we genuinely look forward to the possibility
   {
     id: 'catalog',
     label: 'Catalog & Pricing Request',
-    subject: 'Requesting Wholesale Catalog — Delight Shoppe × {{account_name}}',
+    subject: 'Requesting Wholesale Catalog — SellerPulse × {{account_name}}',
     body: `Dear {{contact_name}},
 
-Thank you for your time — we're genuinely interested in carrying {{account_name}}'s products through Delight Shoppe's e-commerce channels.
+Thank you for your time — we're genuinely interested in carrying {{account_name}}'s products through SellerPulse's e-commerce channels.
 
 To move forward with our internal review process, we'd love to receive the following from {{account_name}}:
 
@@ -49,7 +49,7 @@ To move forward with our internal review process, we'd love to receive the follo
 → Lead times and shipping terms
 → Any exclusivity or territory considerations
 
-A little more about Delight Shoppe as a retail partner:
+A little more about SellerPulse as a retail partner:
 
 We operate an active storefront across Amazon and direct e-commerce channels with a growing, loyal customer base. We order on a consistent, predictable cycle, and we actively promote the brands we carry through product pages, email marketing, and social content.
 
@@ -62,12 +62,12 @@ Looking forward to learning more.`,
   {
     id: 'followup',
     label: 'Follow-Up — No Response',
-    subject: 'Still Interested — Delight Shoppe × {{account_name}}',
+    subject: 'Still Interested — SellerPulse × {{account_name}}',
     body: `Dear {{contact_name}},
 
-I wanted to follow up on my earlier note about a potential wholesale partnership between Delight Shoppe and {{account_name}}. I understand how busy things get, and I didn't want my message to get buried.
+I wanted to follow up on my earlier note about a potential wholesale partnership between SellerPulse and {{account_name}}. I understand how busy things get, and I didn't want my message to get buried.
 
-To recap briefly: Delight Shoppe is a curated e-commerce retailer actively looking to source quality products for our customer base. We believe {{account_name}}'s line is a strong fit for what we carry, and we'd love to explore what a partnership could look like.
+To recap briefly: SellerPulse is a curated e-commerce retailer actively looking to source quality products for our customer base. We believe {{account_name}}'s line is a strong fit for what we carry, and we'd love to explore what a partnership could look like.
 
 [CALLOUT]If the timing isn't right at the moment, I completely understand. Just let me know and I'll circle back at a better time — no pressure at all.
 
@@ -78,10 +78,10 @@ Thank you again for your time. Whatever you decide, we wish {{account_name}} con
   {
     id: 'welcome',
     label: 'Welcome — New Supplier Partner',
-    subject: 'Welcome to the Delight Shoppe Partner Network, {{account_name}}',
+    subject: 'Welcome to the SellerPulse Partner Network, {{account_name}}',
     body: `Dear {{contact_name}},
 
-[H2]We're thrilled to have {{account_name}} as a Delight Shoppe supplier partner.
+[H2]We're thrilled to have {{account_name}} as a SellerPulse supplier partner.
 
 This is the beginning of something we're genuinely excited about, and we want to make sure the partnership starts off on the right foot.
 
@@ -96,20 +96,20 @@ Here's what you can expect from us:
 
 Our first order details will follow in a separate message. In the meantime, please don't hesitate to reach out with any questions, preferred communication preferences, or anything that would make working together easier.
 
-Thank you for choosing to partner with Delight Shoppe — we look forward to building something great with {{account_name}}.`,
+Thank you for choosing to partner with SellerPulse — we look forward to building something great with {{account_name}}.`,
   },
   {
     id: 'reorder',
     label: 'Purchase Order / Reorder',
-    subject: 'Reorder Request — Delight Shoppe × {{account_name}}',
+    subject: 'Reorder Request — SellerPulse × {{account_name}}',
     body: `Dear {{contact_name}},
 
-I'm reaching out to place our next order with {{account_name}} for Delight Shoppe's upcoming inventory cycle.
+I'm reaching out to place our next order with {{account_name}} for SellerPulse's upcoming inventory cycle.
 
 [CALLOUT]Please find our reorder quantities below. We'd appreciate a confirmation of availability, estimated ship date, and updated invoice at your earliest convenience.
 
 REORDER DETAILS
-• Account: Delight Shoppe
+• Account: SellerPulse
 • Ship to: [Your warehouse/prep center address]
 • Requested ship date: [Date]
 • Payment method: [ACH / Check / Card on file]
@@ -126,10 +126,10 @@ Thank you for the continued partnership — we look forward to your confirmation
   {
     id: 'terms',
     label: 'Wholesale Terms Inquiry',
-    subject: 'Wholesale Terms Inquiry — Delight Shoppe Is Interested in {{account_name}}',
+    subject: 'Wholesale Terms Inquiry — SellerPulse Is Interested in {{account_name}}',
     body: `Dear {{contact_name}},
 
-My name is {{sender_name}} from Delight Shoppe, an e-commerce retailer curating high-quality products for a loyal and growing customer base.
+My name is {{sender_name}} from SellerPulse, an e-commerce retailer curating high-quality products for a loyal and growing customer base.
 
 We've been reviewing {{account_name}}'s line and believe there's strong potential for our channels. Before we move forward with a formal buying decision, we'd love to better understand your wholesale structure.
 
@@ -142,17 +142,17 @@ Could you share the following?
 → Whether you offer exclusivity or territory restrictions
 → Any requirements or approval process for new wholesale partners
 
-Delight Shoppe is a serious retail buyer — we order consistently, promote actively, and build long-term relationships with the brands we carry. We'd love {{account_name}} to be one of them.
+SellerPulse is a serious retail buyer — we order consistently, promote actively, and build long-term relationships with the brands we carry. We'd love {{account_name}} to be one of them.
 
 Thank you for your time. I look forward to your response.`,
   },
   {
     id: 'new_product',
     label: 'New Product Inquiry',
-    subject: 'Curious About What\'s New — Delight Shoppe × {{account_name}}',
+    subject: 'Curious About What\'s New — SellerPulse × {{account_name}}',
     body: `Dear {{contact_name}},
 
-I hope things are going well at {{account_name}}. I'm reaching out because we're in the process of expanding Delight Shoppe's product selection for the coming season, and you came to mind immediately.
+I hope things are going well at {{account_name}}. I'm reaching out because we're in the process of expanding SellerPulse's product selection for the coming season, and you came to mind immediately.
 
 [CALLOUT]We'd love to know if {{account_name}} has introduced any new products, lines, or collections recently — or anything coming up that you think would be a great fit for our customer base.
 
@@ -168,8 +168,8 @@ function fillTemplate(text, vars) {
   return text
     .replace(/\{\{account_name\}\}/g, vars.account_name || 'your company')
     .replace(/\{\{contact_name\}\}/g, vars.contact_name || 'there')
-    .replace(/\{\{sender_name\}\}/g, vars.sender_name || 'The Delight Shoppe Team')
-    .replace(/\{\{company_name\}\}/g, 'Delight Shoppe')
+    .replace(/\{\{sender_name\}\}/g, vars.sender_name || 'The SellerPulse Team')
+    .replace(/\{\{company_name\}\}/g, 'SellerPulse')
 }
 
 function EmailComposer({ account, onClose, onSent }) {
@@ -181,7 +181,7 @@ function EmailComposer({ account, onClose, onSent }) {
   const vars = {
     account_name: account.name,
     contact_name: contactName || 'there',
-    sender_name: user?.username || 'The Delight Shoppe Team',
+    sender_name: user?.username || 'The SellerPulse Team',
   }
 
   const [templateId, setTemplateId] = useState(TEMPLATES[0].id)
@@ -211,7 +211,7 @@ function EmailComposer({ account, onClose, onSent }) {
       await api.sendAccountEmail(account.id, {
         to, subject, body,
         template_id: templateId,
-        sender_name: user?.username || 'Delight Shoppe',
+        sender_name: user?.username || 'SellerPulse',
       })
       setMsg('✓ Email sent successfully!')
       onSent?.()  // refresh thread in parent

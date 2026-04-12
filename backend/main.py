@@ -169,7 +169,7 @@ try:
 except Exception as _e:
     print(f"Warning: bootstrap admin setup failed ({_e}), continuing anyway.")
 
-app = FastAPI(title="SellerSuite API", version="2.0.0")
+app = FastAPI(title="SellerPulse API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -277,7 +277,7 @@ def debug_net():
         r = httpx.post(
             "https://api.sendgrid.com/v3/mail/send",
             json={"personalizations": [{"to": [{"email": "test@example.com"}]}],
-                  "from": {"email": "noreply@delightshoppe.org"},
+                  "from": {"email": "noreply@sellerpulse.io"},
                   "subject": "test", "content": [{"type": "text/plain", "value": "test"}]},
             headers={"Authorization": f"Bearer {key}"},
             timeout=15,
@@ -312,19 +312,19 @@ def send_test_email(db: Session = Depends(get_db), current: dict = Depends(requi
     api_key = os.getenv("SENDGRID_API_KEY", "").strip()
     if not api_key:
         raise HTTPException(status_code=400, detail="SENDGRID_API_KEY not set in Railway")
-    from_raw = os.getenv("SMTP_FROM", "Delight Shoppe <noreply@delightshoppe.org>")
+    from_raw = os.getenv("SMTP_FROM", "SellerPulse <noreply@sellerpulse.io>")
     if '<' in from_raw:
         name_part = from_raw[:from_raw.index('<')].strip()
         email_from = from_raw[from_raw.index('<')+1:from_raw.index('>')].strip().lower()
     else:
-        name_part, email_from = "Delight Shoppe", from_raw.strip().lower()
+        name_part, email_from = "SellerPulse", from_raw.strip().lower()
     try:
         resp = _httpx.post(
             "https://api.sendgrid.com/v3/mail/send",
             json={
                 "personalizations": [{"to": [{"email": user.email}]}],
                 "from": {"email": email_from, "name": name_part},
-                "subject": "Delight Shoppe - Test Email",
+                "subject": "SellerPulse - Test Email",
                 "content": [{"type": "text/plain", "value": f"Hi {user.username}, your email notifications are working!"}],
             },
             headers={"Authorization": f"Bearer {api_key}"},
@@ -1231,7 +1231,7 @@ def _build_wholesale_email_html(body: str, template_id: str, sender_name: str) -
 
   <!-- Header -->
   <div style="background:#0f1729;padding:44px 32px 36px;text-align:center;">
-    <h1 style="margin:0;font-family:Georgia,'Times New Roman',serif;font-size:30px;font-weight:400;color:#c9a84c;letter-spacing:3px;">Delight Shoppe</h1>
+    <h1 style="margin:0;font-family:Georgia,'Times New Roman',serif;font-size:30px;font-weight:400;color:#c9a84c;letter-spacing:3px;">SellerPulse</h1>
     <p style="margin:10px 0 0;color:#8a9bb5;font-size:10px;letter-spacing:4px;text-transform:uppercase;font-family:-apple-system,sans-serif;">Curated E&#x2011;Commerce &nbsp;&middot;&nbsp; Est. 2024</p>
     <div style="width:48px;height:1px;background:#c9a84c;margin:18px auto 0;"></div>
   </div>
@@ -1246,14 +1246,14 @@ def _build_wholesale_email_html(body: str, template_id: str, sender_name: str) -
     <p style="margin:0;font-size:13px;color:#6b7280;font-family:-apple-system,sans-serif;line-height:1.7;">
       Warm regards,<br>
       <strong style="color:#0f1729;font-size:14px;">{safe_sender}</strong><br>
-      <span style="color:#9ca3af;">Delight Shoppe &nbsp;&middot;&nbsp; Curated E-Commerce</span>
+      <span style="color:#9ca3af;">SellerPulse &nbsp;&middot;&nbsp; Curated E-Commerce</span>
     </p>
   </div>
 
   <!-- Footer -->
   <div style="background:#f9f8f6;padding:14px 48px;border-top:1px solid #ede9e0;">
     <p style="margin:0;font-size:10px;color:#b5b0a8;text-align:center;letter-spacing:1px;font-family:-apple-system,sans-serif;text-transform:uppercase;">
-      Delight Shoppe &nbsp;&middot;&nbsp; You are receiving this as a direct wholesale inquiry.
+      SellerPulse &nbsp;&middot;&nbsp; You are receiving this as a direct wholesale inquiry.
     </p>
   </div>
 
@@ -1275,7 +1275,7 @@ def _build_reply_notification_html(owner_name, account_name, from_email, subject
 <div style="max-width:600px;margin:32px auto;background:#fff;border-radius:4px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.08);">
   <div style="background:#0f1729;padding:24px 32px;">
     <h2 style="margin:0;color:#c9a84c;font-family:Georgia,serif;font-size:20px;font-weight:400;">&#128236; New Reply Received</h2>
-    <p style="margin:6px 0 0;color:#8a9bb5;font-size:10px;letter-spacing:3px;text-transform:uppercase;">Delight Shoppe CRM</p>
+    <p style="margin:6px 0 0;color:#8a9bb5;font-size:10px;letter-spacing:3px;text-transform:uppercase;">SellerPulse</p>
   </div>
   <div style="padding:32px;">
     <p style="margin:0 0 16px;font-size:15px;color:#374151;">Hi <strong>{safe(owner_name)}</strong>, you have a new reply from <strong>{safe(account_name)}</strong>.</p>
@@ -1290,7 +1290,7 @@ def _build_reply_notification_html(owner_name, account_name, from_email, subject
     {cta}
   </div>
   <div style="background:#f9f8f6;padding:14px 32px;border-top:1px solid #ede9e0;">
-    <p style="margin:0;font-size:10px;color:#b5b0a8;text-align:center;letter-spacing:1px;text-transform:uppercase;">Delight Shoppe CRM · Automated Notification</p>
+    <p style="margin:0;font-size:10px;color:#b5b0a8;text-align:center;letter-spacing:1px;text-transform:uppercase;">SellerPulse · Automated Notification</p>
   </div>
 </div></body></html>"""
 
@@ -1313,7 +1313,7 @@ def send_account_email(
     if not data.to or "@" not in data.to:
         raise HTTPException(status_code=400, detail="Invalid recipient email address")
 
-    sender = data.sender_name or current.get("sub", "Delight Shoppe")
+    sender = data.sender_name or current.get("sub", "SellerPulse")
     html = _build_wholesale_email_html(data.body, data.template_id or "", sender)
 
     # Set Reply-To to CRM inbound address and embed account id in header
@@ -3909,7 +3909,7 @@ async def support_chat(body: dict, current: dict = Depends(require_auth)):
     if not messages:
         raise HTTPException(400, "messages required")
 
-    system_prompt = """You are the built-in support assistant for Delight Shoppe Distribution Suite — a wholesale CRM platform for Amazon FBA sellers.
+    system_prompt = """You are the built-in support assistant for SellerPulse — a wholesale CRM platform for Amazon FBA sellers.
 
 You help users with the platform's features:
 - **Dashboard**: repricer performance stats (price updates, buy box %, units sold)

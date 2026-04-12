@@ -35,8 +35,8 @@ export default function Login() {
             <TruckIcon className="w-6 h-6 text-white" />
           </div>
           <div>
-            <p className="text-white font-bold text-xl leading-tight">Delight Shoppe</p>
-            <p className="text-slate-400 text-sm">Distribution Suite</p>
+            <p className="text-white font-bold text-xl leading-tight">SellerPulse</p>
+            <p className="text-slate-400 text-sm">Amazon Seller CRM</p>
           </div>
         </div>
 
@@ -86,11 +86,11 @@ export default function Login() {
         </div>
 
         <p className="text-center text-slate-400 text-sm mt-4">
-          New to SellerSuite?{' '}
+          New to SellerPulse?{' '}
           <Link to="/register" className="text-orange-400 font-medium hover:underline">Create a workspace</Link>
         </p>
         <p className="text-center text-slate-600 text-xs mt-3">
-          SellerSuite · Amazon Seller CRM
+          SellerPulse · Amazon Seller CRM
         </p>
       </div>
     </div>

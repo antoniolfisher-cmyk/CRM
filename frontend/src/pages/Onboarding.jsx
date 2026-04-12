@@ -172,7 +172,7 @@ export default function Onboarding() {
             <RocketIcon className="w-6 h-6 text-white" />
           </div>
           <div>
-            <p className="text-white font-bold text-xl leading-tight">SellerSuite</p>
+            <p className="text-white font-bold text-xl leading-tight">SellerPulse</p>
             <p className="text-slate-400 text-sm">Connect your Amazon account</p>
           </div>
         </div>

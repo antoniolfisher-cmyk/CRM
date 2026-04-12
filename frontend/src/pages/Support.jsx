@@ -3,7 +3,7 @@ import { api } from '../api'
 
 const WELCOME = {
   role: 'assistant',
-  content: "Hi! I'm your Delight Shoppe support assistant. I can help you navigate the platform, troubleshoot issues, or explain any feature. What can I help you with today?",
+  content: "Hi! I'm your SellerPulse support assistant. I can help you navigate the platform, troubleshoot issues, or explain any feature. What can I help you with today?",
 }
 
 export default function Support() {
