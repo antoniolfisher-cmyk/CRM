@@ -161,20 +161,21 @@ try:
                     _conn.commit()
     except Exception:
         pass
-    # ── Add 90-day price stat columns to products ────────────────────────────
+    # ── Add 90-day price stat columns + fulfillment_channel to products ─────
     try:
         _p_cols = [c["name"] for c in _inspector.get_columns("products")]
         with engine.connect() as _conn:
             for _col, _ddl in [
-                ("price_90_high",  "FLOAT"),
-                ("price_90_low",   "FLOAT"),
-                ("price_90_median","FLOAT"),
-                ("fba_low",        "FLOAT"),
-                ("fba_high",       "FLOAT"),
-                ("fba_median",     "FLOAT"),
-                ("fbm_low",        "FLOAT"),
-                ("fbm_high",       "FLOAT"),
-                ("fbm_median",     "FLOAT"),
+                ("price_90_high",       "FLOAT"),
+                ("price_90_low",        "FLOAT"),
+                ("price_90_median",     "FLOAT"),
+                ("fba_low",             "FLOAT"),
+                ("fba_high",            "FLOAT"),
+                ("fba_median",          "FLOAT"),
+                ("fbm_low",             "FLOAT"),
+                ("fbm_high",            "FLOAT"),
+                ("fbm_median",          "FLOAT"),
+                ("fulfillment_channel", "VARCHAR"),
             ]:
                 if _col not in _p_cols:
                     _conn.execute(text(f"ALTER TABLE products ADD COLUMN {_col} {_ddl}"))
@@ -2567,7 +2568,7 @@ async def purge_system_products(db: Session = Depends(get_db), current: dict = D
         models.Product.created_by == "system",
     ).delete(synchronize_session=False)
 
-    # Case 3: products with an ASIN that have no sourcing data — pure FBA imports
+    # Case 3: products with an ASIN and no sourcing data — pure FBA/FBM imports
     # Safe guard: only delete if they have no buy_cost, no date_purchased, no supplier link
     # (manually sourced products always have at least one of these)
     deleted_fba = db.query(models.Product).filter(
@@ -2579,6 +2580,12 @@ async def purge_system_products(db: Session = Depends(get_db), current: dict = D
         models.Product.buy_cost.is_(None),
         models.Product.date_purchased.is_(None),
         models.Product.purchase_link.is_(None),
+    ).delete(synchronize_session=False)
+    # Also clean up any null-tenant FBM products that slipped through
+    db.query(models.Product).filter(
+        models.Product.tenant_id.is_(None),
+        models.Product.created_by == "system",
+        models.Product.fulfillment_channel == "FBM",
     ).delete(synchronize_session=False)
 
     db.commit()

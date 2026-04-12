@@ -174,12 +174,106 @@ async def _fetch_fba_inventory(tenant_id: Optional[int] = None) -> list:
     return items
 
 
+# ── FBM listings fetch ─────────────────────────────────────────────────────────
+
+async def _fetch_fbm_listings(tenant_id: Optional[int] = None) -> list:
+    """
+    Fetch all active FBM (merchant-fulfilled) listings via the Listings Items API.
+    Returns list of dicts: asin, product_name, seller_sku, quantity, fulfillment_channel='FBM'.
+    Requires seller_id to be stored in AmazonCredential or AMAZON_SELLER_ID env var.
+    Silently returns [] if seller_id is unavailable or the API permission is not granted.
+    """
+    import httpx
+
+    token, mkt_id, base = await _get_access_token_for_tenant(tenant_id)
+
+    # Resolve seller_id
+    seller_id = None
+    if tenant_id:
+        db = SessionLocal()
+        try:
+            cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
+            seller_id = cred.seller_id if cred else None
+        finally:
+            db.close()
+    if not seller_id:
+        seller_id = os.getenv("AMAZON_SELLER_ID", "").strip()
+
+    if not seller_id:
+        log.info("FBM sync skipped for tenant %s — no seller_id", tenant_id)
+        return []
+
+    items = []
+    page_token = None
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        while True:
+            params = {
+                "marketplaceIds":  mkt_id,
+                "includedData":    "summaries,fulfillmentAvailability",
+                "pageSize":        20,
+            }
+            if page_token:
+                params["pageToken"] = page_token
+
+            resp = await client.get(
+                f"{base}/listings/2021-08-01/items/{seller_id}",
+                headers={"x-amz-access-token": token},
+                params=params,
+            )
+            if resp.status_code == 403:
+                log.info("FBM listings API 403 for tenant %s — seller may not have listings permission", tenant_id)
+                break
+            if resp.status_code != 200:
+                log.warning("FBM listings API %s for tenant %s: %s", resp.status_code, tenant_id, resp.text[:120])
+                break
+
+            data = resp.json()
+            for listing in data.get("items", []):
+                summaries = listing.get("summaries") or []
+                # Only include merchant-fulfilled (FBM) items
+                is_fbm = any(
+                    s.get("fulfillmentChannel") in ("MERCHANT", "DEFAULT")
+                    for s in summaries
+                )
+                if not is_fbm:
+                    continue
+
+                asin = (summaries[0].get("asin") or "") if summaries else ""
+                product_name = (summaries[0].get("itemName") or "") if summaries else ""
+                seller_sku = listing.get("sku", "")
+
+                # Quantity from fulfillmentAvailability for the MERCHANT channel
+                qty = 0
+                for fa in (listing.get("fulfillmentAvailability") or []):
+                    if fa.get("fulfillmentChannelCode") in ("DEFAULT", "MERCHANT"):
+                        qty = fa.get("quantity") or 0
+                        break
+
+                if asin:
+                    items.append({
+                        "asin":               asin,
+                        "product_name":       product_name,
+                        "seller_sku":         seller_sku,
+                        "quantity":           qty,
+                        "fulfillment_channel": "FBM",
+                    })
+
+            page_token = (data.get("pagination") or {}).get("nextPageToken")
+            if not page_token:
+                break
+
+    log.info("FBM listings fetched for tenant %s: %d items", tenant_id, len(items))
+    return items
+
+
 # ── Core sync logic ────────────────────────────────────────────────────────────
 
 async def run_sync(tenant_id: Optional[int] = None) -> dict:
     """
-    Fetch FBA inventory and upsert into products table for the given tenant.
+    Fetch FBA + FBM inventory and upsert into products table for the given tenant.
     tenant_id=None uses env-var credentials (legacy single-tenant).
+    Each product is tagged with fulfillment_channel='FBA' or 'FBM'.
     """
     key = tenant_id or 0
     if _sync_states.get(key, {}).get("running"):
@@ -193,13 +287,31 @@ async def run_sync(tenant_id: Optional[int] = None) -> dict:
     created = updated = skipped = 0
 
     try:
-        items = await _fetch_fba_inventory(tenant_id)
+        # Pull FBA inventory (tag each item)
+        fba_items = await _fetch_fba_inventory(tenant_id)
+        for item in fba_items:
+            item["fulfillment_channel"] = "FBA"
 
-        for item in items:
+        # Pull FBM listings (silently skips if seller_id missing or no permission)
+        try:
+            fbm_items = await _fetch_fbm_listings(tenant_id)
+        except Exception as _e:
+            log.warning("FBM fetch failed for tenant %s (non-fatal): %s", tenant_id, _e)
+            fbm_items = []
+
+        # FBM items that are ALSO in FBA should not be double-counted — FBA wins
+        fba_asins = {(item.get("asin") or "").strip() for item in fba_items}
+        fbm_items = [i for i in fbm_items if (i.get("asin") or "").strip() not in fba_asins]
+
+        all_items = fba_items + fbm_items
+
+        for item in all_items:
             asin = (item.get("asin") or "").strip()
             if not asin:
                 skipped += 1
                 continue
+
+            channel = item.get("fulfillment_channel", "FBA")
 
             q = db.query(models.Product).filter(models.Product.asin == asin)
             if tenant_id:
@@ -208,6 +320,7 @@ async def run_sync(tenant_id: Optional[int] = None) -> dict:
 
             if existing:
                 existing.quantity = item["quantity"]
+                existing.fulfillment_channel = channel
                 updated += 1
             else:
                 now = datetime.now(timezone.utc)
@@ -218,8 +331,9 @@ async def run_sync(tenant_id: Optional[int] = None) -> dict:
                     quantity=item["quantity"],
                     order_number=item["seller_sku"] or None,
                     status="approved",
-                    date_sent_to_amazon=now,
+                    date_sent_to_amazon=now if channel == "FBA" else None,
                     created_by="system",
+                    fulfillment_channel=channel,
                 )
                 db.add(p)
                 created += 1

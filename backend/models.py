@@ -351,6 +351,7 @@ class Product(Base):
     aria_reasoning       = Column(Text, nullable=True)
     aria_last_buy_box    = Column(Float, nullable=True)
     aria_strategy_id     = Column(Integer, nullable=True)
+    fulfillment_channel  = Column(String, nullable=True)   # 'FBA' | 'FBM' | None (legacy)
 
     ungate_requests = relationship("UngateRequest", back_populates="product", cascade="all, delete-orphan")
 

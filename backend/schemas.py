@@ -250,6 +250,7 @@ class ProductBase(BaseModel):
     aria_last_buy_box: Optional[float] = None
     aria_strategy_id: Optional[int] = None
     status: Optional[str] = 'sourcing'   # sourcing | pending | approved
+    fulfillment_channel: Optional[str] = None  # 'FBA' | 'FBM' | None
 
 
 class ProductCreate(ProductBase):
