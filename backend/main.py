@@ -146,7 +146,7 @@ try:
                         ))
                     except Exception:
                         pass
-                _conn.execute(text(f"INSERT OR IGNORE INTO _migration_flags VALUES ('{_BF_FLAG}')"))
+                _conn.execute(text(f"INSERT INTO _migration_flags (name) VALUES ('{_BF_FLAG}') ON CONFLICT DO NOTHING"))
                 _conn.commit()
     except Exception:
         pass
@@ -160,36 +160,7 @@ try:
                     _conn.commit()
     except Exception:
         pass
-    # ── Create billing_invoices table if missing ─────────────────────────────
-    try:
-        if "billing_invoices" not in _inspector.get_table_names():
-            with engine.connect() as _conn:
-                _conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS billing_invoices (
-                        id                INTEGER PRIMARY KEY AUTOINCREMENT,
-                        tenant_id         INTEGER NOT NULL REFERENCES tenants(id),
-                        stripe_invoice_id VARCHAR UNIQUE,
-                        stripe_charge_id  VARCHAR,
-                        amount_cents      INTEGER DEFAULT 0,
-                        currency          VARCHAR DEFAULT 'usd',
-                        status            VARCHAR NOT NULL,
-                        plan              VARCHAR,
-                        period_start      DATETIME,
-                        period_end        DATETIME,
-                        description       VARCHAR,
-                        invoice_url       VARCHAR,
-                        created_at        DATETIME DEFAULT CURRENT_TIMESTAMP
-                    )
-                """))
-                _conn.execute(text(
-                    "CREATE INDEX IF NOT EXISTS ix_billing_invoices_tenant_id ON billing_invoices(tenant_id)"
-                ))
-                _conn.execute(text(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_billing_invoices_stripe_invoice_id ON billing_invoices(stripe_invoice_id)"
-                ))
-                _conn.commit()
-    except Exception:
-        pass
+    # billing_invoices is created by models.Base.metadata.create_all above
     # order_number unique constraint relaxed for multi-tenant
     try:
         _cols = [c["name"] for c in _inspector.get_columns("orders")]
