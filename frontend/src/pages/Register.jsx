@@ -12,6 +12,7 @@ export default function Register() {
 
   const [form, setForm] = useState({
     name: '',
+    storeName: '',
     email: '',
     password: '',
     confirm: '',
@@ -24,6 +25,7 @@ export default function Register() {
 
   const validateStep1 = () => {
     if (!form.name.trim())          { setError('Please enter your name'); return false }
+    if (!form.storeName.trim())     { setError('Please enter your store or business name'); return false }
     if (!form.email.trim())         { setError('Please enter your email'); return false }
     if (form.password.length < 8)   { setError('Password must be at least 8 characters'); return false }
     if (form.password !== form.confirm) { setError('Passwords do not match'); return false }
@@ -49,7 +51,7 @@ export default function Register() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          company_name: form.name,
+          company_name: form.storeName || form.name,
           slug,
           username,
           email: form.email,
@@ -62,7 +64,7 @@ export default function Register() {
       loginWithToken(data.access_token, {
         username,
         role: 'admin',
-        tenant_name: form.name,
+        tenant_name: form.storeName || form.name,
         plan: form.plan,
       })
       if (form.plan !== 'starter' && data.billing_url) {
@@ -123,6 +125,17 @@ export default function Register() {
                   onChange={(e) => set('name', e.target.value)}
                   required
                   autoFocus
+                />
+              </div>
+
+              <div>
+                <label className="label">Amazon Store / Business Name</label>
+                <input
+                  className="input"
+                  placeholder="e.g. Delight Shoppe"
+                  value={form.storeName}
+                  onChange={(e) => set('storeName', e.target.value)}
+                  required
                 />
               </div>
 

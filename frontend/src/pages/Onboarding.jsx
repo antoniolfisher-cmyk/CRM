@@ -27,6 +27,9 @@ export default function Onboarding() {
   const [syncResult, setSyncResult] = useState(null)
   const pollRef = useRef(null)
 
+  const [setupStoreName, setSetupStoreName] = useState('')
+  const [savingStore, setSavingStore] = useState(false)
+
   useEffect(() => {
     api.getAmazonOAuthUrl().then(r => setOauthUrl(r.url)).catch(() => {})
     api.getAmazonCredentials().then(setStatus).catch(() => {})
@@ -218,6 +221,40 @@ export default function Onboarding() {
                   <span className="font-semibold text-gray-900">{syncResult.updated ?? '—'}</span>
                 </div>
                 {syncResult.error && <p className="text-red-500 text-xs mt-1">{syncResult.error}</p>}
+              </div>
+            )}
+
+            {!syncing && !urlStoreName && !status?.store_name && (
+              <div className="mt-4 mb-2 text-left space-y-2">
+                <p className="text-sm font-medium text-gray-700">What's your Amazon store name?</p>
+                <p className="text-xs text-gray-400">This appears in your sidebar and outgoing emails.</p>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+                    placeholder="e.g. Delight Shoppe"
+                    value={setupStoreName}
+                    onChange={e => setSetupStoreName(e.target.value)}
+                  />
+                  <button
+                    onClick={async () => {
+                      if (!setupStoreName.trim()) return
+                      setSavingStore(true)
+                      try {
+                        await fetch('/api/tenant/settings', {
+                          method: 'PATCH',
+                          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('crm_token')}` },
+                          body: JSON.stringify({ store_name: setupStoreName.trim() }),
+                        })
+                      } catch {}
+                      setSavingStore(false)
+                    }}
+                    disabled={savingStore}
+                    className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-sm font-semibold disabled:opacity-50"
+                  >
+                    {savingStore ? 'Saving…' : 'Save'}
+                  </button>
+                </div>
               </div>
             )}
 

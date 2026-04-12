@@ -1,15 +1,23 @@
 import { useState, useEffect, useCallback } from 'react'
 import { api } from '../api'
+import { useAuth } from '../context/AuthContext'
 
 export default function Dashboard() {
+  const { user } = useAuth()
   const [stats, setStats] = useState(null)
   const [repricerStats, setRepricerStats] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [tenantInfo, setTenantInfo] = useState(null)
 
   useEffect(() => {
     Promise.all([api.getDashboard(), api.getRepricerStats()])
       .then(([s, r]) => { setStats(s); setRepricerStats(r) })
       .finally(() => setLoading(false))
+  }, [])
+
+  useEffect(() => {
+    api.getTenantMe().catch(() => {})
+      .then(t => setTenantInfo(t))
   }, [])
 
   if (loading) return <LoadingSkeleton />
@@ -20,6 +28,8 @@ export default function Dashboard() {
         <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
         <p className="text-gray-500 text-sm mt-1">Wholesale distribution overview</p>
       </div>
+
+      <SetupChecklist user={user} tenantInfo={tenantInfo} />
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -115,6 +125,63 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── Setup Checklist ─────────────────────────────────────────────────────────
+
+function SetupChecklist({ user, tenantInfo }) {
+  const items = [
+    {
+      done: !!(user?.store_name || (user?.tenant_name && user.tenant_name !== 'Default')),
+      label: 'Set your store / business name',
+      desc: 'Appears in the sidebar and email templates',
+      link: '/profile',
+      linkText: 'Go to Profile →',
+    },
+    {
+      done: !!tenantInfo?.amazon_connected,
+      label: 'Connect your Amazon Seller account',
+      desc: 'Pulls live inventory, orders, and sales data',
+      link: '/onboarding/amazon',
+      linkText: 'Connect Amazon →',
+    },
+    {
+      done: !!user?.email,
+      label: 'Add your notification email',
+      desc: 'Receive alerts for follow-ups and supplier replies',
+      link: '/profile',
+      linkText: 'Go to Profile →',
+    },
+  ]
+  const incomplete = items.filter(i => !i.done)
+  if (incomplete.length === 0) return null
+  return (
+    <div className="card p-5">
+      <div className="flex items-center gap-2 mb-3">
+        <div className="w-6 h-6 bg-orange-100 rounded-full flex items-center justify-center">
+          <span className="text-orange-600 text-xs font-bold">{incomplete.length}</span>
+        </div>
+        <h2 className="font-semibold text-gray-900">Complete your setup</h2>
+        <span className="text-xs text-gray-400 ml-auto">{items.length - incomplete.length}/{items.length} done</span>
+      </div>
+      <div className="space-y-2">
+        {items.map((item, i) => (
+          <div key={i} className={`flex items-start gap-3 p-3 rounded-lg ${item.done ? 'opacity-50' : 'bg-orange-50 border border-orange-100'}`}>
+            <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 mt-0.5 ${item.done ? 'bg-green-500' : 'border-2 border-orange-300'}`}>
+              {item.done && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className={`text-sm font-medium ${item.done ? 'text-gray-500 line-through' : 'text-gray-800'}`}>{item.label}</p>
+              {!item.done && <p className="text-xs text-gray-500 mt-0.5">{item.desc}</p>}
+            </div>
+            {!item.done && (
+              <a href={item.link} className="text-xs text-orange-600 hover:text-orange-700 font-medium shrink-0 mt-0.5">{item.linkText}</a>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
