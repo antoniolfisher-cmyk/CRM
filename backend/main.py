@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, or_
 from typing import List, Optional
+from pydantic import BaseModel
 from datetime import datetime, timedelta
 import models
 import schemas
