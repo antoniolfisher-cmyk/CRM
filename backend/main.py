@@ -1078,21 +1078,20 @@ def _filter_owned(q, model, current: dict):
     """Filter query to records scoped to the current user's tenant.
 
     Isolation tiers:
-      - Superadmin: sees everything across all tenants (admin panel use).
+      - Superadmin: scoped to THEIR OWN tenant (same as tenant admin).
+        Cross-tenant access is handled explicitly in admin-only endpoints,
+        not here. This prevents a superadmin's normal product/account views
+        from accidentally showing every tenant's data on the platform.
       - Tenant admin: sees all records within their tenant only.
       - Regular user: sees only their own records within their tenant.
     """
-    # Superadmin bypasses all tenant scoping
-    if current.get("is_superadmin"):
-        return q
-
-    # Always scope to tenant first — prevents cross-tenant data leakage
+    # Always scope to tenant — superadmins use their own tenant like any admin
     tid = current.get("tenant_id")
     if tid:
         q = q.filter(model.tenant_id == tid)
 
     # Non-admin users are further restricted to their own records
-    if not _is_admin(current):
+    if not _is_admin(current) and not current.get("is_superadmin"):
         q = q.filter(
             (model.created_by == current["sub"]) | (model.created_by == None)
         )
