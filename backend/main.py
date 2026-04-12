@@ -3208,10 +3208,8 @@ async def amazon_oauth_callback(
 
     # Fetch the seller's Amazon store name and save it
     try:
-        import asyncio as _aio
-        store_name = _aio.get_event_loop().run_until_complete(_fetch_amazon_store_name(cred))
+        store_name = await _fetch_amazon_store_name(cred)
         if not store_name:
-            # Fall back to the company name the tenant registered with
             _tenant = db.query(models.Tenant).filter_by(id=tenant_id).first()
             store_name = _tenant.name if _tenant else ""
         if store_name:
@@ -3219,7 +3217,6 @@ async def amazon_oauth_callback(
             db.commit()
     except Exception as _e:
         log.warning("Could not fetch Amazon store name for tenant %s: %s", tenant_id, _e)
-        # Fall back to tenant company name
         try:
             _tenant = db.query(models.Tenant).filter_by(id=tenant_id).first()
             if _tenant and not cred.store_name:
