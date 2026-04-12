@@ -533,6 +533,86 @@ def get_dashboard(db: Session = Depends(get_db), _ = Depends(require_auth)):
     )
 
 
+async def _amazon_fetch_orders(access_token: str, params_first: list) -> list:
+    """Paginate through Amazon Orders API. params_first is a list of (key, value) tuples."""
+    import httpx as _httpx
+    orders = []
+    next_token = None
+    async with _httpx.AsyncClient(timeout=30) as client:
+        while True:
+            if next_token:
+                p = [("NextToken", next_token)]
+            else:
+                p = params_first
+            resp = await client.get(
+                f"{_AMAZON_SP_BASE}/orders/v0/orders",
+                params=p,
+                headers={"x-amz-access-token": access_token},
+            )
+            if resp.status_code == 403:
+                raise HTTPException(403, "Amazon Orders API: insufficient permissions. Enable 'Orders' role in Seller Central → SP-API app.")
+            if resp.status_code != 200:
+                raise HTTPException(502, f"Amazon Orders API {resp.status_code}: {resp.text[:400]}")
+            body = resp.json().get("payload", {})
+            orders.extend(body.get("Orders", []))
+            next_token = body.get("NextToken")
+            if not next_token:
+                break
+    return orders
+
+
+@app.get("/api/debug/amazon-orders-raw")
+async def debug_amazon_orders_raw(_ = Depends(require_auth)):
+    """
+    Diagnostic: returns the raw first-page Amazon Orders API response
+    so you can see exactly what Amazon is sending back.
+    """
+    if not _amazon_sp_configured():
+        raise HTTPException(503, "Amazon SP-API not configured")
+    import httpx as _httpx
+    from datetime import timezone
+    access_token = await _get_amazon_access_token()
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
+    thirty_days_ago = (now - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    results = {}
+
+    async with _httpx.AsyncClient(timeout=30) as client:
+        # Test 1: today's orders, no status filter
+        r1 = await client.get(
+            f"{_AMAZON_SP_BASE}/orders/v0/orders",
+            params=[("MarketplaceIds", _AMAZON_MKT_ID), ("CreatedAfter", today_start)],
+            headers={"x-amz-access-token": access_token},
+        )
+        results["today_no_status_filter"] = {
+            "status_code": r1.status_code,
+            "body": r1.json() if r1.status_code == 200 else r1.text[:500],
+        }
+
+        # Test 2: last 30 days, open statuses only (repeated params)
+        r2 = await client.get(
+            f"{_AMAZON_SP_BASE}/orders/v0/orders",
+            params=[
+                ("MarketplaceIds", _AMAZON_MKT_ID),
+                ("LastUpdatedAfter", thirty_days_ago),
+                ("OrderStatuses", "Pending"),
+                ("OrderStatuses", "Unshipped"),
+                ("OrderStatuses", "PartiallyShipped"),
+            ],
+            headers={"x-amz-access-token": access_token},
+        )
+        results["last30_open_statuses"] = {
+            "status_code": r2.status_code,
+            "body": r2.json() if r2.status_code == 200 else r2.text[:500],
+        }
+
+    results["marketplace_id"] = _AMAZON_MKT_ID
+    results["sp_base"] = _AMAZON_SP_BASE
+    results["today_start_utc"] = today_start
+    return results
+
+
 @app.get("/api/dashboard/amazon-sales")
 async def get_dashboard_amazon_sales(
     period: str = "today",
@@ -542,9 +622,10 @@ async def get_dashboard_amazon_sales(
     Real-time Amazon sales + payments from SP-API.
     period: "today" | "week" | "month"
 
-    Sales revenue = ALL order totals for the period regardless of status,
-    matching Seller Central's "Today so far" which includes Pending/Unshipped.
-    Payments balance = fetched from the Finances API (financial event groups).
+    Two separate API calls:
+    1. Sales: orders CreatedAfter=period_start (any status except Canceled)
+    2. Open Orders: orders with open status, LastUpdatedAfter=30 days ago
+       (separate call, no date restriction on creation)
     """
     if not _amazon_sp_configured():
         raise HTTPException(503, "Amazon SP-API credentials are not configured")
@@ -561,127 +642,101 @@ async def get_dashboard_amazon_sales(
         period_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     created_after = period_start.strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Open orders can be older — look back 60 days to catch everything unshipped
+    open_orders_since = (now - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     access_token = await _get_amazon_access_token()
-    headers = {"x-amz-access-token": access_token}
 
-    # ── 1. Fetch orders for period (all statuses) ───────────────────────────
-    all_orders: list[dict] = []
-    next_token = None
+    # ── 1. Sales: orders created in period (all statuses, repeated params) ──
+    # NOTE: Amazon requires OrderStatuses as REPEATED params, not comma-separated
+    sales_params = [
+        ("MarketplaceIds", _AMAZON_MKT_ID),
+        ("CreatedAfter", created_after),
+    ]
+    # No status filter = Amazon returns all statuses; we filter in Python
+    sales_orders = await _amazon_fetch_orders(access_token, sales_params)
 
-    async with _httpx.AsyncClient(timeout=30) as client:
-        while True:
-            if next_token:
-                params = {"NextToken": next_token}
-            else:
-                params = {
-                    "MarketplaceIds": _AMAZON_MKT_ID,
-                    "CreatedAfter":   created_after,
-                    # Include every relevant status — Seller Central counts all of these
-                    "OrderStatuses":  "Pending,Unshipped,PartiallyShipped,Shipped,InvoiceUnconfirmed,Unfulfillable",
-                }
+    # ── 2. Open Orders: separate call, no creation-date restriction ─────────
+    open_params = [
+        ("MarketplaceIds", _AMAZON_MKT_ID),
+        ("LastUpdatedAfter", open_orders_since),
+        ("OrderStatuses", "Pending"),
+        ("OrderStatuses", "Unshipped"),
+        ("OrderStatuses", "PartiallyShipped"),
+    ]
+    open_orders = await _amazon_fetch_orders(access_token, open_params)
 
-            resp = await client.get(
-                f"{_AMAZON_SP_BASE}/orders/v0/orders",
-                params=params,
-                headers=headers,
-            )
-            if resp.status_code == 403:
-                raise HTTPException(403, "Amazon SP-API: insufficient permissions for Orders API")
-            if resp.status_code != 200:
-                raise HTTPException(502, f"Amazon Orders API error {resp.status_code}: {resp.text[:300]}")
+    # ── 3. Aggregate sales metrics ──────────────────────────────────────────
+    sales_revenue = 0.0
+    units_sold    = 0
+    currency      = "USD"
 
-            body = resp.json().get("payload", {})
-            all_orders.extend(body.get("Orders", []))
-            next_token = body.get("NextToken")
-            if not next_token:
-                break
-
-    # ── 2. Aggregate order metrics ──────────────────────────────────────────
-    open_statuses = {"Pending", "Unshipped", "PartiallyShipped"}
-
-    # Sales = sum of ALL order totals (matches Seller Central "Today so far")
-    # Amazon FBA orders in Pending status already have the OrderTotal set
-    sales_revenue    = 0.0
-    units_sold       = 0
-    open_order_count = 0
-    currency         = "USD"
-
-    for o in all_orders:
+    for o in sales_orders:
         status    = o.get("OrderStatus", "")
+        if status in {"Canceled", "Unfulfillable"}:
+            continue
         total_obj = o.get("OrderTotal") or {}
-        amount    = float(total_obj.get("Amount") or 0)
-        cur       = total_obj.get("CurrencyCode", "USD")
+        amt = total_obj.get("Amount")
+        cur = total_obj.get("CurrencyCode", "USD")
         if cur:
             currency = cur
+        if amt is not None:
+            sales_revenue += float(amt)
+        units_sold += (
+            int(o.get("NumberOfItemsShipped") or 0)
+            + int(o.get("NumberOfItemsUnshipped") or 0)
+        )
 
-        # Count every non-cancelled order toward sales
-        if status not in {"Canceled", "Unfulfillable"}:
-            sales_revenue += amount
-            units_sold += int(o.get("NumberOfItemsShipped") or 0) + int(o.get("NumberOfItemsUnshipped") or 0)
-
-        if status in open_statuses:
-            open_order_count += 1
-
-    # ── 3. Fetch payment balance from Finances API ──────────────────────────
-    # GET /finances/v0/financialEventGroups — sum Open groups = seller's balance
-    payment_balance   = None
-    payment_currency  = currency
-    finances_error    = None
+    # ── 4. Fetch payment balance from Finances API ──────────────────────────
+    payment_balance  = None
+    payment_currency = currency
+    finances_error   = None
 
     try:
-        # Look back 90 days to catch any open settlement group
         finances_after = (now - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
         async with _httpx.AsyncClient(timeout=20) as client:
             fin_resp = await client.get(
                 f"{_AMAZON_SP_BASE}/finances/v0/financialEventGroups",
                 params={"FinancialEventGroupStartedAfter": finances_after},
-                headers=headers,
+                headers={"x-amz-access-token": access_token},
             )
         if fin_resp.status_code == 200:
             groups = fin_resp.json().get("payload", {}).get("FinancialEventGroupList", [])
             total_balance = 0.0
             for g in groups:
-                # Open = not yet disbursed / current settlement period
-                if g.get("ProcessingStatus") in ("Open", "Closed"):
-                    orig = (g.get("OriginalTotal") or g.get("ConvertedTotal") or {})
+                if g.get("ProcessingStatus") == "Open":
+                    orig = g.get("OriginalTotal") or g.get("ConvertedTotal") or {}
                     amt  = float(orig.get("Amount") or 0)
                     cur2 = orig.get("CurrencyCode", currency)
                     if cur2:
                         payment_currency = cur2
-                    # Only add positive (owed to seller) balances from Open groups
-                    # and the most-recent Closed group (covers recent settlement)
-                    if g.get("ProcessingStatus") == "Open":
-                        total_balance += amt
-            # If no open groups found, try summing all groups in the period
+                    total_balance += amt
+            # Fallback: if no Open group, use most recent Closed group
             if total_balance == 0.0 and groups:
-                for g in groups[:3]:   # last 3 settlement periods
-                    orig = (g.get("OriginalTotal") or g.get("ConvertedTotal") or {})
-                    total_balance += float(orig.get("Amount") or 0)
+                g = groups[0]
+                orig = g.get("OriginalTotal") or g.get("ConvertedTotal") or {}
+                total_balance = float(orig.get("Amount") or 0)
             payment_balance = round(total_balance, 2)
         elif fin_resp.status_code == 403:
             finances_error = "Finances role not enabled"
         else:
-            finances_error = f"Finances API error {fin_resp.status_code}"
+            finances_error = f"Finances API {fin_resp.status_code}"
     except Exception as e:
         finances_error = str(e)
 
     return {
-        "period":            period,
-        "period_start":      period_start.isoformat(),
-        "fetched_at":        now.isoformat(),
-        "currency":          currency,
-        # Sales tile
-        "revenue":           round(sales_revenue, 2),
-        "order_count":       len(all_orders),
-        "units_sold":        units_sold,
-        # Open orders tile
-        "open_order_count":  open_order_count,
-        # Payments tile
-        "payment_balance":   payment_balance,
-        "payment_currency":  payment_currency,
-        "finances_error":    finances_error,
-        "total_orders":      len(all_orders),
+        "period":           period,
+        "period_start":     period_start.isoformat(),
+        "fetched_at":       now.isoformat(),
+        "currency":         currency,
+        "revenue":          round(sales_revenue, 2),
+        "order_count":      len(sales_orders),
+        "units_sold":       units_sold,
+        "open_order_count": len(open_orders),
+        "payment_balance":  payment_balance,
+        "payment_currency": payment_currency,
+        "finances_error":   finances_error,
+        "total_orders":     len(sales_orders),
     }
 
 
