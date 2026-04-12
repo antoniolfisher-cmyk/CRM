@@ -670,7 +670,9 @@ def notification_status(db: Session = Depends(get_db), current: dict = Depends(r
 def list_users(db: Session = Depends(get_db), current: dict = Depends(require_admin)):
     tid = current.get("tenant_id")
     q = db.query(models.User)
-    if tid and not current.get("is_superadmin"):
+    # Always scope to the current tenant — superadmins manage other tenants
+    # via the Platform / Seller Management section, not this page.
+    if tid:
         q = q.filter(models.User.tenant_id == tid)
     return q.order_by(models.User.created_at).all()
 
@@ -705,7 +707,7 @@ def update_user(
 ):
     tid = payload.get("tenant_id")
     q = db.query(models.User).filter(models.User.id == user_id)
-    if tid and not payload.get("is_superadmin"):
+    if tid:
         q = q.filter(models.User.tenant_id == tid)
     user = q.first()
     if not user:
@@ -743,7 +745,7 @@ def update_user(
 def delete_user(user_id: int, db: Session = Depends(get_db), payload: dict = Depends(require_admin)):
     tid = payload.get("tenant_id")
     q = db.query(models.User).filter(models.User.id == user_id)
-    if tid and not payload.get("is_superadmin"):
+    if tid:
         q = q.filter(models.User.tenant_id == tid)
     user = q.first()
     if not user:
