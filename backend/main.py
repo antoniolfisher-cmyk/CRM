@@ -2294,6 +2294,52 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
     # ── Cache-first: check DB before touching Keepa API ──────────────────────
     from datetime import timezone as _tz
     _chart_url = f"https://graph.keepa.com/pricehistory.png?asin={asin}&domain=1&salesrank=1&bb=1&new=1&fbafba=1&range=90"
+    _tenant_id = current.get("tenant_id", 1)
+
+    async def _sp_offers():
+        """
+        Pull FBA/FBM seller counts + buy box from Amazon SP-API.
+        Uses the tenant's own credentials — no Keepa tokens needed.
+        Returns a partial dict to merge into the response, or {} on any failure.
+        """
+        try:
+            import httpx as _hx
+            _cred = _get_tenant_amazon_creds(_tenant_id, db)
+            if not _cred or not _cred.sp_refresh_token:
+                return {}
+            _tok = await _get_tenant_access_token(_cred)
+            _mkt = _cred.marketplace_id or _AMAZON_MKT_ID
+            _base = _sp_base(_cred.is_sandbox)
+            async with _hx.AsyncClient(timeout=8) as _c:
+                _r = await _c.get(
+                    f"{_base}/products/pricing/v0/items/{asin}/offers",
+                    headers={"x-amz-access-token": _tok},
+                    params={"MarketplaceId": _mkt, "ItemCondition": "New", "CustomerType": "Consumer"},
+                )
+            if _r.status_code != 200:
+                return {}
+            _summary = _r.json().get("payload", {}).get("Summary", {})
+            _num_fba = _num_fbm = 0
+            for _o in (_summary.get("NumberOfOffers") or []):
+                if _o.get("condition") == "New":
+                    if _o.get("fulfillmentChannel") == "Amazon":
+                        _num_fba = _o.get("OfferCount", 0)
+                    elif _o.get("fulfillmentChannel") == "Merchant":
+                        _num_fbm = _o.get("OfferCount", 0)
+            # Buy box from competitive pricing
+            _bb = None
+            _bb_item = (_summary.get("BuyBoxPrices") or [{}])[0]
+            _bb_amt = (_bb_item.get("LandedPrice") or _bb_item.get("ListingPrice") or {}).get("Amount")
+            if _bb_amt:
+                _bb = float(_bb_amt)
+            return {
+                "num_fba_sellers": _num_fba,
+                "num_fbm_sellers": _num_fbm,
+                "offers_available": True,
+                **({"buy_box": _bb} if _bb else {}),
+            }
+        except Exception:
+            return {}
 
     def _db_response(p, source="cache"):
         return {
@@ -2307,6 +2353,7 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
             "num_sellers":         p.num_sellers or None,
             "num_fba_sellers":     None,
             "num_fbm_sellers":     None,
+            "offers_available":    False,
             "bsr":                 p.keepa_bsr or None,
             "category":            p.keepa_category or "",
             "estimated_sales":     p.estimated_sales or None,
@@ -2318,7 +2365,7 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
             "source": source,
         }
 
-    # Fresh Keepa data (< 24h) — return immediately, skip API call entirely
+    # Fresh Keepa data (< 24h) — merge with live Amazon offer counts
     _cache_cutoff = datetime.now(_tz.utc) - timedelta(hours=24)
     _fresh = (
         db.query(models.Product)
@@ -2328,10 +2375,11 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
         .first()
     )
     if _fresh:
-        return _db_response(_fresh, "cache")
+        _resp = _db_response(_fresh, "cache")
+        _resp.update(await _sp_offers())
+        return _resp
 
-    # ASIN exists in DB but Keepa not yet enriched — return what we have
-    # (product name auto-fills, prices fill in once tokens refill)
+    # ASIN in DB but Keepa not enriched yet — still get live offer counts
     _any = (
         db.query(models.Product)
         .filter(models.Product.asin == asin)
@@ -2339,7 +2387,9 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
         .first()
     )
     if _any:
-        return _db_response(_any, "partial")
+        _resp = _db_response(_any, "partial")
+        _resp.update(await _sp_offers())
+        return _resp
 
     # Unknown ASIN — try live Keepa API with a short timeout so we fail fast
     api_key = os.getenv("KEEPA_API_KEY", "").strip()
