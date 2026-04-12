@@ -2408,6 +2408,650 @@ async def amazon_inventory_sync_now(current: dict = Depends(require_auth)):
         raise HTTPException(502, str(e))
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# UNGATING SYSTEM
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_DEFAULT_TEMPLATES = [
+    {
+        "number": 1, "name": "Initial Application", "category": "general",
+        "subject": "Request to Sell {PRODUCT_NAME} (ASIN: {ASIN})",
+        "description": "First submission with supplier invoice and business credentials.",
+        "body": """Dear Amazon Seller Performance Team,
+
+I am writing to request approval to sell {PRODUCT_NAME} (ASIN: {ASIN}) on the Amazon marketplace.
+
+I am an authorized reseller with a verified seller account (Seller ID: {SELLER_ID}). I have attached the following documentation to support my application:
+
+• Invoice from an authorized distributor/supplier dated within the last 180 days
+• Invoice quantity: {QUANTITY}+ units (meeting Amazon's requirements)
+• My business is a legitimate retail operation purchasing from verified wholesale distributors
+
+All products I source are 100% authentic, purchased directly from licensed distributors or brand-authorized wholesalers. I comply fully with Amazon's Condition Guidelines and seller policies.
+
+I look forward to your approval and appreciate your consideration.
+
+Best regards,
+{SELLER_NAME}
+Amazon Seller Account: {SELLER_ID}""",
+    },
+    {
+        "number": 2, "name": "Invoice Resubmission", "category": "resubmission",
+        "subject": "Resubmission – {PRODUCT_NAME} (ASIN: {ASIN}) Approval Request",
+        "description": "Follow-up with updated or additional invoice documentation.",
+        "body": """Dear Amazon Seller Performance Team,
+
+Thank you for reviewing my previous application. I am resubmitting my request to sell {PRODUCT_NAME} (ASIN: {ASIN}) with updated documentation.
+
+In response to your review, I have obtained an updated invoice from my supplier that more clearly meets Amazon's requirements:
+
+• Supplier: Licensed wholesale distributor
+• Invoice date: Within the past 180 days
+• Units purchased: {QUANTITY}+
+• Invoice shows business name, address, and contact information matching my seller account
+
+I want to emphasize that all my inventory is sourced exclusively through legitimate supply chains. I am committed to providing customers with authentic products that meet all of Amazon's quality standards.
+
+Please let me know if you require any additional documentation.
+
+Respectfully,
+{SELLER_NAME}
+Seller ID: {SELLER_ID}""",
+    },
+    {
+        "number": 3, "name": "Quantity Clarification", "category": "resubmission",
+        "subject": "Documentation Clarification – {PRODUCT_NAME} Approval (ASIN: {ASIN})",
+        "description": "Address quantity-related rejections with clearer proof.",
+        "body": """Dear Amazon Seller Performance Team,
+
+I am following up on my application to sell {PRODUCT_NAME} (ASIN: {ASIN}).
+
+I understand there may have been a concern regarding the quantity on my invoice. To clarify:
+
+• My invoice clearly shows a purchase of {QUANTITY}+ units
+• The invoice is from {SUPPLIER_NAME}, a licensed wholesale distributor
+• The purchase was made within the required timeframe
+
+I have reattached the invoice with the relevant quantity information highlighted for clarity. Additionally, I can provide:
+- A letter of authorization from the distributor confirming my account status
+- Additional purchase orders showing my consistent buying history
+- Business license and resale certificate if required
+
+I am fully committed to meeting all requirements for approval and am happy to provide any further documentation needed.
+
+Thank you for your time,
+{SELLER_NAME}
+Seller ID: {SELLER_ID}""",
+    },
+    {
+        "number": 4, "name": "Supplier Legitimacy", "category": "resubmission",
+        "subject": "Supplier Verification – {PRODUCT_NAME} (ASIN: {ASIN})",
+        "description": "Prove supplier legitimacy with additional documentation.",
+        "body": """Dear Amazon Seller Performance Team,
+
+I am resubmitting my request to sell {PRODUCT_NAME} (ASIN: {ASIN}) with additional supplier verification.
+
+To address any concerns about my supply chain, I am providing the following:
+
+1. SUPPLIER INFORMATION
+   - Company: {SUPPLIER_NAME}
+   - This is an authorized distributor with a verifiable business presence
+   - Contact information is available on the invoice for verification
+
+2. PURCHASE DOCUMENTATION
+   - Invoice dated within the last 180 days
+   - Quantity: {QUANTITY}+ units purchased
+   - Products are new, unopened, and in original manufacturer packaging
+
+3. MY BUSINESS CREDENTIALS
+   - I operate a legitimate retail business
+   - My seller account is in good standing with no policy violations
+   - I have successfully sold in other categories on Amazon
+
+I assure you that all products are authentic and sourced through legitimate channels. I am willing to provide any additional verification Amazon requires.
+
+Sincerely,
+{SELLER_NAME}
+Seller ID: {SELLER_ID}""",
+    },
+    {
+        "number": 5, "name": "Brand Authorization", "category": "brand_auth",
+        "subject": "Brand Authorization Letter – {PRODUCT_NAME} (ASIN: {ASIN})",
+        "description": "Include brand authorization or distributor letter of authorization.",
+        "body": """Dear Amazon Seller Performance Team,
+
+I am submitting a revised application to sell {PRODUCT_NAME} (ASIN: {ASIN}), this time including a Letter of Authorization from my distributor confirming that I am an authorized reseller.
+
+Documentation included:
+1. Letter of Authorization from {SUPPLIER_NAME} confirming I am an authorized reseller
+2. Original supplier invoice for {QUANTITY}+ units (within the last 180 days)
+3. Proof that {SUPPLIER_NAME} is an authorized distributor for this product
+
+The Letter of Authorization confirms:
+• My business is recognized as an authorized buyer by this distributor
+• The products I purchase are genuine and sourced through the proper supply chain
+• The distributor can vouch for the authenticity of all products I have purchased
+
+Please find all documents attached. I am confident this fulfills Amazon's requirements for ungating this product.
+
+Thank you for your consideration,
+{SELLER_NAME}
+Seller ID: {SELLER_ID}""",
+    },
+    {
+        "number": 6, "name": "Business Documentation", "category": "resubmission",
+        "subject": "Additional Business Documentation – {ASIN} Approval Request",
+        "description": "Provide business registration and compliance documents.",
+        "body": """Dear Amazon Seller Performance Team,
+
+I am providing additional business documentation to support my application to sell {PRODUCT_NAME} (ASIN: {ASIN}).
+
+Business Verification Documents Enclosed:
+• Business License / Registration
+• Resale Certificate / Sales Tax Permit
+• EIN confirmation letter
+• Bank statements showing business account (confirming financial capacity to purchase inventory)
+
+Supplier Documentation:
+• Invoice from {SUPPLIER_NAME}: {QUANTITY}+ units within 180 days
+• Supplier's business license and contact details
+
+I want to make clear that I run a legitimate, compliant business that takes Amazon's policies seriously. I have invested in building proper supplier relationships and maintaining accurate business records.
+
+My sole objective is to provide customers with authentic, quality products while adhering to all of Amazon's marketplace standards.
+
+I appreciate your time in reviewing this application.
+
+Best regards,
+{SELLER_NAME}
+Seller ID: {SELLER_ID}""",
+    },
+    {
+        "number": 7, "name": "Distributor Chain Documentation", "category": "resubmission",
+        "subject": "Complete Supply Chain Documentation – {PRODUCT_NAME} (ASIN: {ASIN})",
+        "description": "Show the full distribution chain from manufacturer to seller.",
+        "body": """Dear Amazon Seller Performance Team,
+
+To strengthen my application for {PRODUCT_NAME} (ASIN: {ASIN}), I am providing complete supply chain documentation showing the path from manufacturer to my business.
+
+Supply Chain Documentation:
+1. MANUFACTURER → DISTRIBUTOR: Evidence that {SUPPLIER_NAME} sources directly from the manufacturer or authorized importer
+2. DISTRIBUTOR → MY BUSINESS: Invoice showing my purchase of {QUANTITY}+ units
+3. MY BUSINESS → AMAZON: My commitment to fulfill orders from this verified inventory
+
+This documentation demonstrates an unbroken, verifiable chain of custody for all products. Every unit I sell on Amazon can be traced back to an authorized source, eliminating any possibility of counterfeit product.
+
+Additional assurances:
+• I maintain detailed purchasing records for all inventory
+• Products are stored in proper conditions to maintain quality
+• I strictly follow Amazon's product condition guidelines
+
+I am confident that this comprehensive documentation package fulfills all requirements.
+
+Thank you,
+{SELLER_NAME}
+Seller ID: {SELLER_ID}""",
+    },
+    {
+        "number": 8, "name": "Management Escalation", "category": "escalation",
+        "subject": "Escalation Request – Persistent Approval Issue for ASIN {ASIN}",
+        "description": "Escalate to manager after multiple rejections.",
+        "body": """Dear Amazon Seller Performance Leadership,
+
+I am respectfully requesting escalation of my application to sell {PRODUCT_NAME} (ASIN: {ASIN}), which has been under review through multiple submissions.
+
+Summary of My Submissions:
+• I have submitted multiple well-documented applications
+• Each submission has included valid supplier invoices meeting quantity requirements ({QUANTITY}+ units)
+• I have provided business licenses, supplier authorization letters, and additional documentation as requested
+
+My Position:
+I am a compliant, long-standing Amazon seller with no policy violations. I have taken every step requested to demonstrate that my supply chain is legitimate and that I am qualified to sell this product.
+
+I believe there may be a review process issue causing my application to be denied despite meeting all published requirements. I respectfully request that a senior review team member evaluate my full documentation package.
+
+I am available for any verification calls or additional review processes Amazon may require to resolve this matter.
+
+Thank you for your attention to this escalation.
+
+Respectfully,
+{SELLER_NAME}
+Seller ID: {SELLER_ID}""",
+    },
+    {
+        "number": 9, "name": "Final Appeal", "category": "escalation",
+        "subject": "Final Appeal – {PRODUCT_NAME} (ASIN: {ASIN}) Approval",
+        "description": "Last comprehensive appeal with all documentation.",
+        "body": """Dear Amazon Seller Performance Executive Team,
+
+I am submitting this final appeal regarding my application to sell {PRODUCT_NAME} (ASIN: {ASIN}).
+
+I have compiled a complete documentation package that addresses every possible concern:
+
+COMPLETE DOCUMENTATION PACKAGE:
+✓ Supplier invoice: {SUPPLIER_NAME}, {QUANTITY}+ units, within 180 days
+✓ Letter of Authorization from distributor
+✓ Business license and registration
+✓ Resale certificate
+✓ Seller account history showing compliance
+✓ Supply chain documentation from manufacturer to my business
+
+MY TRACK RECORD:
+• Amazon seller account in good standing
+• No product authenticity complaints
+• No policy violations
+• Consistent positive customer feedback
+
+I am deeply committed to operating within Amazon's guidelines and providing customers with authentic products. I believe I have thoroughly demonstrated my eligibility to sell this product.
+
+If there is a specific document or piece of information that would satisfy Amazon's requirements that I have not yet provided, please advise and I will obtain it immediately.
+
+I sincerely appreciate your consideration of this final appeal.
+
+{SELLER_NAME}
+Seller ID: {SELLER_ID}""",
+    },
+    {
+        "number": 10, "name": "Custom Response", "category": "general",
+        "subject": "Re: {PRODUCT_NAME} (ASIN: {ASIN}) Application",
+        "description": "Blank template for custom responses tailored to specific situations.",
+        "body": """Dear Amazon Seller Performance Team,
+
+{CUSTOM_CONTENT}
+
+Thank you for your consideration.
+
+Best regards,
+{SELLER_NAME}
+Seller ID: {SELLER_ID}""",
+    },
+]
+
+
+def _seed_ungate_templates(db: Session):
+    """Seed default templates if the table is empty."""
+    if db.query(models.UngateTemplate).count() == 0:
+        for t in _DEFAULT_TEMPLATES:
+            db.add(models.UngateTemplate(**t))
+        db.commit()
+
+
+def _fill_template(body: str, subject: str, variables: dict) -> tuple[str, str]:
+    """Replace {VARIABLE} placeholders in template body and subject."""
+    for k, v in variables.items():
+        body    = body.replace(f"{{{k}}}", str(v) if v else f"[{k}]")
+        subject = (subject or "").replace(f"{{{k}}}", str(v) if v else f"[{k}]")
+    return body, subject
+
+
+# ── Ungate templates ──────────────────────────────────────────────────────────
+
+@app.get("/api/ungate/templates")
+def get_ungate_templates(db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    _seed_ungate_templates(db)
+    return db.query(models.UngateTemplate).order_by(models.UngateTemplate.number).all()
+
+
+@app.put("/api/ungate/templates/{template_id}")
+def update_ungate_template(
+    template_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_admin),
+):
+    t = db.query(models.UngateTemplate).filter(models.UngateTemplate.id == template_id).first()
+    if not t:
+        raise HTTPException(404, "Template not found")
+    for field in ("name", "description", "subject", "body", "category", "is_active"):
+        if field in body:
+            setattr(t, field, body[field])
+    db.commit()
+    db.refresh(t)
+    return t
+
+
+@app.post("/api/ungate/templates/ai-generate")
+async def ai_generate_template(body: dict, current: dict = Depends(require_admin)):
+    """Use AI to generate template body for a given category/scenario."""
+    from groq import AsyncGroq
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(503, "GROQ_API_KEY not configured")
+
+    scenario      = body.get("scenario", "initial application")
+    category      = body.get("category", "general")
+    template_num  = body.get("template_num", 1)
+    extra_context = body.get("context", "")
+
+    prompt = f"""You are an expert Amazon seller consultant specializing in ungating restricted products.
+
+Write a professional Amazon ungating application email template for:
+- Scenario: {scenario}
+- Template #{template_num} (escalation level increases with number)
+- Category: {category}
+- Extra context: {extra_context}
+
+The template must use these placeholders where appropriate:
+{{SELLER_NAME}}, {{SELLER_ID}}, {{PRODUCT_NAME}}, {{ASIN}}, {{QUANTITY}}, {{SUPPLIER_NAME}}, {{CATEGORY}}
+
+Requirements:
+- Professional, respectful tone
+- Clear and specific
+- Address Amazon's typical concerns for this scenario
+- Include a subject line on the first line starting with "SUBJECT: "
+- Then the email body
+
+Output ONLY the subject line and email body, no other text."""
+
+    try:
+        client = AsyncGroq(api_key=api_key)
+        result = await client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = result.choices[0].message.content.strip()
+        # Parse subject from first line
+        lines = text.split("\n")
+        subject = ""
+        body_start = 0
+        if lines[0].startswith("SUBJECT:"):
+            subject = lines[0].replace("SUBJECT:", "").strip()
+            body_start = 1
+            # skip blank line after subject
+            if len(lines) > 1 and not lines[1].strip():
+                body_start = 2
+        email_body = "\n".join(lines[body_start:]).strip()
+        return {"subject": subject, "body": email_body}
+    except Exception as e:
+        raise HTTPException(502, f"AI error: {str(e)}")
+
+
+# ── Ungate requirements ───────────────────────────────────────────────────────
+
+@app.get("/api/ungate/requirements/{asin}")
+async def get_ungate_requirements(asin: str, current: dict = Depends(require_auth)):
+    """Fetch Amazon listing restrictions + AI-inferred ungating requirements."""
+    asin = asin.strip().upper()
+
+    restrictions_data = {}
+    if _amazon_sp_configured():
+        try:
+            token = await _get_amazon_access_token()
+            seller_id = os.getenv("AMAZON_SELLER_ID", "").strip()
+            import httpx as _httpx
+            async with _httpx.AsyncClient(timeout=15) as c:
+                r = await c.get(
+                    f"{_AMAZON_SP_BASE}/products/restrictions/2022-08-01/listings/restrictions",
+                    headers={"x-amz-access-token": token},
+                    params={
+                        "asin":           asin,
+                        "conditionType":  "new_new",
+                        "sellerId":       seller_id,
+                        "marketplaceIds": _AMAZON_MKT_ID,
+                    },
+                )
+            if r.status_code == 200:
+                restrictions_data = r.json()
+        except Exception:
+            pass
+
+    # Summarize restrictions
+    restrictions = restrictions_data.get("restrictions") or []
+    reasons = []
+    apply_links = []
+    for restriction in restrictions:
+        for reason in (restriction.get("reasons") or []):
+            msg = reason.get("message", "")
+            if msg:
+                reasons.append(msg)
+            for link in (reason.get("links") or []):
+                apply_links.append(link)
+
+    # Use AI to infer requirements based on ASIN/category context
+    groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    ai_requirements = {}
+    if groq_key and reasons:
+        try:
+            from groq import AsyncGroq
+            client = AsyncGroq(api_key=groq_key)
+            result = await client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                max_tokens=256,
+                messages=[{
+                    "role": "user",
+                    "content": f"""Based on these Amazon listing restriction messages for ASIN {asin}, extract the ungating requirements as JSON.
+Messages: {'; '.join(reasons)}
+
+Return ONLY valid JSON with these fields (use null if not mentioned):
+{{"quantity": <integer or null>, "invoice_age_days": <integer or null>, "needs_brand_auth": <boolean>, "needs_business_docs": <boolean>, "notes": "<brief summary>"}}"""
+                }],
+            )
+            import json as _json
+            raw = result.choices[0].message.content.strip()
+            # Extract JSON from response
+            start = raw.find("{")
+            end   = raw.rfind("}") + 1
+            if start != -1 and end > start:
+                ai_requirements = _json.loads(raw[start:end])
+        except Exception:
+            pass
+
+    return {
+        "asin":         asin,
+        "is_gated":     len(restrictions) > 0,
+        "reasons":      reasons,
+        "apply_links":  apply_links,
+        "requirements": ai_requirements,
+        "raw":          restrictions_data,
+    }
+
+
+# ── Ungate requests ───────────────────────────────────────────────────────────
+
+@app.get("/api/ungate/requests")
+def list_ungate_requests(db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    return db.query(models.UngateRequest).order_by(models.UngateRequest.created_at.desc()).all()
+
+
+@app.post("/api/ungate/requests")
+def create_ungate_request(body: dict, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    import json as _json
+    req = models.UngateRequest(
+        product_id=body.get("product_id"),
+        asin=body.get("asin", "").strip().upper(),
+        product_name=body.get("product_name", "").strip(),
+        category=body.get("category", "").strip(),
+        requirements=_json.dumps(body.get("requirements") or {}),
+        history="[]",
+        notes=body.get("notes", ""),
+        status="pending",
+        current_template_num=1,
+    )
+    db.add(req)
+    db.commit()
+    db.refresh(req)
+    return req
+
+
+@app.get("/api/ungate/requests/{req_id}")
+def get_ungate_request(req_id: int, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    req = db.query(models.UngateRequest).filter(models.UngateRequest.id == req_id).first()
+    if not req:
+        raise HTTPException(404, "Request not found")
+    return req
+
+
+@app.post("/api/ungate/requests/{req_id}/submit")
+def submit_ungate_request(req_id: int, body: dict, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    """Record that the current template was submitted to Amazon."""
+    import json as _json
+    req = db.query(models.UngateRequest).filter(models.UngateRequest.id == req_id).first()
+    if not req:
+        raise HTTPException(404, "Request not found")
+
+    history = _json.loads(req.history or "[]")
+    history.append({
+        "template_num":  req.current_template_num,
+        "submitted_at":  datetime.utcnow().isoformat(),
+        "status":        "submitted",
+        "submitted_by":  current["username"],
+        "notes":         body.get("notes", ""),
+    })
+    req.history = _json.dumps(history)
+    req.status  = "in_progress"
+    db.commit()
+    db.refresh(req)
+    return req
+
+
+@app.post("/api/ungate/requests/{req_id}/rejection")
+async def record_rejection(req_id: int, body: dict, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    """Record Amazon's rejection and AI-generate the next response."""
+    import json as _json
+    req = db.query(models.UngateRequest).filter(models.UngateRequest.id == req_id).first()
+    if not req:
+        raise HTTPException(404, "Request not found")
+
+    rejection_reason = body.get("rejection_reason", "").strip()
+    next_template_num = min(req.current_template_num + 1, 10)
+
+    # Update history — mark last step as rejected
+    history = _json.loads(req.history or "[]")
+    if history:
+        history[-1]["status"] = "rejected"
+        history[-1]["rejection_reason"] = rejection_reason
+
+    # Fetch the next template
+    _seed_ungate_templates(db)
+    next_template = db.query(models.UngateTemplate).filter(
+        models.UngateTemplate.number == next_template_num,
+        models.UngateTemplate.is_active == True,
+    ).first()
+
+    ai_response = None
+    ai_subject  = None
+
+    # AI-customize the next template based on the rejection
+    groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    requirements = _json.loads(req.requirements or "{}")
+    variables = {
+        "PRODUCT_NAME":  req.product_name,
+        "ASIN":          req.asin,
+        "CATEGORY":      req.category or "",
+        "QUANTITY":      requirements.get("quantity") or "150",
+        "SUPPLIER_NAME": body.get("supplier_name") or "our authorized distributor",
+        "SELLER_NAME":   body.get("seller_name") or "[Your Business Name]",
+        "SELLER_ID":     body.get("seller_id") or os.getenv("AMAZON_SELLER_ID", "[Seller ID]"),
+    }
+
+    base_body    = next_template.body    if next_template else ""
+    base_subject = next_template.subject if next_template else ""
+    base_body, base_subject = _fill_template(base_body, base_subject, variables)
+
+    if groq_key and rejection_reason:
+        try:
+            from groq import AsyncGroq
+            client = AsyncGroq(api_key=groq_key)
+            result = await client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                max_tokens=1024,
+                messages=[{
+                    "role": "user",
+                    "content": f"""You are an Amazon ungating expert. Amazon rejected a seller's application with this reason:
+
+REJECTION: {rejection_reason}
+
+PRODUCT: {req.product_name} (ASIN: {req.asin})
+TEMPLATE BASE (customize this): {base_body}
+
+Rewrite the template to specifically address the rejection reason while keeping the professional tone.
+Keep the same structure but adapt the content to directly counter Amazon's stated concerns.
+Return ONLY the email body text, no subject line, no explanation.""",
+                }],
+            )
+            ai_response = result.choices[0].message.content.strip()
+        except Exception:
+            ai_response = base_body  # fall back to base template
+
+    # Add next step to history
+    history.append({
+        "template_num":  next_template_num,
+        "generated_at":  datetime.utcnow().isoformat(),
+        "status":        "draft",
+        "ai_response":   ai_response or base_body,
+        "subject":       ai_subject or base_subject,
+    })
+
+    req.history = _json.dumps(history)
+    req.current_template_num = next_template_num
+    req.status = "rejected_final" if next_template_num >= 10 and not next_template else "in_progress"
+    db.commit()
+    db.refresh(req)
+    return {**req.__dict__, "_ai_response": ai_response or base_body, "_subject": ai_subject or base_subject}
+
+
+@app.post("/api/ungate/requests/{req_id}/approve")
+def approve_ungate_request(req_id: int, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    import json as _json
+    req = db.query(models.UngateRequest).filter(models.UngateRequest.id == req_id).first()
+    if not req:
+        raise HTTPException(404, "Request not found")
+    history = _json.loads(req.history or "[]")
+    if history:
+        history[-1]["status"] = "approved"
+        history[-1]["approved_at"] = datetime.utcnow().isoformat()
+    req.history = _json.dumps(history)
+    req.status  = "approved"
+    # Also mark the product as ungated
+    if req.product_id:
+        product = db.query(models.Product).filter(models.Product.id == req.product_id).first()
+        if product:
+            product.ungated = True
+    db.commit()
+    db.refresh(req)
+    return req
+
+
+@app.delete("/api/ungate/requests/{req_id}")
+def delete_ungate_request(req_id: int, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    req = db.query(models.UngateRequest).filter(models.UngateRequest.id == req_id).first()
+    if not req:
+        raise HTTPException(404, "Request not found")
+    db.delete(req)
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/ungate/render-template/{template_num}")
+def render_template(
+    template_num: int,
+    product_name: str = "",
+    asin: str = "",
+    quantity: str = "150",
+    supplier_name: str = "your authorized distributor",
+    seller_name: str = "",
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_auth),
+):
+    """Render a template with provided variables."""
+    _seed_ungate_templates(db)
+    t = db.query(models.UngateTemplate).filter(models.UngateTemplate.number == template_num).first()
+    if not t:
+        raise HTTPException(404, "Template not found")
+    variables = {
+        "PRODUCT_NAME":  product_name,
+        "ASIN":          asin,
+        "QUANTITY":      quantity,
+        "SUPPLIER_NAME": supplier_name,
+        "SELLER_NAME":   seller_name or "[Your Business Name]",
+        "SELLER_ID":     os.getenv("AMAZON_SELLER_ID", "[Seller ID]"),
+        "CATEGORY":      "",
+    }
+    body, subject = _fill_template(t.body, t.subject or "", variables)
+    return {"subject": subject, "body": body, "template": t}
+
+
 @app.post("/api/support/chat")
 async def support_chat(body: dict, current: dict = Depends(require_auth)):
     """AI support assistant powered by Groq (Llama 3.3 70B)."""

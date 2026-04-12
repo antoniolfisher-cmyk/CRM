@@ -303,3 +303,44 @@ class Product(Base):
     aria_reasoning = Column(Text, nullable=True)
     aria_last_buy_box = Column(Float, nullable=True)   # buy_box at time of last Aria run (smart trigger)
     aria_strategy_id = Column(Integer, nullable=True)  # per-product strategy override
+
+    ungate_requests = relationship("UngateRequest", back_populates="product", cascade="all, delete-orphan")
+
+
+class UngateTemplate(Base):
+    __tablename__ = "ungate_templates"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    number     = Column(Integer, unique=True, nullable=False)  # 1–10
+    name       = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    subject    = Column(String, nullable=True)   # email subject with {variables}
+    body       = Column(Text, nullable=False)    # email body with {variables}
+    category   = Column(String, default="general")  # general|resubmission|escalation|brand_auth
+    is_active  = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class UngateRequest(Base):
+    __tablename__ = "ungate_requests"
+
+    id           = Column(Integer, primary_key=True, index=True)
+    product_id   = Column(Integer, ForeignKey("products.id", ondelete="SET NULL"), nullable=True)
+    asin         = Column(String, nullable=False, index=True)
+    product_name = Column(String, nullable=False)
+    category     = Column(String, nullable=True)
+    # pending | in_progress | approved | rejected_final
+    status       = Column(String, default="pending")
+    current_template_num = Column(Integer, default=1)
+    # JSON: {"quantity": 150, "invoice_age_days": 180, "notes": "..."}
+    requirements = Column(Text, nullable=True)
+    # JSON array of steps:
+    # [{"template_num":1,"submitted_at":"...","rejection_reason":"...","ai_response":"...","status":"rejected"}]
+    history      = Column(Text, default="[]")
+    amazon_case_id = Column(String, nullable=True)
+    notes        = Column(Text, nullable=True)
+    created_at   = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at   = Column(DateTime(timezone=True), onupdate=func.now())
+
+    product = relationship("Product", back_populates="ungate_requests")

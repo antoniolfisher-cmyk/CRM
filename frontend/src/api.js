@@ -132,6 +132,23 @@ export const api = {
   // Support
   supportChat: (messages) => req('POST', '/support/chat', { messages }),
 
+  // Ungate
+  getUngateTemplates: () => req('GET', '/ungate/templates'),
+  updateUngateTemplate: (id, data) => req('PUT', `/ungate/templates/${id}`, data),
+  aiGenerateTemplate: (data) => req('POST', '/ungate/templates/ai-generate', data),
+  getUngateRequirements: (asin) => req('GET', `/ungate/requirements/${asin}`),
+  getUngateRequests: () => req('GET', '/ungate/requests'),
+  createUngateRequest: (data) => req('POST', '/ungate/requests', data),
+  getUngateRequest: (id) => req('GET', `/ungate/requests/${id}`),
+  submitUngateRequest: (id, data) => req('POST', `/ungate/requests/${id}/submit`, data),
+  recordRejection: (id, data) => req('POST', `/ungate/requests/${id}/rejection`, data),
+  approveUngateRequest: (id) => req('POST', `/ungate/requests/${id}/approve`, {}),
+  deleteUngateRequest: (id) => req('DELETE', `/ungate/requests/${id}`),
+  renderTemplate: (num, params) => {
+    const qs = new URLSearchParams(Object.entries(params).filter(([,v]) => v)).toString()
+    return req('GET', `/ungate/render-template/${num}${qs ? '?' + qs : ''}`)
+  },
+
   // Orders
   getOrders: (params = {}) => {
     const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v)).toString()

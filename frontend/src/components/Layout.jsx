@@ -10,6 +10,7 @@ const nav = [
   { to: '/inventory', label: 'Current Inventory', icon: InventoryIcon },
   { to: '/timeclock', label: 'Time Clock', icon: ClockIcon },
   { to: '/upc-scanner', label: 'UPC Scanner', icon: BarcodeIcon },
+  { to: '/ungate', label: 'Ungate Requests', icon: UnlockIcon },
   { to: '/support', label: 'Support', icon: SupportIcon },
 ]
 
@@ -192,6 +193,13 @@ function ClockIcon({ className }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+    </svg>
+  )
+}
+function UnlockIcon({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 10.5V6.75a4.5 4.5 0 119 0v3.75M3.75 21.75h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H3.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
     </svg>
   )
 }

@@ -14,6 +14,7 @@ import Repricer from './pages/Repricer'
 import TimeClock from './pages/TimeClock'
 import Support from './pages/Support'
 import UpcScanner from './pages/UpcScanner'
+import Ungate from './pages/Ungate'
 
 export default function App() {
   return (
@@ -55,6 +56,7 @@ function PrivateRoute() {
         <Route path="/timeclock" element={<TimeClock />} />
         <Route path="/support" element={<Support />} />
         <Route path="/upc-scanner" element={<UpcScanner />} />
+        <Route path="/ungate" element={<Ungate />} />
         <Route
           path="/approvals"
           element={isAdmin ? <Approvals /> : <Navigate to="/" replace />}
