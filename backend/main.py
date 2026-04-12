@@ -2346,87 +2346,111 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
     if len(asin) != 10:
         raise HTTPException(400, "ASIN must be 10 characters")
 
-    # ── Cache-first: check DB before touching Keepa API ──────────────────────
+    # ── Always pull live offer data from Amazon SP-API (no Keepa tokens needed) ─
     from datetime import timezone as _tz
     _chart_url = f"https://graph.keepa.com/pricehistory.png?asin={asin}&domain=1&salesrank=1&bb=1&new=1&fbafba=1&range=90"
     _tenant_id = current.get("tenant_id", 1)
 
-    async def _sp_offers():
+    async def _sp_data():
         """
-        Pull FBA/FBM seller counts + buy box from Amazon SP-API.
-        Uses the tenant's own credentials — no Keepa tokens needed.
-        Returns a partial dict to merge into the response, or {} on any failure.
+        Fetch from Amazon SP-API:
+          1. Offer counts + buy box (competitive pricing)
+          2. Product title + category (catalog items)
+        Returns a dict to merge into the response. Never raises.
         """
         try:
             import httpx as _hx
             _cred = _get_tenant_amazon_creds(_tenant_id, db)
             if not _cred or not _cred.sp_refresh_token:
                 return {}
-            _tok = await _get_tenant_access_token(_cred)
-            _mkt = _cred.marketplace_id or _AMAZON_MKT_ID
+            _tok  = await _get_tenant_access_token(_cred)
+            _mkt  = _cred.marketplace_id or _AMAZON_MKT_ID
             _base = _sp_base(_cred.is_sandbox)
+            result = {}
+
             async with _hx.AsyncClient(timeout=8) as _c:
-                _r = await _c.get(
+                # Offer counts + buy box
+                _or = await _c.get(
                     f"{_base}/products/pricing/v0/items/{asin}/offers",
                     headers={"x-amz-access-token": _tok},
                     params={"MarketplaceId": _mkt, "ItemCondition": "New", "CustomerType": "Consumer"},
                 )
-            if _r.status_code != 200:
-                return {}
-            _summary = _r.json().get("payload", {}).get("Summary", {})
-            _num_fba = _num_fbm = 0
-            for _o in (_summary.get("NumberOfOffers") or []):
-                if _o.get("condition") == "New":
-                    if _o.get("fulfillmentChannel") == "Amazon":
-                        _num_fba = _o.get("OfferCount", 0)
-                    elif _o.get("fulfillmentChannel") == "Merchant":
-                        _num_fbm = _o.get("OfferCount", 0)
-            # Buy box from competitive pricing
-            _bb = None
-            _bb_item = (_summary.get("BuyBoxPrices") or [{}])[0]
-            _bb_amt = (_bb_item.get("LandedPrice") or _bb_item.get("ListingPrice") or {}).get("Amount")
-            if _bb_amt:
-                _bb = float(_bb_amt)
-            return {
-                "num_fba_sellers": _num_fba,
-                "num_fbm_sellers": _num_fbm,
-                "offers_available": True,
-                **({"buy_box": _bb} if _bb else {}),
-            }
+                if _or.status_code == 200:
+                    _summary = _or.json().get("payload", {}).get("Summary", {})
+                    _num_fba = _num_fbm = 0
+                    for _o in (_summary.get("NumberOfOffers") or []):
+                        if _o.get("condition") == "New":
+                            if _o.get("fulfillmentChannel") == "Amazon":
+                                _num_fba = _o.get("OfferCount", 0)
+                            elif _o.get("fulfillmentChannel") == "Merchant":
+                                _num_fbm = _o.get("OfferCount", 0)
+                    result.update({
+                        "num_fba_sellers": _num_fba,
+                        "num_fbm_sellers": _num_fbm,
+                        "offers_available": True,
+                    })
+                    _bb_item = (_summary.get("BuyBoxPrices") or [{}])[0]
+                    _bb_amt  = (_bb_item.get("LandedPrice") or _bb_item.get("ListingPrice") or {}).get("Amount")
+                    if _bb_amt:
+                        result["buy_box"] = float(_bb_amt)
+
+                # Product title + category from Catalog API
+                _cr = await _c.get(
+                    f"{_base}/catalog/2022-04-01/items/{asin}",
+                    headers={"x-amz-access-token": _tok},
+                    params={"marketplaceIds": _mkt, "includedData": "summaries,salesRanks"},
+                )
+                if _cr.status_code == 200:
+                    _item = _cr.json()
+                    _summaries = (_item.get("summaries") or [{}])[0]
+                    _title = _summaries.get("itemName") or _summaries.get("productTitle") or ""
+                    if _title:
+                        result["title"] = _title
+                    _ranks = _item.get("salesRanks") or []
+                    if _ranks:
+                        _rank_entry = _ranks[0]
+                        result["bsr"] = (_rank_entry.get("ranks") or [{}])[0].get("value")
+                        result["category"] = _rank_entry.get("displayGroupName") or ""
+
+            return result
         except Exception:
             return {}
 
-    def _db_response(p, source="cache"):
-        return {
+    # ── Run Amazon SP-API fetch first — always, zero Keepa tokens ─────────────
+    _live = await _sp_data()
+
+    def _base_resp(title="", buy_box=None, amazon_fee=None, bsr=None, category="",
+                   estimated_sales=None, num_sellers=None,
+                   price_90_high=None, price_90_low=None, price_90_median=None,
+                   fba_low=None, fba_high=None, fba_median=None,
+                   fbm_low=None, fbm_high=None, fbm_median=None):
+        r = {
             "asin":                asin,
-            "title":               p.product_name or "",
+            "title":               title,
             "amazon_url":          f"https://www.amazon.com/dp/{asin}",
-            "buy_box":             p.buy_box or None,
-            "amazon_fee":          p.amazon_fee or None,
+            "buy_box":             buy_box,
+            "amazon_fee":          amazon_fee,
             "fba_fulfillment_fee": None,
             "referral_fee":        None,
-            "num_sellers":         p.num_sellers or None,
+            "num_sellers":         num_sellers,
             "num_fba_sellers":     None,
             "num_fbm_sellers":     None,
             "offers_available":    False,
-            "bsr":                 p.keepa_bsr or None,
-            "category":            p.keepa_category or "",
-            "estimated_sales":     p.estimated_sales or None,
-            "fba_low":             p.fba_low,
-            "fba_high":            p.fba_high,
-            "fba_median":          p.fba_median,
-            "fbm_low":             p.fbm_low,
-            "fbm_high":            p.fbm_high,
-            "fbm_median":          p.fbm_median,
-            "price_90_high":       p.price_90_high,
-            "price_90_low":        p.price_90_low,
-            "median_price":        p.price_90_median,
+            "bsr":                 bsr,
+            "category":            category,
+            "estimated_sales":     estimated_sales,
+            "fba_low": fba_low, "fba_high": fba_high, "fba_median": fba_median,
+            "fbm_low": fbm_low, "fbm_high": fbm_high, "fbm_median": fbm_median,
+            "price_90_high":  price_90_high,
+            "price_90_low":   price_90_low,
+            "median_price":   price_90_median,
             "fba_history": [], "fbm_history": [], "bsr_history": [],
             "keepa_chart_url": _chart_url,
-            "source": source,
         }
+        r.update(_live)   # always overlay live SP-API data
+        return r
 
-    # Fresh Keepa data (< 24h) — merge with live Amazon offer counts
+    # ── DB cache: fresh Keepa data (< 24h) ────────────────────────────────────
     _cache_cutoff = datetime.now(_tz.utc) - timedelta(hours=24)
     _fresh = (
         db.query(models.Product)
@@ -2436,11 +2460,18 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
         .first()
     )
     if _fresh:
-        _resp = _db_response(_fresh, "cache")
-        _resp.update(await _sp_offers())
-        return _resp
+        return _base_resp(
+            title=_fresh.product_name or "", buy_box=_fresh.buy_box or None,
+            amazon_fee=_fresh.amazon_fee or None, bsr=_fresh.keepa_bsr or None,
+            category=_fresh.keepa_category or "", estimated_sales=_fresh.estimated_sales or None,
+            num_sellers=_fresh.num_sellers or None,
+            price_90_high=_fresh.price_90_high, price_90_low=_fresh.price_90_low,
+            price_90_median=_fresh.price_90_median,
+            fba_low=_fresh.fba_low, fba_high=_fresh.fba_high, fba_median=_fresh.fba_median,
+            fbm_low=_fresh.fbm_low, fbm_high=_fresh.fbm_high, fbm_median=_fresh.fbm_median,
+        )
 
-    # ASIN in DB but Keepa not enriched yet — still get live offer counts
+    # ── DB cache: ASIN exists but not Keepa-enriched yet ──────────────────────
     _any = (
         db.query(models.Product)
         .filter(models.Product.asin == asin)
@@ -2448,14 +2479,25 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
         .first()
     )
     if _any:
-        _resp = _db_response(_any, "partial")
-        _resp.update(await _sp_offers())
-        return _resp
+        return _base_resp(
+            title=_any.product_name or "", buy_box=_any.buy_box or None,
+            amazon_fee=_any.amazon_fee or None, bsr=_any.keepa_bsr or None,
+            category=_any.keepa_category or "", estimated_sales=_any.estimated_sales or None,
+            num_sellers=_any.num_sellers or None,
+            price_90_high=_any.price_90_high, price_90_low=_any.price_90_low,
+            price_90_median=_any.price_90_median,
+            fba_low=_any.fba_low, fba_high=_any.fba_high, fba_median=_any.fba_median,
+            fbm_low=_any.fbm_low, fbm_high=_any.fbm_high, fbm_median=_any.fbm_median,
+        )
 
-    # Unknown ASIN — try live Keepa API with a short timeout so we fail fast
+    # ── Unknown ASIN: if SP-API returned enough, respond immediately ──────────
+    if _live.get("offers_available") or _live.get("title"):
+        return _base_resp()   # _live already merged in
+
+    # ── Last resort: try Keepa API ─────────────────────────────────────────────
     api_key = os.getenv("KEEPA_API_KEY", "").strip()
     if not api_key:
-        raise HTTPException(503, "Keepa data temporarily unavailable")
+        raise HTTPException(404, f"ASIN {asin} not found")
 
     # Add offers=20 to get FBA vs FBM seller breakdown
     url = (
@@ -2623,15 +2665,13 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
         except Exception:
             pass  # Fall back to Keepa offer counts
 
-    amazon_url = f"https://www.amazon.com/dp/{asin}"
-
-    return {
+    _keepa_resp = {
         "asin":              asin,
         "title":             (kp.get("title") or "").strip(),
         "buy_box":           buy_box_price,
         "bsr":               _p(3, cur) and int(_p(3, cur)) if _p(3, cur) else None,
         "category":          category,
-        "amazon_url":        amazon_url,
+        "amazon_url":        f"https://www.amazon.com/dp/{asin}",
         "num_sellers":       sp_total or kp.get("newCount"),
         "num_fba_sellers":   sp_fba,
         "num_fbm_sellers":   sp_fbm,
@@ -2641,7 +2681,6 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
         "referral_fee":      referral_fee,
         "amazon_fee":        amazon_fee,
         "tokens_left":       data.get("tokensLeft"),
-        # Price ranges
         "fba_low":           fba_low,
         "fba_high":          fba_high,
         "fba_median":        fba_median,
@@ -2651,11 +2690,16 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
         "median_price":      overall_median,
         "price_90_high":     overall_90_high,
         "price_90_low":      overall_90_low,
-        # Chart data
         "fba_history":       fba_history,
         "fbm_history":       fbm_history,
         "bsr_history":       bsr_history,
+        "keepa_chart_url":   _chart_url,
     }
+    # _live SP-API data already fetched — only fill in gaps Keepa didn't cover
+    for _k, _v in _live.items():
+        if _keepa_resp.get(_k) is None:
+            _keepa_resp[_k] = _v
+    return _keepa_resp
 
 
 @app.get("/api/keepa/upc/{code}")
