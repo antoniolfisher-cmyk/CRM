@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi import FastAPI, Depends, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
@@ -2865,6 +2865,7 @@ async def amazon_oauth_callback(
     state: str = "",
     selling_partner_id: str = "",
     db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """
     Amazon redirects here after the seller authorizes the app.
@@ -2918,6 +2919,18 @@ async def amazon_oauth_callback(
         db.add(cred)
     db.commit()
 
+    # Fire initial data pull in the background so the redirect is instant
+    import amazon_sync as _amazon_sync
+    import asyncio as _asyncio
+
+    def _run_initial_pull(tid: int):
+        try:
+            _asyncio.run(_amazon_sync.initial_data_pull(tid))
+        except Exception as e:
+            log.error("Initial data pull failed for tenant %s: %s", tid, e)
+
+    background_tasks.add_task(_run_initial_pull, tenant_id)
+
     return RedirectResponse("/onboarding/amazon?connected=true")
 
 
@@ -2964,6 +2977,51 @@ def save_amazon_credentials(
     cred.connected_by  = current["sub"]
     db.commit()
     return {"ok": True}
+
+
+@app.post("/api/amazon/trigger-initial-sync")
+async def trigger_initial_sync(
+    background_tasks: BackgroundTasks,
+    current: dict = Depends(require_auth),
+):
+    """
+    Manually kick off the initial data pull (FBA inventory + Keepa enrichment).
+    Called by the Onboarding page after credentials are saved manually.
+    """
+    import amazon_sync as _amazon_sync
+    import asyncio as _asyncio
+    tid = current.get("tenant_id")
+    if not tid:
+        raise HTTPException(400, "No tenant ID in token")
+    if not _amazon_sync.configured(tid):
+        raise HTTPException(503, "Amazon credentials not configured for this tenant")
+
+    def _run(t_id: int):
+        try:
+            _asyncio.run(_amazon_sync.initial_data_pull(t_id))
+        except Exception as e:
+            log.error("Manual initial pull failed for tenant %s: %s", t_id, e)
+
+    background_tasks.add_task(_run, tid)
+    return {"ok": True, "message": "Initial data pull started in background"}
+
+
+@app.get("/api/onboarding/sync-status")
+def onboarding_sync_status(current: dict = Depends(require_auth)):
+    """
+    Poll this endpoint from the Onboarding page to show real-time
+    progress of the initial Amazon + Keepa data pull.
+    """
+    import amazon_sync as _amazon_sync
+    tid = current.get("tenant_id") or 0
+    state = _amazon_sync.get_sync_state(tid)
+    return {
+        "running":      state.get("running", False),
+        "last_sync_at": state.get("last_sync_at"),
+        "created":      state.get("created", 0),
+        "updated":      state.get("updated", 0),
+        "error":        state.get("error"),
+    }
 
 
 @app.get("/api/amazon/test")
@@ -3048,20 +3106,23 @@ async def _fetch_fba_inventory() -> list:
 @app.get("/api/amazon/inventory")
 async def get_amazon_inventory(current: dict = Depends(require_auth)):
     """Preview what's in FBA inventory before importing."""
-    if not _amazon_sp_configured():
+    tid = current.get("tenant_id")
+    import amazon_sync
+    if not amazon_sync.configured(tid):
         raise HTTPException(503, "Amazon SP-API credentials are not configured")
-    items = await _fetch_fba_inventory()
+    items = await amazon_sync._fetch_fba_inventory(tid)
     return {"count": len(items), "items": items}
 
 
 @app.post("/api/amazon/inventory/import")
 async def import_amazon_inventory(current: dict = Depends(require_auth)):
     """Import FBA inventory — delegates to amazon_sync module."""
+    tid = current.get("tenant_id")
     import amazon_sync
-    if not amazon_sync.configured():
+    if not amazon_sync.configured(tid):
         raise HTTPException(503, "Amazon SP-API credentials are not configured")
     try:
-        result = await amazon_sync.run_sync()
+        result = await amazon_sync.run_sync(tid)
         return {
             "imported": result["created"] + result["updated"],
             "created":  result["created"],
@@ -3075,23 +3136,25 @@ async def import_amazon_inventory(current: dict = Depends(require_auth)):
 @app.get("/api/amazon/inventory/sync-status")
 def amazon_inventory_sync_status(current: dict = Depends(require_auth)):
     """Return last sync timestamp and result for display on the Inventory page."""
+    tid = current.get("tenant_id")
     import amazon_sync
     return {
-        "configured": amazon_sync.configured(),
-        **amazon_sync.get_sync_state(),
+        "configured": amazon_sync.configured(tid),
+        **amazon_sync.get_sync_state(tid or 0),
     }
 
 
 @app.post("/api/amazon/inventory/sync-now")
 async def amazon_inventory_sync_now(current: dict = Depends(require_auth)):
     """Manually trigger an immediate Amazon inventory sync."""
+    tid = current.get("tenant_id")
     import amazon_sync
-    if not amazon_sync.configured():
+    if not amazon_sync.configured(tid):
         raise HTTPException(503, "Amazon SP-API credentials are not configured")
-    if amazon_sync.get_sync_state().get("running"):
+    if amazon_sync.get_sync_state(tid or 0).get("running"):
         raise HTTPException(409, "Sync already in progress")
     try:
-        return await amazon_sync.run_sync()
+        return await amazon_sync.run_sync(tid)
     except Exception as e:
         raise HTTPException(502, str(e))
 

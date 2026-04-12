@@ -1,74 +1,126 @@
 """
-Amazon FBA Inventory Sync — runs hourly via APScheduler.
+Amazon FBA Inventory Sync — multi-tenant, runs hourly via APScheduler.
 
-Pulls FBA inventory from Amazon SP-API and upserts into the CRM products table:
-  - Existing product (matched by ASIN): quantity updated.
-  - New ASIN: new Product created with status='approved' and date_sent_to_amazon set.
+For each tenant that has Amazon credentials stored in the DB, pulls FBA
+inventory from SP-API and upserts into the CRM products table:
+  - Existing product (matched by ASIN + tenant_id): quantity updated.
+  - New ASIN: new Product created with status='approved'.
 
-Required env vars (same as the rest of Amazon integration):
-  AMAZON_LWA_CLIENT_ID
-  AMAZON_LWA_CLIENT_SECRET
-  AMAZON_SP_REFRESH_TOKEN
-  AMAZON_SELLER_ID
-  AMAZON_MARKETPLACE_ID   (default: ATVPDKIKX0DER = US)
+Single-tenant fallback: if no DB credentials exist but env vars are set,
+uses env vars (backwards compatibility for self-hosted installs).
 """
 
 import os
 import asyncio
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
 from database import SessionLocal
 import models
 
 log = logging.getLogger(__name__)
 
-# ── Module-level state ──────────────────────────────────────────────────────────
-_sync_state: dict = {
-    "last_sync_at":  None,   # ISO string UTC
-    "created":       0,
-    "updated":       0,
-    "skipped":       0,
-    "error":         None,
-    "running":       False,
-}
-
-# ── Amazon SP-API helpers (self-contained, no main.py imports) ──────────────────
-
 _LWA_URL = "https://api.amazon.com/auth/o2/token"
-_SP_BASE  = (
-    "https://sandbox.sellingpartnerapi-na.amazon.com"
-    if os.getenv("AMAZON_SP_SANDBOX", "").lower() in ("1", "true", "yes")
-    else "https://sellingpartnerapi-na.amazon.com"
-)
-_MKT_ID  = os.getenv("AMAZON_MARKETPLACE_ID", "ATVPDKIKX0DER")
+
+# ── Per-tenant sync state keyed by tenant_id ───────────────────────────────────
+# tenant_id=0 is used for the legacy env-var single-tenant path
+_sync_states: dict[int, dict] = {}
+
+def _default_state() -> dict:
+    return {
+        "last_sync_at": None,
+        "created":      0,
+        "updated":      0,
+        "skipped":      0,
+        "error":        None,
+        "running":      False,
+    }
 
 
-def configured() -> bool:
+def get_sync_state(tenant_id: int = 0) -> dict:
+    return dict(_sync_states.get(tenant_id, _default_state()))
+
+
+# ── Credential resolution ──────────────────────────────────────────────────────
+
+def _sp_base(is_sandbox: bool = False) -> str:
+    sandbox = is_sandbox or os.getenv("AMAZON_SP_SANDBOX", "").lower() in ("1", "true", "yes")
+    return (
+        "https://sandbox.sellingpartnerapi-na.amazon.com"
+        if sandbox
+        else "https://sellingpartnerapi-na.amazon.com"
+    )
+
+
+def configured(tenant_id: Optional[int] = None) -> bool:
+    """
+    Returns True if Amazon SP-API is configured for the given tenant.
+    Falls back to env vars when tenant_id is None or 0 (legacy mode).
+    """
+    if tenant_id:
+        db = SessionLocal()
+        try:
+            cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
+            return bool(
+                cred and cred.sp_refresh_token
+                and (cred.lwa_client_id or os.getenv("AMAZON_LWA_CLIENT_ID", ""))
+                and (cred.lwa_client_secret or os.getenv("AMAZON_LWA_CLIENT_SECRET", ""))
+            )
+        finally:
+            db.close()
     return all(os.getenv(k, "").strip() for k in (
         "AMAZON_LWA_CLIENT_ID", "AMAZON_LWA_CLIENT_SECRET",
         "AMAZON_SP_REFRESH_TOKEN", "AMAZON_SELLER_ID",
     ))
 
 
-async def _get_access_token() -> str:
+async def _get_access_token_for_tenant(tenant_id: Optional[int] = None) -> tuple[str, str, str]:
+    """
+    Returns (access_token, marketplace_id, sp_base_url) for the given tenant.
+    Falls back to env vars for legacy single-tenant installs.
+    """
     import httpx
+
+    if tenant_id:
+        db = SessionLocal()
+        try:
+            cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
+            if cred and cred.sp_refresh_token:
+                client_id     = cred.lwa_client_id     or os.getenv("AMAZON_LWA_CLIENT_ID", "")
+                client_secret = cred.lwa_client_secret or os.getenv("AMAZON_LWA_CLIENT_SECRET", "")
+                refresh_token = cred.sp_refresh_token
+                mkt_id        = cred.marketplace_id    or os.getenv("AMAZON_MARKETPLACE_ID", "ATVPDKIKX0DER")
+                base          = _sp_base(cred.is_sandbox)
+            else:
+                raise RuntimeError(f"No Amazon credentials found for tenant {tenant_id}")
+        finally:
+            db.close()
+    else:
+        client_id     = os.getenv("AMAZON_LWA_CLIENT_ID", "")
+        client_secret = os.getenv("AMAZON_LWA_CLIENT_SECRET", "")
+        refresh_token = os.getenv("AMAZON_SP_REFRESH_TOKEN", "")
+        mkt_id        = os.getenv("AMAZON_MARKETPLACE_ID", "ATVPDKIKX0DER")
+        base          = _sp_base()
+
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.post(_LWA_URL, data={
             "grant_type":    "refresh_token",
-            "refresh_token": os.getenv("AMAZON_SP_REFRESH_TOKEN", ""),
-            "client_id":     os.getenv("AMAZON_LWA_CLIENT_ID", ""),
-            "client_secret": os.getenv("AMAZON_LWA_CLIENT_SECRET", ""),
+            "refresh_token": refresh_token,
+            "client_id":     client_id,
+            "client_secret": client_secret,
         })
     if r.status_code != 200:
         raise RuntimeError(f"Amazon LWA token error: {r.text[:200]}")
-    return r.json()["access_token"]
+    return r.json()["access_token"], mkt_id, base
 
 
-async def _fetch_fba_inventory() -> list:
-    """Return list of dicts with asin, product_name, seller_sku, quantity."""
+# ── FBA inventory fetch ────────────────────────────────────────────────────────
+
+async def _fetch_fba_inventory(tenant_id: Optional[int] = None) -> list:
+    """Return list of dicts: asin, product_name, seller_sku, quantity."""
     import httpx
-    token = await _get_access_token()
+    token, mkt_id, base = await _get_access_token_for_tenant(tenant_id)
     items = []
     next_token = None
 
@@ -76,20 +128,20 @@ async def _fetch_fba_inventory() -> list:
         while True:
             params = {
                 "granularityType": "Marketplace",
-                "granularityId":   _MKT_ID,
-                "marketplaceIds":  _MKT_ID,
+                "granularityId":   mkt_id,
+                "marketplaceIds":  mkt_id,
                 "details":         "true",
             }
             if next_token:
                 params["nextToken"] = next_token
 
             resp = await client.get(
-                f"{_SP_BASE}/fba/inventory/v1/summaries",
+                f"{base}/fba/inventory/v1/summaries",
                 headers={"x-amz-access-token": token},
                 params=params,
             )
             if resp.status_code != 200:
-                raise RuntimeError(f"Amazon FBA inventory error {resp.status_code}: {resp.text[:200]}")
+                raise RuntimeError(f"FBA inventory API {resp.status_code}: {resp.text[:200]}")
 
             data = resp.json()
             for s in data.get("payload", {}).get("inventorySummaries", []):
@@ -112,21 +164,26 @@ async def _fetch_fba_inventory() -> list:
     return items
 
 
-# ── Core sync logic ─────────────────────────────────────────────────────────────
+# ── Core sync logic ────────────────────────────────────────────────────────────
 
-async def run_sync() -> dict:
-    """Fetch FBA inventory and upsert into the products table. Returns result dict."""
-    global _sync_state
+async def run_sync(tenant_id: Optional[int] = None) -> dict:
+    """
+    Fetch FBA inventory and upsert into products table for the given tenant.
+    tenant_id=None uses env-var credentials (legacy single-tenant).
+    """
+    key = tenant_id or 0
+    if _sync_states.get(key, {}).get("running"):
+        raise RuntimeError("Sync already in progress")
 
-    if not configured():
-        raise RuntimeError("Amazon SP-API credentials are not configured")
+    state = _default_state()
+    state["running"] = True
+    _sync_states[key] = state
 
-    _sync_state["running"] = True
     db = SessionLocal()
     created = updated = skipped = 0
 
     try:
-        items = await _fetch_fba_inventory()
+        items = await _fetch_fba_inventory(tenant_id)
 
         for item in items:
             asin = (item.get("asin") or "").strip()
@@ -134,13 +191,18 @@ async def run_sync() -> dict:
                 skipped += 1
                 continue
 
-            existing = db.query(models.Product).filter(models.Product.asin == asin).first()
+            q = db.query(models.Product).filter(models.Product.asin == asin)
+            if tenant_id:
+                q = q.filter(models.Product.tenant_id == tenant_id)
+            existing = q.first()
+
             if existing:
                 existing.quantity = item["quantity"]
                 updated += 1
             else:
                 now = datetime.now(timezone.utc)
                 p = models.Product(
+                    tenant_id=tenant_id,
                     asin=asin,
                     product_name=item["product_name"] or asin,
                     quantity=item["quantity"],
@@ -162,35 +224,195 @@ async def run_sync() -> dict:
             "error":        None,
             "running":      False,
         }
-        _sync_state.update(result)
-        log.info("Amazon inventory sync complete — created=%d updated=%d skipped=%d", created, updated, skipped)
+        _sync_states[key] = result
+        log.info("Amazon sync tenant=%s — created=%d updated=%d skipped=%d", tenant_id, created, updated, skipped)
         return result
 
     except Exception as e:
-        _sync_state.update({
+        _sync_states[key] = {
+            **_default_state(),
             "last_sync_at": datetime.now(timezone.utc).isoformat(),
             "error":        str(e),
             "running":      False,
-        })
-        log.error("Amazon inventory sync failed: %s", e)
+        }
+        log.error("Amazon sync failed tenant=%s: %s", tenant_id, e)
         raise
     finally:
         db.close()
 
 
-def get_sync_state() -> dict:
-    return dict(_sync_state)
+# ── Keepa enrichment after initial sync ───────────────────────────────────────
 
+async def run_keepa_enrichment(tenant_id: Optional[int] = None, batch_size: int = 20) -> dict:
+    """
+    After FBA inventory is imported, look up every product with a missing
+    keepa_last_synced and enrich it with Keepa data (BSR, buy box, fees).
+    Runs in batches of batch_size to respect Keepa token limits.
+    """
+    import httpx
 
-# ── APScheduler entry point ─────────────────────────────────────────────────────
+    keepa_key = os.getenv("KEEPA_API_KEY", "")
+    if not keepa_key:
+        log.info("Keepa enrichment skipped — KEEPA_API_KEY not set")
+        return {"enriched": 0, "skipped": 0, "error": "KEEPA_API_KEY not set"}
 
-def scheduled_sync():
-    """Sync wrapper for APScheduler background thread."""
-    if not configured():
-        log.debug("Amazon sync skipped — SP-API not configured")
-        return
-    log.info("Amazon inventory scheduled sync starting…")
+    db = SessionLocal()
+    enriched = skipped = 0
     try:
-        asyncio.run(run_sync())
+        q = db.query(models.Product).filter(
+            models.Product.asin.isnot(None),
+            models.Product.keepa_last_synced.is_(None),
+        )
+        if tenant_id:
+            q = q.filter(models.Product.tenant_id == tenant_id)
+        products = q.all()
+
+        if not products:
+            return {"enriched": 0, "skipped": 0, "error": None}
+
+        # Process in batches
+        for i in range(0, len(products), batch_size):
+            batch = products[i:i + batch_size]
+            asins = [p.asin for p in batch if p.asin]
+            if not asins:
+                continue
+
+            try:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    r = await client.get(
+                        "https://api.keepa.com/product",
+                        params={
+                            "key":        keepa_key,
+                            "domain":     1,
+                            "asin":       ",".join(asins),
+                            "stats":      1,
+                            "buybox":     1,
+                            "rental":     0,
+                        },
+                    )
+                if r.status_code == 200:
+                    keepa_products = r.json().get("products", [])
+                    kp_by_asin = {kp.get("asin", ""): kp for kp in keepa_products}
+
+                    for product in batch:
+                        kp = kp_by_asin.get(product.asin)
+                        if kp:
+                            _apply_keepa_data(product, kp)
+                            enriched += 1
+                        else:
+                            skipped += 1
+                else:
+                    log.warning("Keepa batch error %s: %s", r.status_code, r.text[:200])
+                    skipped += len(batch)
+            except Exception as e:
+                log.warning("Keepa batch failed: %s", e)
+                skipped += len(batch)
+
+            # Small delay between batches to be kind to Keepa's rate limits
+            await asyncio.sleep(1)
+
+        db.commit()
+        log.info("Keepa enrichment tenant=%s — enriched=%d skipped=%d", tenant_id, enriched, skipped)
+        return {"enriched": enriched, "skipped": skipped, "error": None}
+
     except Exception as e:
-        log.error("Amazon scheduled sync error: %s", e)
+        log.error("Keepa enrichment failed tenant=%s: %s", tenant_id, e)
+        return {"enriched": enriched, "skipped": skipped, "error": str(e)}
+    finally:
+        db.close()
+
+
+def _apply_keepa_data(product, kp: dict) -> None:
+    """Write Keepa fields onto a Product ORM object (does not commit)."""
+    from datetime import timezone as _tz
+    stats = kp.get("stats") or {}
+
+    # Buy box price (in Keepa cents = actual cents / 100)
+    bb_raw = stats.get("buyBoxPrice", -1)
+    if bb_raw and bb_raw > 0:
+        product.buy_box_price = bb_raw / 100.0
+
+    # BSR
+    rank_list = kp.get("salesRanks") or {}
+    # salesRanks is a dict of category_id -> [rank1, time1, rank2, time2 ...]
+    # Pick whichever category has data
+    for cat_id, ranks in rank_list.items():
+        if ranks and len(ranks) >= 2:
+            product.keepa_bsr = ranks[-1]  # last rank value
+            break
+
+    # Category
+    categories = kp.get("categories") or []
+    if categories:
+        product.keepa_category = str(categories[0])
+
+    product.keepa_last_synced = datetime.now(_tz.utc)
+
+
+# ── Initial onboarding pull ────────────────────────────────────────────────────
+
+async def initial_data_pull(tenant_id: int) -> dict:
+    """
+    Called automatically after a tenant connects Amazon for the first time.
+    1. Syncs FBA inventory → products table
+    2. Enriches all new products with Keepa data (BSR, buy box, fees)
+    """
+    log.info("Starting initial data pull for tenant %s", tenant_id)
+    results = {"inventory": None, "keepa": None}
+
+    try:
+        results["inventory"] = await run_sync(tenant_id)
+        log.info("Initial inventory sync done: %s", results["inventory"])
+    except Exception as e:
+        log.error("Initial inventory sync failed for tenant %s: %s", tenant_id, e)
+        results["inventory"] = {"error": str(e)}
+
+    try:
+        results["keepa"] = await run_keepa_enrichment(tenant_id)
+        log.info("Initial Keepa enrichment done: %s", results["keepa"])
+    except Exception as e:
+        log.error("Initial Keepa enrichment failed for tenant %s: %s", tenant_id, e)
+        results["keepa"] = {"error": str(e)}
+
+    return results
+
+
+# ── APScheduler entry points ───────────────────────────────────────────────────
+
+def scheduled_sync_all():
+    """
+    Called by APScheduler hourly.
+    Syncs every tenant that has Amazon credentials configured.
+    """
+    db = SessionLocal()
+    try:
+        tenant_ids = [
+            row.tenant_id
+            for row in db.query(models.AmazonCredential).filter(
+                models.AmazonCredential.sp_refresh_token.isnot(None)
+            ).all()
+        ]
+    finally:
+        db.close()
+
+    if not tenant_ids:
+        # Legacy env-var mode
+        if configured():
+            log.info("Amazon scheduled sync (env-var mode) starting…")
+            try:
+                asyncio.run(run_sync(None))
+            except Exception as e:
+                log.error("Amazon scheduled sync error: %s", e)
+        return
+
+    for tid in tenant_ids:
+        log.info("Amazon scheduled sync starting for tenant %s", tid)
+        try:
+            asyncio.run(run_sync(tid))
+        except Exception as e:
+            log.error("Amazon scheduled sync error tenant=%s: %s", tid, e)
+
+
+# Keep old name for backward compatibility with notifications.py / main.py scheduler setup
+def scheduled_sync():
+    scheduled_sync_all()

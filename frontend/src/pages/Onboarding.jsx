@@ -1,44 +1,76 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 
 export default function Onboarding() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const connected = searchParams.get('connected') === 'true'
-  const error     = searchParams.get('error')
+  const justConnected = searchParams.get('connected') === 'true'
+  const error         = searchParams.get('error')
 
-  const [oauthUrl, setOauthUrl]     = useState('')
-  const [status, setStatus]         = useState(null)   // amazon credentials status
-  const [saving, setSaving]         = useState(false)
-  const [saveError, setSaveError]   = useState('')
-  const [saveOk, setSaveOk]         = useState(false)
-  const [tab, setTab]               = useState('oauth')  // 'oauth' | 'manual'
-  const [manual, setManual]         = useState({
-    lwa_client_id: '',
-    lwa_client_secret: '',
-    sp_refresh_token: '',
-    seller_id: '',
-    marketplace_id: 'ATVPDKIKX0DER',
-    is_sandbox: false,
+  const [oauthUrl, setOauthUrl]   = useState('')
+  const [status, setStatus]       = useState(null)
+  const [saving, setSaving]       = useState(false)
+  const [saveError, setSaveError] = useState('')
+  const [tab, setTab]             = useState('oauth')
+  const [manual, setManual]       = useState({
+    lwa_client_id: '', lwa_client_secret: '', sp_refresh_token: '',
+    seller_id: '', marketplace_id: 'ATVPDKIKX0DER', is_sandbox: false,
   })
 
+  // Sync progress state
+  const [syncing, setSyncing]     = useState(false)
+  const [syncDone, setSyncDone]   = useState(false)
+  const [syncResult, setSyncResult] = useState(null)
+  const pollRef = useRef(null)
+
   useEffect(() => {
-    // Get OAuth URL
     api.getAmazonOAuthUrl().then(r => setOauthUrl(r.url)).catch(() => {})
-    // Get current connection status
     api.getAmazonCredentials().then(setStatus).catch(() => {})
-  }, [connected])
+  }, [justConnected])
+
+  // When OAuth just completed, start polling sync status
+  useEffect(() => {
+    if (justConnected) {
+      setSyncing(true)
+      startPolling()
+    }
+    return () => clearInterval(pollRef.current)
+  }, [justConnected]) // eslint-disable-line
+
+  function startPolling() {
+    pollRef.current = setInterval(async () => {
+      try {
+        const s = await api.getOnboardingSyncStatus()
+        setSyncResult(s)
+        if (!s.running && s.last_sync_at) {
+          clearInterval(pollRef.current)
+          setSyncing(false)
+          setSyncDone(true)
+        }
+      } catch {
+        // keep polling
+      }
+    }, 2000)
+    // Stop after 3 minutes max
+    setTimeout(() => {
+      clearInterval(pollRef.current)
+      setSyncing(false)
+      setSyncDone(true)
+    }, 180_000)
+  }
 
   const saveManual = async (e) => {
     e.preventDefault()
     setSaving(true)
     setSaveError('')
-    setSaveOk(false)
     try {
       await api.saveAmazonCredentials(manual)
-      setSaveOk(true)
-      setTimeout(() => navigate('/'), 1500)
+      // Trigger initial pull in background
+      await api.triggerInitialSync().catch(() => {})
+      setSyncing(true)
+      startPolling()
+      setStatus({ connected: true })
     } catch (err) {
       setSaveError(err.message)
     } finally {
@@ -46,24 +78,86 @@ export default function Onboarding() {
     }
   }
 
-  if (connected || (status && status.connected)) {
+  // Show connected + syncing / done screen
+  if (justConnected || (status && status.connected)) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
-        <div className="w-full max-w-md text-center">
-          <div className="w-20 h-20 bg-green-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-lg">
-            <CheckIcon className="w-10 h-10 text-white" />
+        <div className="w-full max-w-md">
+          <div className="bg-white rounded-2xl shadow-2xl p-8 text-center">
+            {/* Icon */}
+            <div className={`w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-5 shadow-lg transition-colors ${
+              syncDone ? 'bg-green-500' : syncing ? 'bg-orange-500' : 'bg-green-500'
+            }`}>
+              {syncing
+                ? <SpinnerIcon className="w-10 h-10 text-white animate-spin" />
+                : <CheckIcon className="w-10 h-10 text-white" />
+              }
+            </div>
+
+            <h1 className="text-2xl font-bold text-gray-900 mb-1">
+              {syncDone ? 'All set!' : syncing ? 'Pulling your data…' : 'Amazon Connected!'}
+            </h1>
+
+            {syncing && (
+              <p className="text-gray-500 text-sm mb-4">
+                We're importing your FBA inventory and enriching it with Keepa data.
+                This takes about 30–60 seconds.
+              </p>
+            )}
+
+            {syncResult && (
+              <div className="bg-slate-50 rounded-xl p-4 text-left mb-5 space-y-2">
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Sync Progress</p>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-600">New products imported</span>
+                  <span className="font-semibold text-gray-900">{syncResult.created ?? '—'}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-600">Existing products updated</span>
+                  <span className="font-semibold text-gray-900">{syncResult.updated ?? '—'}</span>
+                </div>
+                {syncResult.error && (
+                  <p className="text-red-500 text-xs mt-1">{syncResult.error}</p>
+                )}
+                {syncResult.running && (
+                  <div className="flex items-center gap-2 text-orange-600 text-xs mt-1">
+                    <SpinnerIcon className="w-3 h-3 animate-spin" />
+                    Syncing…
+                  </div>
+                )}
+              </div>
+            )}
+
+            {!syncing && (
+              <>
+                {status?.seller_id && (
+                  <p className="text-gray-500 text-sm mb-1">
+                    Seller ID: <span className="text-gray-800 font-mono">{status.seller_id}</span>
+                  </p>
+                )}
+                <p className="text-gray-500 text-sm mb-6">
+                  {syncDone
+                    ? 'Your inventory and Keepa data are ready on the dashboard.'
+                    : 'Your live data will now appear on the dashboard.'}
+                </p>
+                <button
+                  onClick={() => navigate('/')}
+                  className="px-8 py-3 bg-orange-500 hover:bg-orange-600 text-white rounded-xl font-semibold transition-colors w-full"
+                >
+                  Go to Dashboard →
+                </button>
+              </>
+            )}
+
+            {syncing && (
+              <button
+                onClick={() => navigate('/')}
+                className="mt-4 text-sm text-gray-400 hover:text-gray-600"
+              >
+                Continue to dashboard while syncing →
+              </button>
+            )}
           </div>
-          <h1 className="text-2xl font-bold text-white mb-2">Amazon Connected!</h1>
-          <p className="text-slate-400 mb-2">
-            Seller ID: <span className="text-white font-mono">{status?.seller_id || '—'}</span>
-          </p>
-          <p className="text-slate-400 mb-6">Your live data will now appear on the dashboard.</p>
-          <button
-            onClick={() => navigate('/')}
-            className="px-8 py-3 bg-orange-500 hover:bg-orange-600 text-white rounded-xl font-semibold transition-colors"
-          >
-            Go to Dashboard →
-          </button>
         </div>
       </div>
     )
@@ -95,6 +189,20 @@ export default function Onboarding() {
             </div>
           )}
 
+          {/* What gets pulled */}
+          <div className="grid grid-cols-3 gap-2 mb-5">
+            {[
+              { label: 'FBA Inventory', desc: 'All your live stock' },
+              { label: 'Keepa Data', desc: 'BSR, buy box, fees' },
+              { label: 'Live Orders', desc: 'Sales & open orders' },
+            ].map(item => (
+              <div key={item.label} className="bg-slate-50 rounded-lg p-3 text-center">
+                <p className="text-xs font-semibold text-gray-700">{item.label}</p>
+                <p className="text-xs text-gray-400 mt-0.5">{item.desc}</p>
+              </div>
+            ))}
+          </div>
+
           {/* Tab selector */}
           <div className="flex border border-gray-200 rounded-lg p-1 mb-5">
             <button
@@ -122,8 +230,8 @@ export default function Onboarding() {
                 <ol className="space-y-1.5 text-sm text-orange-700">
                   <li>1. Click the button below</li>
                   <li>2. You'll be taken to Amazon Seller Central</li>
-                  <li>3. Approve the connection (takes ~10 seconds)</li>
-                  <li>4. You'll be redirected back automatically</li>
+                  <li>3. Approve the connection (~10 seconds)</li>
+                  <li>4. We'll automatically pull all your data</li>
                 </ol>
               </div>
 
@@ -142,10 +250,7 @@ export default function Onboarding() {
                 </a>
               )}
 
-              <button
-                onClick={() => setTab('manual')}
-                className="w-full text-sm text-gray-400 hover:text-gray-600"
-              >
+              <button onClick={() => setTab('manual')} className="w-full text-sm text-gray-400 hover:text-gray-600">
                 Have existing credentials? Use Manual Entry →
               </button>
             </div>
@@ -157,11 +262,11 @@ export default function Onboarding() {
                 Find these in <strong>Seller Central → Apps & Services → Develop Apps → your app</strong>
               </div>
               {[
-                { key: 'lwa_client_id',     label: 'LWA Client ID',     ph: 'amzn1.application-oa2-client.xxx' },
-                { key: 'lwa_client_secret', label: 'LWA Client Secret', ph: '••••••••••••' },
+                { key: 'lwa_client_id',     label: 'LWA Client ID',        ph: 'amzn1.application-oa2-client.xxx' },
+                { key: 'lwa_client_secret', label: 'LWA Client Secret',    ph: '••••••••••••' },
                 { key: 'sp_refresh_token',  label: 'SP-API Refresh Token', ph: 'Atzr|...' },
-                { key: 'seller_id',         label: 'Seller ID',         ph: 'A1XXXXXXXXXXXXX' },
-                { key: 'marketplace_id',    label: 'Marketplace ID',    ph: 'ATVPDKIKX0DER' },
+                { key: 'seller_id',         label: 'Seller ID',            ph: 'A1XXXXXXXXXXXXX' },
+                { key: 'marketplace_id',    label: 'Marketplace ID',       ph: 'ATVPDKIKX0DER' },
               ].map(f => (
                 <div key={f.key}>
                   <label className="label text-xs">{f.label}</label>
@@ -185,13 +290,12 @@ export default function Onboarding() {
                 Use Sandbox environment
               </label>
               {saveError && <p className="text-red-600 text-sm">{saveError}</p>}
-              {saveOk    && <p className="text-green-600 text-sm">✓ Credentials saved! Redirecting…</p>}
               <button
                 type="submit"
                 disabled={saving}
                 className="w-full py-2.5 bg-orange-500 hover:bg-orange-600 text-white rounded-lg font-semibold text-sm disabled:opacity-50 transition-colors"
               >
-                {saving ? 'Saving…' : 'Save Credentials'}
+                {saving ? 'Saving & starting sync…' : 'Save & Pull My Data'}
               </button>
             </form>
           )}
@@ -212,6 +316,14 @@ export default function Onboarding() {
 
 function CheckIcon({ className }) {
   return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+}
+function SpinnerIcon({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+    </svg>
+  )
 }
 function RocketIcon({ className }) {
   return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
