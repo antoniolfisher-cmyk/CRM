@@ -267,7 +267,11 @@ export default function Onboarding() {
 
           {error && (
             <div className="mb-4 bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">
-              Connection failed: <strong>{error.replace(/_/g, ' ')}</strong>. Please try again.
+              <p><strong>Connection failed:</strong> {error.replace(/_/g, ' ')}</p>
+              {searchParams.get('detail') && (
+                <p className="mt-1 text-xs font-mono break-all opacity-80">{searchParams.get('detail')}</p>
+              )}
+              <p className="mt-1 text-xs opacity-70">Check Railway logs for the full error.</p>
             </div>
           )}
 

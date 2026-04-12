@@ -3142,7 +3142,7 @@ async def amazon_oauth_callback(
     state: str = "",
     selling_partner_id: str = "",
     db: Session = Depends(get_db),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
+    background_tasks: BackgroundTasks = None,
 ):
     """
     Amazon redirects here after the seller authorizes the app.
@@ -3151,95 +3151,112 @@ async def amazon_oauth_callback(
     """
     import httpx as _httpx
 
-    if not spapi_oauth_code:
-        return RedirectResponse("/onboarding/amazon?error=no_code")
+    if background_tasks is None:
+        background_tasks = BackgroundTasks()
 
-    tenant_id = int(state) if state.isdigit() else 1
-    tenant    = db.query(models.Tenant).filter_by(id=tenant_id).first()
-    if not tenant:
-        # Fall back to first available tenant (handles bootstrap race condition)
-        tenant = db.query(models.Tenant).order_by(models.Tenant.id.asc()).first()
-    if not tenant:
-        # No tenants at all — run bootstrap and retry
-        from auth import ensure_bootstrap_admin
-        ensure_bootstrap_admin(db)
-        tenant = db.query(models.Tenant).order_by(models.Tenant.id.asc()).first()
-    if not tenant:
-        return RedirectResponse("/onboarding/amazon?error=invalid_tenant")
-    tenant_id = tenant.id
-
-    # Exchange code for refresh token
     try:
+        if not spapi_oauth_code:
+            return RedirectResponse("/onboarding/amazon?error=no_code")
+
+        # ── Resolve tenant ────────────────────────────────────────────────────
+        tenant_id = int(state) if state.isdigit() else 1
+        tenant    = db.query(models.Tenant).filter_by(id=tenant_id).first()
+        if not tenant:
+            tenant = db.query(models.Tenant).order_by(models.Tenant.id.asc()).first()
+        if not tenant:
+            from auth import ensure_bootstrap_admin
+            ensure_bootstrap_admin(db)
+            tenant = db.query(models.Tenant).order_by(models.Tenant.id.asc()).first()
+        if not tenant:
+            return RedirectResponse("/onboarding/amazon?error=invalid_tenant")
+        tenant_id = tenant.id
+
+        # ── Exchange auth code for refresh token ──────────────────────────────
+        lwa_client_id     = os.getenv("AMAZON_LWA_CLIENT_ID", "")
+        lwa_client_secret = os.getenv("AMAZON_LWA_CLIENT_SECRET", "")
+        if not lwa_client_id or not lwa_client_secret:
+            log.error("Amazon OAuth: AMAZON_LWA_CLIENT_ID or AMAZON_LWA_CLIENT_SECRET not set")
+            return RedirectResponse("/onboarding/amazon?error=missing_credentials")
+
         async with _httpx.AsyncClient(timeout=15) as client:
             r = await client.post(
                 _AMAZON_LWA_URL,
                 data={
-                    "grant_type":   "authorization_code",
-                    "code":          spapi_oauth_code,
-                    "redirect_uri":  _get_oauth_callback_url(),
-                    "client_id":     os.getenv("AMAZON_LWA_CLIENT_ID", ""),
-                    "client_secret": os.getenv("AMAZON_LWA_CLIENT_SECRET", ""),
+                    "grant_type":    "authorization_code",
+                    "code":           spapi_oauth_code,
+                    "redirect_uri":   _get_oauth_callback_url(),
+                    "client_id":      lwa_client_id,
+                    "client_secret":  lwa_client_secret,
                 },
             )
         if r.status_code != 200:
-            return RedirectResponse(f"/onboarding/amazon?error=token_exchange_failed")
-        tokens = r.json()
+            log.error("Amazon token exchange failed: %s %s", r.status_code, r.text[:300])
+            err = urllib.parse.quote(r.text[:120])
+            return RedirectResponse(f"/onboarding/amazon?error=token_exchange_failed&detail={err}")
+
+        tokens        = r.json()
         refresh_token = tokens.get("refresh_token", "")
-    except Exception as e:
-        return RedirectResponse(f"/onboarding/amazon?error=exception")
+        if not refresh_token:
+            return RedirectResponse("/onboarding/amazon?error=no_refresh_token")
 
-    # Upsert credential record
-    cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
-    if cred:
-        cred.sp_refresh_token = refresh_token
-        cred.seller_id        = selling_partner_id or cred.seller_id
-        cred.connected_at     = datetime.utcnow()
-    else:
-        cred = models.AmazonCredential(
-            tenant_id=tenant_id,
-            sp_refresh_token=refresh_token,
-            seller_id=selling_partner_id,
-            marketplace_id=_AMAZON_MKT_ID,
-            connected_at=datetime.utcnow(),
-        )
-        db.add(cred)
-    db.commit()
-    db.refresh(cred)
+        # ── Upsert credential record ──────────────────────────────────────────
+        cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
+        if cred:
+            cred.sp_refresh_token = refresh_token
+            cred.seller_id        = selling_partner_id or cred.seller_id
+            cred.connected_at     = datetime.utcnow()
+        else:
+            cred = models.AmazonCredential(
+                tenant_id=tenant_id,
+                sp_refresh_token=refresh_token,
+                seller_id=selling_partner_id,
+                marketplace_id=_AMAZON_MKT_ID,
+                connected_at=datetime.utcnow(),
+            )
+            db.add(cred)
+        db.commit()
+        db.refresh(cred)
 
-    # Fetch the seller's Amazon store name and save it
-    try:
-        store_name = await _fetch_amazon_store_name(cred)
-        if not store_name:
-            _tenant = db.query(models.Tenant).filter_by(id=tenant_id).first()
-            store_name = _tenant.name if _tenant else ""
-        if store_name:
-            cred.store_name = store_name
-            db.commit()
-    except Exception as _e:
-        log.warning("Could not fetch Amazon store name for tenant %s: %s", tenant_id, _e)
+        # ── Fetch store name (best-effort) ────────────────────────────────────
         try:
-            _tenant = db.query(models.Tenant).filter_by(id=tenant_id).first()
-            if _tenant and not cred.store_name:
-                cred.store_name = _tenant.name
+            store_name = await _fetch_amazon_store_name(cred)
+            if not store_name:
+                store_name = tenant.name or ""
+            if store_name:
+                cred.store_name = store_name
                 db.commit()
-        except Exception:
-            pass
+        except Exception as _se:
+            log.warning("Could not fetch store name for tenant %s: %s", tenant_id, _se)
+            try:
+                if not cred.store_name:
+                    cred.store_name = tenant.name or ""
+                    db.commit()
+            except Exception:
+                pass
 
-    # Fire initial data pull in the background so the redirect is instant
-    import amazon_sync as _amazon_sync
-    import asyncio as _asyncio
+        # ── Queue initial data pull ───────────────────────────────────────────
+        import amazon_sync as _amazon_sync
+        import asyncio as _asyncio
 
-    def _run_initial_pull(tid: int):
-        try:
-            _asyncio.run(_amazon_sync.initial_data_pull(tid))
-        except Exception as e:
-            log.error("Initial data pull failed for tenant %s: %s", tid, e)
+        def _run_initial_pull(tid: int):
+            try:
+                _asyncio.run(_amazon_sync.initial_data_pull(tid))
+            except Exception as _pe:
+                log.error("Initial data pull failed for tenant %s: %s", tid, _pe)
 
-    background_tasks.add_task(_run_initial_pull, tenant_id)
+        background_tasks.add_task(_run_initial_pull, tenant_id)
 
-    seller_id_param  = cred.seller_id or ''
-    store_name_param = urllib.parse.quote(cred.store_name or '')
-    return RedirectResponse(f"/onboarding/amazon?confirm=true&seller_id={seller_id_param}&store_name={store_name_param}")
+        seller_id_param  = cred.seller_id or ''
+        store_name_param = urllib.parse.quote(cred.store_name or '')
+        return RedirectResponse(
+            f"/onboarding/amazon?confirm=true&seller_id={seller_id_param}&store_name={store_name_param}"
+        )
+
+    except Exception as _top:
+        # Catch-all: never return a 500, always redirect with the error message
+        log.exception("Unhandled error in amazon_oauth_callback: %s", _top)
+        err = urllib.parse.quote(str(_top)[:150])
+        return RedirectResponse(f"/onboarding/amazon?error=internal&detail={err}")
 
 
 @app.get("/api/amazon/credentials")
