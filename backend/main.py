@@ -3242,14 +3242,14 @@ async def _get_amazon_access_token() -> str:
 
 def _get_tenant_amazon_creds(tenant_id: int, db: Session) -> models.AmazonCredential:
     """
-    Return AmazonCredential for tenant. Falls back to env vars for tenant 1
-    when no DB record exists (upgrade path).
+    Return AmazonCredential for tenant. Falls back to env vars for any tenant
+    when no DB record exists (single-tenant / env-var mode).
     """
     cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
-    if not cred and tenant_id == 1 and _amazon_sp_configured():
-        # Auto-seed from env vars on first use
+    if not cred and _amazon_sp_configured():
+        # Auto-seed from env vars on first use (works for any tenant_id)
         cred = models.AmazonCredential(
-            tenant_id=1,
+            tenant_id=tenant_id,
             lwa_client_id=os.getenv("AMAZON_LWA_CLIENT_ID"),
             lwa_client_secret=os.getenv("AMAZON_LWA_CLIENT_SECRET"),
             sp_refresh_token=os.getenv("AMAZON_SP_REFRESH_TOKEN"),
