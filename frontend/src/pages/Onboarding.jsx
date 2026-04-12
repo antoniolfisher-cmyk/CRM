@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
+import { useAuth } from '../context/AuthContext'
 
 export default function Onboarding() {
   const navigate = useNavigate()
+  const { isAdmin } = useAuth()
   const [searchParams] = useSearchParams()
   const needsConfirm = searchParams.get('confirm') === 'true'
   const urlSellerId  = searchParams.get('seller_id') || ''
@@ -31,9 +33,12 @@ export default function Onboarding() {
   const [savingStore, setSavingStore] = useState(false)
 
   useEffect(() => {
-    api.getAmazonOAuthUrl().then(r => setOauthUrl(r.url)).catch(() => {})
+    // Only admins can initiate Amazon OAuth; non-admins get 403, no URL needed
+    if (isAdmin) {
+      api.getAmazonOAuthUrl().then(r => setOauthUrl(r.url)).catch(() => {})
+    }
     api.getAmazonCredentials().then(setStatus).catch(() => {})
-  }, [])
+  }, [isAdmin])
 
   function startPolling() {
     pollRef.current = setInterval(async () => {
@@ -68,15 +73,24 @@ export default function Onboarding() {
   const handleWrongAccount = async () => {
     setDisconnecting(true)
     try {
-      // Save blank credentials to clear the stored token
-      await api.saveAmazonCredentials({
-        sp_refresh_token: '',
-        seller_id: '',
-        store_name: '',
-      }).catch(() => {})
+      await api.disconnectAmazon().catch(() => {})
     } finally {
       setDisconnecting(false)
       navigate('/onboarding/amazon')
+    }
+  }
+
+  // Disconnect from the "already connected" screen
+  const handleDisconnect = async () => {
+    if (!window.confirm('Disconnect your Amazon account? Your product records will not be deleted. You can reconnect at any time.')) return
+    setDisconnecting(true)
+    try {
+      await api.disconnectAmazon()
+      setStatus(prev => ({ ...prev, connected: false, seller_id: null }))
+    } catch (e) {
+      alert('Failed to disconnect: ' + e.message)
+    } finally {
+      setDisconnecting(false)
     }
   }
 
@@ -259,12 +273,23 @@ export default function Onboarding() {
             )}
 
             {!syncing && (
-              <button
-                onClick={() => navigate('/')}
-                className="w-full py-3 bg-orange-500 hover:bg-orange-600 text-white rounded-xl font-semibold transition-colors"
-              >
-                Go to Dashboard →
-              </button>
+              <div className="space-y-3">
+                <button
+                  onClick={() => navigate('/')}
+                  className="w-full py-3 bg-orange-500 hover:bg-orange-600 text-white rounded-xl font-semibold transition-colors"
+                >
+                  Go to Dashboard →
+                </button>
+                {isAdmin && (
+                  <button
+                    onClick={handleDisconnect}
+                    disabled={disconnecting}
+                    className="w-full py-2.5 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-xl border border-red-200 transition-colors disabled:opacity-50"
+                  >
+                    {disconnecting ? 'Disconnecting…' : 'Disconnect Amazon account'}
+                  </button>
+                )}
+              </div>
             )}
             {syncing && (
               <button onClick={() => navigate('/')} className="mt-4 text-sm text-gray-400 hover:text-gray-600">
@@ -352,9 +377,13 @@ export default function Onboarding() {
                 ))}
               </div>
 
-              {!oauthUrl ? (
+              {!isAdmin ? (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-800">
+                  <strong>Admin access required.</strong> Only workspace admins can connect an Amazon account. Ask your workspace admin to complete this step.
+                </div>
+              ) : !oauthUrl ? (
                 <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-700">
-                  <strong>OAuth not configured.</strong> Use Manual Entry below.
+                  <strong>OAuth not configured.</strong> Use Manual Entry below, or ask your platform admin to set <code>AMAZON_SP_APP_ID</code> in Railway Variables.
                 </div>
               ) : (
                 <a href={oauthUrl}

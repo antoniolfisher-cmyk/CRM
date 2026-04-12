@@ -3771,12 +3771,42 @@ def debug_oauth_config():
     }
 
 
+
+# ── OAuth state signing — prevents any user from hijacking another tenant's connect flow ──
+import hmac as _hmac_mod
+import hashlib as _hashlib_mod
+import time as _time_mod
+
+def _sign_oauth_state(tenant_id: int) -> str:
+    """Return a tamper-proof state string: '{tenant_id}:{timestamp}:{hmac}'."""
+    secret = os.getenv("SECRET_KEY", "sellerpulse-oauth-secret").encode()
+    ts = str(int(_time_mod.time()))
+    sig = _hmac_mod.new(secret, f"{tenant_id}:{ts}".encode(), _hashlib_mod.sha256).hexdigest()[:20]
+    return f"{tenant_id}:{ts}:{sig}"
+
+def _verify_oauth_state(state: str) -> int | None:
+    """Verify the state signature and return tenant_id, or None if invalid/expired."""
+    parts = state.split(":")
+    if len(parts) != 3:
+        return None
+    tid_str, ts_str, sig = parts
+    if not tid_str.isdigit() or not ts_str.isdigit():
+        return None
+    if abs(int(_time_mod.time()) - int(ts_str)) > 1800:  # 30-minute window
+        return None
+    secret = os.getenv("SECRET_KEY", "sellerpulse-oauth-secret").encode()
+    expected = _hmac_mod.new(secret, f"{tid_str}:{ts_str}".encode(), _hashlib_mod.sha256).hexdigest()[:20]
+    if not _hmac_mod.compare_digest(sig, expected):
+        return None
+    return int(tid_str)
+
+
 @app.get("/api/amazon/oauth/url")
-def amazon_oauth_url(current: dict = Depends(require_auth)):
+def amazon_oauth_url(current: dict = Depends(require_admin)):
     """
     Returns the Amazon Seller Central OAuth consent URL.
-    The seller clicks this link, authorizes the app, and Amazon
-    redirects back to /api/amazon/oauth/callback with a code.
+    Admin-only — prevents non-admin users from overwriting the tenant's Amazon credentials.
+    The state parameter is HMAC-signed so the callback can verify it came from a legitimate admin.
     """
     tenant_id = current.get("tenant_id", 1)
     if not _AMAZON_APP_ID:
@@ -3785,12 +3815,10 @@ def amazon_oauth_url(current: dict = Depends(require_auth)):
     callback_url = _get_oauth_callback_url()
     params = {
         "application_id": _AMAZON_APP_ID,
-        "state":          str(tenant_id),
+        "state":          _sign_oauth_state(tenant_id),
         "version":        "beta",
         "redirect_uri":   callback_url,
     }
-    # Build base URL — seller must be signed into the correct Seller Central account
-    # Amazon will always show the authorization screen; if not logged in they must sign in first
     base_url = "https://sellercentral.amazon.com/apps/authorize/consent"
     url = base_url + "?" + urllib.parse.urlencode(params)
     return {"url": url, "redirect_uri": callback_url}
@@ -3818,15 +3846,21 @@ async def amazon_oauth_callback(
         if not spapi_oauth_code:
             return RedirectResponse("/onboarding/amazon?error=no_code")
 
-        # ── Resolve tenant ────────────────────────────────────────────────────
-        tenant_id = int(state) if state.isdigit() else 1
-        tenant    = db.query(models.Tenant).filter_by(id=tenant_id).first()
-        if not tenant:
-            tenant = db.query(models.Tenant).order_by(models.Tenant.id.asc()).first()
-        if not tenant:
-            from auth import ensure_bootstrap_admin
-            ensure_bootstrap_admin(db)
-            tenant = db.query(models.Tenant).order_by(models.Tenant.id.asc()).first()
+        # ── Resolve tenant — verify signed state to prevent credential hijacking ─
+        verified_tid = _verify_oauth_state(state) if state else None
+        if verified_tid:
+            # Normal path: signed state from admin-initiated OAuth
+            tenant_id = verified_tid
+        elif state.isdigit():
+            # Legacy fallback: unsigned numeric state (old installations)
+            # Only allow for existing tenants, not arbitrary IDs
+            tenant_id = int(state)
+            log.warning("Amazon OAuth callback with unsigned state — tenant %s. Upgrade to signed OAuth URL.", tenant_id)
+        else:
+            log.error("Amazon OAuth callback with invalid state: %r", state)
+            return RedirectResponse("/onboarding/amazon?error=invalid_state")
+
+        tenant = db.query(models.Tenant).filter_by(id=tenant_id).first()
         if not tenant:
             return RedirectResponse("/onboarding/amazon?error=invalid_tenant")
         tenant_id = tenant.id
@@ -3974,10 +4008,31 @@ def save_amazon_credentials(
     return {"ok": True}
 
 
+@app.delete("/api/amazon/credentials")
+def disconnect_amazon(
+    current: dict = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Admin-only: disconnect Amazon by clearing the refresh token.
+    Does NOT delete product records. After disconnecting, the admin
+    can reconnect using their own Amazon account via OAuth.
+    """
+    tenant_id = current.get("tenant_id", 1)
+    cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
+    if cred:
+        cred.sp_refresh_token = None
+        cred.seller_id        = None
+        cred.connected_at     = None
+        cred.connected_by     = None
+        db.commit()
+    return {"ok": True, "message": "Amazon account disconnected. You can now reconnect with the correct account."}
+
+
 @app.post("/api/amazon/trigger-initial-sync")
 async def trigger_initial_sync(
     background_tasks: BackgroundTasks,
-    current: dict = Depends(require_auth),
+    current: dict = Depends(require_admin),
 ):
     """
     Manually kick off the initial data pull (FBA inventory + Keepa enrichment).

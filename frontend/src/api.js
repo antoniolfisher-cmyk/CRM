@@ -42,6 +42,7 @@ export const api = {
   getAmazonOAuthUrl: () => req('GET', '/amazon/oauth/url'),
   getAmazonCredentials: () => req('GET', '/amazon/credentials'),
   saveAmazonCredentials: (data) => req('PUT', '/amazon/credentials', data),
+  disconnectAmazon: () => req('DELETE', '/amazon/credentials'),
   triggerInitialSync: () => req('POST', '/amazon/trigger-initial-sync', {}),
   getOnboardingSyncStatus: () => req('GET', '/onboarding/sync-status'),
 
