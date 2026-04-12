@@ -2914,11 +2914,14 @@ def amazon_oauth_url(current: dict = Depends(require_auth)):
     callback_url = _get_oauth_callback_url()
     params = {
         "application_id": _AMAZON_APP_ID,
-        "state": str(tenant_id),
-        "version": "beta",
-        "redirect_uri": callback_url,
+        "state":          str(tenant_id),
+        "version":        "beta",
+        "redirect_uri":   callback_url,
     }
-    url = "https://sellercentral.amazon.com/apps/authorize/consent?" + urllib.parse.urlencode(params)
+    # Build base URL — seller must be signed into the correct Seller Central account
+    # Amazon will always show the authorization screen; if not logged in they must sign in first
+    base_url = "https://sellercentral.amazon.com/apps/authorize/consent"
+    url = base_url + "?" + urllib.parse.urlencode(params)
     return {"url": url, "redirect_uri": callback_url}
 
 
@@ -3026,7 +3029,9 @@ async def amazon_oauth_callback(
 
     background_tasks.add_task(_run_initial_pull, tenant_id)
 
-    return RedirectResponse("/onboarding/amazon?connected=true")
+    seller_id_param  = cred.seller_id or ''
+    store_name_param = urllib.parse.quote(cred.store_name or '')
+    return RedirectResponse(f"/onboarding/amazon?confirm=true&seller_id={seller_id_param}&store_name={store_name_param}")
 
 
 @app.get("/api/amazon/credentials")
