@@ -3254,8 +3254,10 @@ def _get_tenant_amazon_creds(tenant_id: int, db: Session) -> models.AmazonCreden
         _lwa_secret = os.getenv("AMAZON_LWA_CLIENT_SECRET", "").strip()
         _refresh    = os.getenv("AMAZON_SP_REFRESH_TOKEN", "").strip()
         if _lwa_id and _lwa_secret and _refresh:
-            # Auto-seed from env vars on first use (works for any tenant_id)
-            cred = models.AmazonCredential(
+            # Return a transient (non-persisted) credential built from env vars.
+            # We intentionally skip db.add/commit to avoid FK violations when the
+            # tenants row doesn't yet exist in a fresh PostgreSQL database.
+            return models.AmazonCredential(
                 tenant_id=tenant_id,
                 lwa_client_id=_lwa_id,
                 lwa_client_secret=_lwa_secret,
@@ -3264,9 +3266,6 @@ def _get_tenant_amazon_creds(tenant_id: int, db: Session) -> models.AmazonCreden
                 marketplace_id=os.getenv("AMAZON_MARKETPLACE_ID", "ATVPDKIKX0DER"),
                 is_sandbox=os.getenv("AMAZON_SP_SANDBOX", "").lower() in ("1", "true", "yes"),
             )
-            db.add(cred)
-            db.commit()
-            db.refresh(cred)
     return cred
 
 
