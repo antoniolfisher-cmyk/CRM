@@ -18,9 +18,8 @@ export default function Onboarding() {
     seller_id: '', marketplace_id: 'ATVPDKIKX0DER', is_sandbox: false,
   })
 
-  // Sync progress state
-  const [syncing, setSyncing]     = useState(false)
-  const [syncDone, setSyncDone]   = useState(false)
+  const [syncing, setSyncing]       = useState(false)
+  const [syncDone, setSyncDone]     = useState(false)
   const [syncResult, setSyncResult] = useState(null)
   const pollRef = useRef(null)
 
@@ -29,7 +28,6 @@ export default function Onboarding() {
     api.getAmazonCredentials().then(setStatus).catch(() => {})
   }, [justConnected])
 
-  // When OAuth just completed, start polling sync status
   useEffect(() => {
     if (justConnected) {
       setSyncing(true)
@@ -47,16 +45,18 @@ export default function Onboarding() {
           clearInterval(pollRef.current)
           setSyncing(false)
           setSyncDone(true)
+          // Refresh credentials to get store_name + seller_id
+          api.getAmazonCredentials().then(setStatus).catch(() => {})
         }
       } catch {
         // keep polling
       }
     }, 2000)
-    // Stop after 3 minutes max
     setTimeout(() => {
       clearInterval(pollRef.current)
       setSyncing(false)
       setSyncDone(true)
+      api.getAmazonCredentials().then(setStatus).catch(() => {})
     }, 180_000)
   }
 
@@ -66,11 +66,10 @@ export default function Onboarding() {
     setSaveError('')
     try {
       await api.saveAmazonCredentials(manual)
-      // Trigger initial pull in background
       await api.triggerInitialSync().catch(() => {})
       setSyncing(true)
       startPolling()
-      setStatus({ connected: true })
+      setStatus({ connected: true, seller_id: manual.seller_id })
     } catch (err) {
       setSaveError(err.message)
     } finally {
@@ -78,15 +77,16 @@ export default function Onboarding() {
     }
   }
 
-  // Show connected + syncing / done screen
+  // ── Connected screen ────────────────────────────────────────────────────────
   if (justConnected || (status && status.connected)) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
         <div className="w-full max-w-md">
           <div className="bg-white rounded-2xl shadow-2xl p-8 text-center">
-            {/* Icon */}
-            <div className={`w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-5 shadow-lg transition-colors ${
-              syncDone ? 'bg-green-500' : syncing ? 'bg-orange-500' : 'bg-green-500'
+
+            {/* Status icon */}
+            <div className={`w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-5 shadow-lg ${
+              syncing ? 'bg-orange-500' : 'bg-green-500'
             }`}>
               {syncing
                 ? <SpinnerIcon className="w-10 h-10 text-white animate-spin" />
@@ -95,25 +95,52 @@ export default function Onboarding() {
             </div>
 
             <h1 className="text-2xl font-bold text-gray-900 mb-1">
-              {syncDone ? 'All set!' : syncing ? 'Pulling your data…' : 'Amazon Connected!'}
+              {syncing ? 'Importing your data…' : 'Amazon Connected!'}
             </h1>
+
+            {/* Confirmed Amazon account details */}
+            {status?.seller_id && (
+              <div className="mt-4 mb-5 bg-green-50 border border-green-200 rounded-xl p-4 text-left">
+                <p className="text-xs font-semibold text-green-700 uppercase tracking-wide mb-2">
+                  ✓ Confirmed Amazon Account
+                </p>
+                {status.store_name && (
+                  <div className="flex justify-between text-sm mb-1">
+                    <span className="text-gray-500">Store Name</span>
+                    <span className="font-semibold text-gray-900">{status.store_name}</span>
+                  </div>
+                )}
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-500">Seller ID</span>
+                  <span className="font-mono text-xs font-semibold text-gray-800 bg-gray-100 px-2 py-0.5 rounded">
+                    {status.seller_id}
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm mt-1">
+                  <span className="text-gray-500">Marketplace</span>
+                  <span className="font-semibold text-gray-900">
+                    {status.marketplace_id === 'ATVPDKIKX0DER' ? '🇺🇸 Amazon.com (US)' : status.marketplace_id}
+                  </span>
+                </div>
+              </div>
+            )}
 
             {syncing && (
               <p className="text-gray-500 text-sm mb-4">
-                We're importing your FBA inventory and enriching it with Keepa data.
-                This takes about 30–60 seconds.
+                Pulling your FBA inventory and Keepa data. This takes about 30–60 seconds.
               </p>
             )}
 
+            {/* Sync progress */}
             {syncResult && (
               <div className="bg-slate-50 rounded-xl p-4 text-left mb-5 space-y-2">
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Sync Progress</p>
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Initial Data Pull</p>
                 <div className="flex justify-between text-sm">
-                  <span className="text-gray-600">New products imported</span>
+                  <span className="text-gray-600">FBA products imported</span>
                   <span className="font-semibold text-gray-900">{syncResult.created ?? '—'}</span>
                 </div>
                 <div className="flex justify-between text-sm">
-                  <span className="text-gray-600">Existing products updated</span>
+                  <span className="text-gray-600">Products updated</span>
                   <span className="font-semibold text-gray-900">{syncResult.updated ?? '—'}</span>
                 </div>
                 {syncResult.error && (
@@ -122,31 +149,19 @@ export default function Onboarding() {
                 {syncResult.running && (
                   <div className="flex items-center gap-2 text-orange-600 text-xs mt-1">
                     <SpinnerIcon className="w-3 h-3 animate-spin" />
-                    Syncing…
+                    Still syncing…
                   </div>
                 )}
               </div>
             )}
 
             {!syncing && (
-              <>
-                {status?.seller_id && (
-                  <p className="text-gray-500 text-sm mb-1">
-                    Seller ID: <span className="text-gray-800 font-mono">{status.seller_id}</span>
-                  </p>
-                )}
-                <p className="text-gray-500 text-sm mb-6">
-                  {syncDone
-                    ? 'Your inventory and Keepa data are ready on the dashboard.'
-                    : 'Your live data will now appear on the dashboard.'}
-                </p>
-                <button
-                  onClick={() => navigate('/')}
-                  className="px-8 py-3 bg-orange-500 hover:bg-orange-600 text-white rounded-xl font-semibold transition-colors w-full"
-                >
-                  Go to Dashboard →
-                </button>
-              </>
+              <button
+                onClick={() => navigate('/')}
+                className="w-full px-8 py-3 bg-orange-500 hover:bg-orange-600 text-white rounded-xl font-semibold transition-colors"
+              >
+                Go to Dashboard →
+              </button>
             )}
 
             {syncing && (
@@ -163,6 +178,7 @@ export default function Onboarding() {
     )
   }
 
+  // ── Connect screen ──────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
       <div className="w-full max-w-lg">
@@ -180,7 +196,7 @@ export default function Onboarding() {
         <div className="bg-white rounded-2xl shadow-2xl p-8">
           <h2 className="text-xl font-semibold text-gray-900 mb-1">Connect Amazon Seller Central</h2>
           <p className="text-gray-500 text-sm mb-5">
-            Link your Amazon account to pull live sales, inventory, and order data directly into your dashboard.
+            Link your Amazon seller account. You'll be taken to Amazon to sign in and approve the connection — then we'll pull all your live data automatically.
           </p>
 
           {error && (
@@ -193,8 +209,8 @@ export default function Onboarding() {
           <div className="grid grid-cols-3 gap-2 mb-5">
             {[
               { label: 'FBA Inventory', desc: 'All your live stock' },
-              { label: 'Keepa Data', desc: 'BSR, buy box, fees' },
-              { label: 'Live Orders', desc: 'Sales & open orders' },
+              { label: 'Keepa Data',    desc: 'BSR, buy box, fees' },
+              { label: 'Live Orders',   desc: 'Sales & open orders' },
             ].map(item => (
               <div key={item.label} className="bg-slate-50 rounded-lg p-3 text-center">
                 <p className="text-xs font-semibold text-gray-700">{item.label}</p>
@@ -211,7 +227,7 @@ export default function Onboarding() {
                 tab === 'oauth' ? 'bg-orange-500 text-white' : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              One-Click OAuth
+              Connect with Amazon
             </button>
             <button
               onClick={() => setTab('manual')}
@@ -225,34 +241,39 @@ export default function Onboarding() {
 
           {tab === 'oauth' && (
             <div className="space-y-4">
-              <div className="bg-orange-50 border border-orange-200 rounded-xl p-4">
-                <p className="text-sm font-semibold text-orange-800 mb-2">How it works</p>
-                <ol className="space-y-1.5 text-sm text-orange-700">
-                  <li>1. Click the button below</li>
-                  <li>2. You'll be taken to Amazon Seller Central</li>
-                  <li>3. Approve the connection (~10 seconds)</li>
-                  <li>4. We'll automatically pull all your data</li>
-                </ol>
+              <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 space-y-2">
+                <p className="text-sm font-semibold text-orange-800">What happens when you click below:</p>
+                <div className="space-y-1.5">
+                  {[
+                    '1. You\'ll be redirected to Amazon Seller Central',
+                    '2. Sign in to YOUR Amazon seller account',
+                    '3. Click "Authorize" to approve the connection',
+                    '4. You\'ll be sent back here automatically',
+                    '5. We\'ll pull all your inventory & sales data',
+                  ].map(s => (
+                    <p key={s} className="text-sm text-orange-700">{s}</p>
+                  ))}
+                </div>
               </div>
 
               {!oauthUrl ? (
                 <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-700">
                   <strong>OAuth not configured.</strong> The <code>AMAZON_SP_APP_ID</code> env var is not set.
-                  Use Manual Entry below, or ask your admin to configure the SP-API app.
+                  Use Manual Entry below.
                 </div>
               ) : (
                 <a
                   href={oauthUrl}
-                  className="flex items-center justify-center gap-3 w-full py-3.5 bg-[#FF9900] hover:bg-[#e88b00] text-white rounded-xl font-semibold text-base transition-colors shadow-md"
+                  className="flex items-center justify-center gap-3 w-full py-4 bg-[#FF9900] hover:bg-[#e88b00] text-white rounded-xl font-bold text-base transition-colors shadow-md"
                 >
                   <AmazonIcon className="w-6 h-6" />
-                  Connect with Amazon
+                  Sign in to Amazon &amp; Connect
                 </a>
               )}
 
-              <button onClick={() => setTab('manual')} className="w-full text-sm text-gray-400 hover:text-gray-600">
-                Have existing credentials? Use Manual Entry →
-              </button>
+              <p className="text-center text-xs text-gray-400">
+                You will be asked to sign in to Amazon Seller Central to confirm this is your account
+              </p>
             </div>
           )}
 
