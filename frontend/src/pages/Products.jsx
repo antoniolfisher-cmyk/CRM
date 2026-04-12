@@ -843,7 +843,7 @@ function MarketAnalysis({ data, asin }) {
         Market Analysis
       </h3>
       <div className="space-y-4">
-        {/* Seller counts — always rendered, shows live data or dashes */}
+        {/* Row 1: seller counts + buy box + amazon fee */}
         <div className="flex gap-8 flex-wrap items-end">
           <div>
             <p className="text-xs text-gray-500">FBA Sellers</p>
@@ -865,29 +865,51 @@ function MarketAnalysis({ data, asin }) {
                 : data.num_sellers != null ? data.num_sellers : '—'}
             </p>
           </div>
-          {(data.price_90_high != null || data.median_price != null || data.price_90_low != null) && (
-            <div className="flex gap-6 border-l border-gray-200 pl-6">
-              {data.price_90_high != null && (
-                <div>
-                  <p className="text-xs text-gray-500">90d High</p>
-                  <p className="text-2xl font-bold text-green-600 mt-0.5">{fmtCurrency(data.price_90_high)}</p>
-                </div>
-              )}
-              {data.median_price != null && (
-                <div>
-                  <p className="text-xs text-gray-500">90d Median</p>
-                  <p className="text-2xl font-bold text-violet-700 mt-0.5">{fmtCurrency(data.median_price)}</p>
-                </div>
-              )}
-              {data.price_90_low != null && (
-                <div>
-                  <p className="text-xs text-gray-500">90d Low</p>
-                  <p className="text-2xl font-bold text-red-500 mt-0.5">{fmtCurrency(data.price_90_low)}</p>
-                </div>
-              )}
+          <div className="border-l border-gray-200 pl-8 flex gap-8">
+            <div>
+              <p className="text-xs text-gray-500">Buy Box</p>
+              <p className="text-2xl font-bold text-emerald-600 mt-0.5">
+                {data.buy_box != null ? fmtCurrency(data.buy_box) : '—'}
+              </p>
             </div>
-          )}
+            <div>
+              <p className="text-xs text-gray-500">Amazon Fee</p>
+              <p className="text-2xl font-bold text-orange-500 mt-0.5">
+                {data.amazon_fee != null ? fmtCurrency(data.amazon_fee) : '—'}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500">Est. Sales / mo</p>
+              <p className="text-2xl font-bold text-violet-600 mt-0.5">
+                {data.estimated_sales != null ? Number(data.estimated_sales).toLocaleString() : '—'}
+              </p>
+            </div>
+          </div>
         </div>
+
+        {/* Row 2: 90-day price range (from Keepa, shown when available) */}
+        {(data.price_90_high != null || data.median_price != null || data.price_90_low != null) && (
+          <div className="flex gap-6 flex-wrap items-end">
+            {data.price_90_high != null && (
+              <div>
+                <p className="text-xs text-gray-500">90d High</p>
+                <p className="text-2xl font-bold text-green-600 mt-0.5">{fmtCurrency(data.price_90_high)}</p>
+              </div>
+            )}
+            {data.median_price != null && (
+              <div>
+                <p className="text-xs text-gray-500">90d Median</p>
+                <p className="text-2xl font-bold text-violet-700 mt-0.5">{fmtCurrency(data.median_price)}</p>
+              </div>
+            )}
+            {data.price_90_low != null && (
+              <div>
+                <p className="text-xs text-gray-500">90d Low</p>
+                <p className="text-2xl font-bold text-red-500 mt-0.5">{fmtCurrency(data.price_90_low)}</p>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Price table */}
         {hasPrices && (
