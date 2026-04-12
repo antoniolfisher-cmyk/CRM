@@ -263,6 +263,33 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
     return {"access_token": create_token(user.username, user.role, tenant_id), "token_type": "bearer"}
 
 
+@app.post("/api/auth/recover")
+def recover_account(db: Session = Depends(get_db)):
+    """
+    Emergency account recovery — only works when RESET_PASSWORD_FOR env var is set.
+    Format: RESET_PASSWORD_FOR=username:newpassword
+    Returns the username that was reset (no credentials required).
+    Remove the env var immediately after recovering access.
+    """
+    import os as _os
+    _reset = _os.getenv("RESET_PASSWORD_FOR", "").strip()
+    if not _reset or ":" not in _reset:
+        raise HTTPException(403, "Recovery not enabled. Set RESET_PASSWORD_FOR=username:newpassword in Railway Variables.")
+    _username, _new_pass = _reset.split(":", 1)
+    _username = _username.strip()
+    _new_pass = _new_pass.strip()
+    if not _username or not _new_pass:
+        raise HTTPException(400, "Invalid RESET_PASSWORD_FOR format. Use username:newpassword")
+    user = db.query(models.User).filter(models.User.username == _username).first()
+    if not user:
+        all_users = [u.username for u in db.query(models.User).all()]
+        raise HTTPException(404, f"User '{_username}' not found. Existing users: {all_users}")
+    user.password_hash = hash_password(_new_pass)
+    user.is_active = True
+    db.commit()
+    return {"ok": True, "recovered_user": _username, "message": "Password reset. Log in now, then REMOVE RESET_PASSWORD_FOR from Railway Variables."}
+
+
 @app.post("/api/auth/register")
 def register(data: RegisterRequest, db: Session = Depends(get_db)):
     """Create a new tenant workspace + admin user. Returns a JWT."""
