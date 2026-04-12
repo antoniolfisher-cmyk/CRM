@@ -340,42 +340,98 @@ export default function Admin() {
       )}
 
       {/* ── Notification Settings ── */}
-      <div className="card p-5 space-y-4">
-        <div className="flex items-start justify-between">
-          <div>
-            <h2 className="font-semibold text-gray-900">Email Notifications</h2>
-            <p className="text-sm text-gray-500 mt-0.5">Daily follow-up digests sent each morning to users with notifications enabled</p>
+      {isSuperAdmin ? (
+        /* Platform admin: shows full SMTP config status + digest controls */
+        <div className="card p-5 space-y-4">
+          <div className="flex items-start justify-between">
+            <div>
+              <h2 className="font-semibold text-gray-900">Email Notifications</h2>
+              <p className="text-sm text-gray-500 mt-0.5">Daily follow-up digests sent each morning to users with notifications enabled</p>
+            </div>
+            {notifStatus && (
+              <span className={`badge ${notifStatus.smtp_configured ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                {notifStatus.smtp_configured ? 'Connected' : 'Not Set Up'}
+              </span>
+            )}
           </div>
-          {notifStatus && (
-            <span className={`badge ${notifStatus.smtp_configured ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-              {notifStatus.smtp_configured ? 'Connected' : 'Not Set Up'}
-            </span>
+
+          {notifStatus && !notifStatus.smtp_configured && (
+            <div className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3">
+              Add <code className="font-mono text-xs bg-amber-100 px-1 rounded">SENDGRID_API_KEY</code> and{' '}
+              <code className="font-mono text-xs bg-amber-100 px-1 rounded">SMTP_FROM</code> in Railway Variables to enable email sending.
+            </div>
           )}
-        </div>
 
-        {notifStatus && notifStatus.smtp_configured && (
-          <div className="text-sm text-gray-600 bg-gray-50 rounded-lg p-3 flex flex-wrap gap-x-4 gap-y-1">
-            <span><span className="font-medium">Sending from:</span> {notifStatus.smtp_user}</span>
-            <span><span className="font-medium">Daily digest at:</span> {notifStatus.notify_hour_utc}:00 UTC</span>
-            <span><span className="font-medium">Auto follow-up after:</span> {notifStatus.followup_days ?? 4} days of no reply</span>
+          {notifStatus && notifStatus.smtp_configured && (
+            <div className="text-sm text-gray-600 bg-gray-50 rounded-lg p-3 flex flex-wrap gap-x-4 gap-y-1">
+              <span><span className="font-medium">Sending from:</span> {notifStatus.smtp_user}</span>
+              <span><span className="font-medium">Daily digest at:</span> {notifStatus.notify_hour_utc}:00 UTC</span>
+              <span><span className="font-medium">Auto follow-up after:</span> {notifStatus.followup_days ?? 4} days of no reply</span>
+            </div>
+          )}
+
+          {notifMsg && (
+            <p className={`text-sm font-medium ${notifMsg.startsWith('✓') ? 'text-green-700' : 'text-red-600'}`}>
+              {notifMsg}
+            </p>
+          )}
+
+          <div className="flex gap-3">
+            <button className="btn-secondary" onClick={handleSendTest} disabled={sendingTest || !notifStatus?.smtp_configured}>
+              {sendingTest ? 'Sending...' : 'Send Test Email to Me'}
+            </button>
+            <button className="btn-primary" onClick={handleSendNow} disabled={sendingNow || !notifStatus?.smtp_configured}>
+              {sendingNow ? 'Sending...' : 'Send Digest Now'}
+            </button>
           </div>
-        )}
-
-        {notifMsg && (
-          <p className={`text-sm font-medium ${notifMsg.startsWith('✓') ? 'text-green-700' : 'text-red-600'}`}>
-            {notifMsg}
-          </p>
-        )}
-
-        <div className="flex gap-3">
-          <button className="btn-secondary" onClick={handleSendTest} disabled={sendingTest || !notifStatus?.smtp_configured}>
-            {sendingTest ? 'Sending...' : 'Send Test Email to Me'}
-          </button>
-          <button className="btn-primary" onClick={handleSendNow} disabled={sendingNow || !notifStatus?.smtp_configured}>
-            {sendingNow ? 'Sending...' : 'Send Digest Now'}
-          </button>
         </div>
-      </div>
+      ) : (
+        /* Regular sellers: show their personal notification status only */
+        <div className="card p-5 space-y-4">
+          <div className="flex items-start justify-between">
+            <div>
+              <h2 className="font-semibold text-gray-900">Email Notifications</h2>
+              <p className="text-sm text-gray-500 mt-0.5">Daily follow-up digests and supplier reply alerts</p>
+            </div>
+            {notifStatus && (
+              <span className={`badge ${notifStatus.smtp_configured ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                {notifStatus.smtp_configured ? 'Active' : 'Pending Setup'}
+              </span>
+            )}
+          </div>
+
+          {notifStatus && notifStatus.admin_email && (
+            <div className="text-sm text-gray-600 bg-gray-50 rounded-lg p-3 space-y-1">
+              <p><span className="font-medium">Notifications sent to:</span> {notifStatus.admin_email}</p>
+              {notifStatus.tenant_inbound && (
+                <p><span className="font-medium">Supplier reply-to:</span>{' '}
+                  <code className="font-mono text-xs bg-gray-100 px-1 rounded break-all">{notifStatus.tenant_inbound}</code>
+                </p>
+              )}
+            </div>
+          )}
+
+          {notifStatus && !notifStatus.admin_email && (
+            <div className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3">
+              Add your email address in{' '}
+              <a href="/profile" className="font-medium underline">My Profile</a>{' '}
+              to receive daily digests and reply alerts.
+            </div>
+          )}
+
+          {notifMsg && (
+            <p className={`text-sm font-medium ${notifMsg.startsWith('✓') ? 'text-green-700' : 'text-red-600'}`}>
+              {notifMsg}
+            </p>
+          )}
+
+          <div className="flex gap-3">
+            <button className="btn-secondary" onClick={handleSendTest} disabled={sendingTest || !notifStatus?.smtp_configured}>
+              {sendingTest ? 'Sending...' : 'Send Test Email to Me'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── Inbound Email Setup ── */}
       {notifStatus && <InboundEmailSetup status={notifStatus} isSuperAdmin={isSuperAdmin} />}

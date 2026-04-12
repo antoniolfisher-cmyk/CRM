@@ -197,19 +197,22 @@ def _smtp_configured() -> bool:
 
 
 def _send_via_sendgrid(to: str, subject: str, html: str, api_key: str,
-                       reply_to: str = None, custom_headers: dict = None):
+                       reply_to: str = None, custom_headers: dict = None,
+                       from_name: str = None):
     import httpx
     from_raw = os.getenv("SMTP_FROM", "SellerPulse <noreply@sellerpulse.io>")
     if '<' in from_raw:
-        name_part = from_raw[:from_raw.index('<')].strip().strip('"')
-        email_part = from_raw[from_raw.index('<')+1:from_raw.index('>')].strip().lower()
+        default_name  = from_raw[:from_raw.index('<')].strip().strip('"')
+        email_part    = from_raw[from_raw.index('<')+1:from_raw.index('>')].strip().lower()
     else:
-        name_part = "SellerPulse"
-        email_part = from_raw.strip().lower()
+        default_name  = "SellerPulse"
+        email_part    = from_raw.strip().lower()
+    # Use the tenant's store name as the display name when provided
+    display_name = from_name.strip() if from_name and from_name.strip() else default_name
 
     payload = {
         "personalizations": [{"to": [{"email": to}]}],
-        "from": {"email": email_part, "name": name_part},
+        "from": {"email": email_part, "name": display_name},
         "subject": subject,
         "content": [{"type": "text/html", "value": html}],
     }
@@ -263,7 +266,8 @@ def _send_via_resend(to: str, subject: str, html: str, api_key: str):
 
 
 def send_email(to: str, subject: str, html: str,
-               reply_to: str = None, custom_headers: dict = None):
+               reply_to: str = None, custom_headers: dict = None,
+               from_name: str = None):
     # Read env vars at call time so Railway env changes take effect without restart
     sendgrid_key = os.getenv("SENDGRID_API_KEY", "").strip()
 
@@ -271,7 +275,8 @@ def send_email(to: str, subject: str, html: str,
         raise Exception("No email provider configured — set SENDGRID_API_KEY in Railway")
 
     _send_via_sendgrid(to, subject, html, sendgrid_key,
-                       reply_to=reply_to, custom_headers=custom_headers)
+                       reply_to=reply_to, custom_headers=custom_headers,
+                       from_name=from_name)
 
 
 # ─── digest builder ───────────────────────────────────────────────────────────

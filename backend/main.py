@@ -1754,7 +1754,7 @@ def _build_wholesale_email_html(body: str, template_id: str, sender_name: str) -
 
   <!-- Header -->
   <div style="background:#0f1729;padding:44px 32px 36px;text-align:center;">
-    <h1 style="margin:0;font-family:Georgia,'Times New Roman',serif;font-size:30px;font-weight:400;color:#c9a84c;letter-spacing:3px;">SellerPulse</h1>
+    <h1 style="margin:0;font-family:Georgia,'Times New Roman',serif;font-size:30px;font-weight:400;color:#c9a84c;letter-spacing:3px;">{safe_sender}</h1>
     <p style="margin:10px 0 0;color:#8a9bb5;font-size:10px;letter-spacing:4px;text-transform:uppercase;font-family:-apple-system,sans-serif;">Curated E&#x2011;Commerce &nbsp;&middot;&nbsp; Est. 2024</p>
     <div style="width:48px;height:1px;background:#c9a84c;margin:18px auto 0;"></div>
   </div>
@@ -1769,14 +1769,14 @@ def _build_wholesale_email_html(body: str, template_id: str, sender_name: str) -
     <p style="margin:0;font-size:13px;color:#6b7280;font-family:-apple-system,sans-serif;line-height:1.7;">
       Warm regards,<br>
       <strong style="color:#0f1729;font-size:14px;">{safe_sender}</strong><br>
-      <span style="color:#9ca3af;">SellerPulse &nbsp;&middot;&nbsp; Curated E-Commerce</span>
+      <span style="color:#9ca3af;">{safe_sender} &nbsp;&middot;&nbsp; Curated E-Commerce</span>
     </p>
   </div>
 
   <!-- Footer -->
   <div style="background:#f9f8f6;padding:14px 48px;border-top:1px solid #ede9e0;">
     <p style="margin:0;font-size:10px;color:#b5b0a8;text-align:center;letter-spacing:1px;font-family:-apple-system,sans-serif;text-transform:uppercase;">
-      SellerPulse &nbsp;&middot;&nbsp; You are receiving this as a direct wholesale inquiry.
+      {safe_sender} &nbsp;&middot;&nbsp; You are receiving this as a direct wholesale inquiry.
     </p>
   </div>
 
@@ -1784,9 +1784,11 @@ def _build_wholesale_email_html(body: str, template_id: str, sender_name: str) -
 </body></html>"""
 
 
-def _build_reply_notification_html(owner_name, account_name, from_email, subject, body_preview):
+def _build_reply_notification_html(owner_name, account_name, from_email, subject, body_preview,
+                                    store_name: str = None):
     safe = lambda s: str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     preview_html = safe(body_preview).replace("\n", "<br>")
+    brand = safe(store_name or "SellerPulse")
     app_url = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
     if app_url and not app_url.startswith("http"):
         app_url = f"https://{app_url}"
@@ -1798,7 +1800,7 @@ def _build_reply_notification_html(owner_name, account_name, from_email, subject
 <div style="max-width:600px;margin:32px auto;background:#fff;border-radius:4px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.08);">
   <div style="background:#0f1729;padding:24px 32px;">
     <h2 style="margin:0;color:#c9a84c;font-family:Georgia,serif;font-size:20px;font-weight:400;">&#128236; New Reply Received</h2>
-    <p style="margin:6px 0 0;color:#8a9bb5;font-size:10px;letter-spacing:3px;text-transform:uppercase;">SellerPulse</p>
+    <p style="margin:6px 0 0;color:#8a9bb5;font-size:10px;letter-spacing:3px;text-transform:uppercase;">{brand}</p>
   </div>
   <div style="padding:32px;">
     <p style="margin:0 0 16px;font-size:15px;color:#374151;">Hi <strong>{safe(owner_name)}</strong>, you have a new reply from <strong>{safe(account_name)}</strong>.</p>
@@ -1813,7 +1815,7 @@ def _build_reply_notification_html(owner_name, account_name, from_email, subject
     {cta}
   </div>
   <div style="background:#f9f8f6;padding:14px 32px;border-top:1px solid #ede9e0;">
-    <p style="margin:0;font-size:10px;color:#b5b0a8;text-align:center;letter-spacing:1px;text-transform:uppercase;">SellerPulse · Automated Notification</p>
+    <p style="margin:0;font-size:10px;color:#b5b0a8;text-align:center;letter-spacing:1px;text-transform:uppercase;">{brand} · Automated Notification</p>
   </div>
 </div></body></html>"""
 
@@ -1847,9 +1849,24 @@ def send_account_email(
         "X-Crm-Tenant-Id":  str(_tid or ""),
     }
 
+    # Resolve tenant store name so the From display name shows the seller's brand
+    _from_name = None
+    if _tid:
+        _t_cred = db.query(models.AmazonCredentials).filter(
+            models.AmazonCredentials.tenant_id == _tid
+        ).first()
+        _t_obj  = db.query(models.Tenant).filter(models.Tenant.id == _tid).first()
+        _from_name = (
+            (_t_cred.store_name if _t_cred and _t_cred.store_name else None)
+            or (_t_obj.name if _t_obj and _t_obj.name.strip().lower() not in ("default", "") else None)
+            or os.getenv("STORE_NAME", "").strip()
+            or None
+        )
+
     try:
         _send_email(data.to, data.subject, html,
-                    reply_to=reply_to, custom_headers=custom_headers)
+                    reply_to=reply_to, custom_headers=custom_headers,
+                    from_name=_from_name)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -2082,17 +2099,35 @@ async def inbound_email_webhook(request: Request, db: Session = Depends(get_db))
                 from notifications import send_email as _send_email, _smtp_configured
                 if _smtp_configured():
                     try:
+                        # Resolve tenant store name for branded notification email
+                        _notif_tid = inbound_tenant_id
+                        _notif_store = None
+                        if _notif_tid:
+                            _nc = db.query(models.AmazonCredentials).filter(
+                                models.AmazonCredentials.tenant_id == _notif_tid
+                            ).first()
+                            _nt = db.query(models.Tenant).filter(
+                                models.Tenant.id == _notif_tid
+                            ).first()
+                            _notif_store = (
+                                (_nc.store_name if _nc and _nc.store_name else None)
+                                or (_nt.name if _nt and _nt.name.strip().lower() not in ("default", "") else None)
+                                or os.getenv("STORE_NAME", "").strip()
+                                or None
+                            )
                         notif = _build_reply_notification_html(
                             owner_name=owner.username,
                             account_name=acc.name,
                             from_email=from_raw,
                             subject=subject,
                             body_preview=body_text[:400],
+                            store_name=_notif_store,
                         )
                         _send_email(
                             owner.email,
                             f"New reply from {acc.name}: {subject}",
                             notif,
+                            from_name=_notif_store,
                         )
                     except Exception:
                         pass  # never fail the webhook
