@@ -2876,6 +2876,17 @@ def _get_oauth_callback_url() -> str:
     return os.getenv("APP_URL", "http://localhost:8000").rstrip("/") + "/api/amazon/oauth/callback"
 
 
+@app.get("/api/debug/oauth-config")
+def debug_oauth_config():
+    """Public endpoint — shows exactly what redirect URI the app will send to Amazon."""
+    return {
+        "app_url_env":    os.getenv("APP_URL", "(not set)"),
+        "callback_url":   _get_oauth_callback_url(),
+        "app_id":         _AMAZON_APP_ID or "(not set)",
+        "lwa_client_id":  os.getenv("AMAZON_LWA_CLIENT_ID", "(not set)"),
+    }
+
+
 @app.get("/api/amazon/oauth/url")
 def amazon_oauth_url(current: dict = Depends(require_auth)):
     """
