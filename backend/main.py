@@ -2379,7 +2379,7 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
                     _summary = _or.json().get("payload", {}).get("Summary", {})
                     _num_fba = _num_fbm = 0
                     for _o in (_summary.get("NumberOfOffers") or []):
-                        if _o.get("condition") == "New":
+                        if (_o.get("condition") or "").lower() in ("new", "New"):
                             if _o.get("fulfillmentChannel") == "Amazon":
                                 _num_fba = _o.get("OfferCount", 0)
                             elif _o.get("fulfillmentChannel") == "Merchant":
