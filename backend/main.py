@@ -2106,7 +2106,7 @@ async def amazon_inventory_sync_now(current: dict = Depends(require_auth)):
 @app.post("/api/support/chat")
 async def support_chat(body: dict, current: dict = Depends(require_auth)):
     """AI support assistant powered by Claude."""
-    import anthropic as _anthropic
+    from anthropic import AsyncAnthropic
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
         raise HTTPException(503, "ANTHROPIC_API_KEY is not configured")
@@ -2115,11 +2115,12 @@ async def support_chat(body: dict, current: dict = Depends(require_auth)):
     if not messages:
         raise HTTPException(400, "messages required")
 
-    client = _anthropic.Anthropic(api_key=api_key)
-    result = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1024,
-        system="""You are the built-in support assistant for Delight Shoppe Distribution Suite — a wholesale CRM platform for Amazon FBA sellers.
+    try:
+        client = AsyncAnthropic(api_key=api_key)
+        result = await client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1024,
+            system="""You are the built-in support assistant for Delight Shoppe Distribution Suite — a wholesale CRM platform for Amazon FBA sellers.
 
 You help users with the platform's features:
 - **Dashboard**: repricer performance stats (price updates, buy box %, units sold)
@@ -2135,9 +2136,11 @@ You help users with the platform's features:
 Integrations: Keepa API, Amazon SP-API (inventory sync, ungating), Aura Repricer, SMTP email.
 
 Be concise, friendly, and specific. If you don't know something about their specific setup, say so.""",
-        messages=messages,
-    )
-    return {"response": result.content[0].text}
+            messages=messages,
+        )
+        return {"response": result.content[0].text}
+    except Exception as e:
+        raise HTTPException(502, f"AI error: {str(e)}")
 
 
 @app.get("/api/amazon/check-asin/{asin}")
