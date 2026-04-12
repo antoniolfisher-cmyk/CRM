@@ -27,9 +27,13 @@ export default function Layout({ children }) {
             </div>
             <div className="min-w-0">
               <p className="text-white font-semibold text-sm leading-tight truncate">
-                {user?.tenant_name || 'SellerPulse'}
+                {(user?.tenant_name && user.tenant_name.toLowerCase() !== 'default')
+                  ? user.tenant_name
+                  : 'SellerPulse'}
               </p>
-              <p className="text-slate-400 text-xs capitalize">{user?.plan || 'starter'} plan</p>
+              <p className="text-slate-400 text-xs capitalize">
+                {isSuperAdmin ? 'Platform Admin' : `${user?.plan || 'starter'} plan`}
+              </p>
             </div>
           </div>
         </div>

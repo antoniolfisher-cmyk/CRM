@@ -217,6 +217,17 @@ try:
                 _conn.commit()
     except Exception:
         pass
+    # ── Apply STORE_NAME env var to "Default" tenant on startup ─────────────
+    try:
+        _store_env = os.getenv("STORE_NAME", "").strip()
+        if _store_env:
+            with engine.connect() as _conn:
+                _conn.execute(text(
+                    "UPDATE tenants SET name = :name WHERE LOWER(name) = 'default'"
+                ), {"name": _store_env})
+                _conn.commit()
+    except Exception:
+        pass
 except Exception:
     pass
 
@@ -364,9 +375,13 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
 def me(payload: dict = Depends(require_auth), db: Session = Depends(get_db)):
     tenant_id = payload.get("tenant_id", 1)
     tenant    = db.query(models.Tenant).filter_by(id=tenant_id).first()
-    # Use Amazon store_name as the display name when connected — falls back to tenant.name
+    # Priority: Amazon store_name → tenant.name (if not the generic "Default") → STORE_NAME env var → app name
     cred      = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first() if tenant_id else None
-    display_name = (cred.store_name if cred and cred.store_name else None) or (tenant.name if tenant else "My Store")
+    _tenant_name = (tenant.name if tenant and tenant.name.strip().lower() not in ("default", "") else None)
+    display_name = (cred.store_name if cred and cred.store_name else None) \
+                or _tenant_name \
+                or os.getenv("STORE_NAME", "").strip() \
+                or "SellerPulse"
     db_user   = db.query(models.User).filter(models.User.username == payload["sub"]).first()
     # Read SUPERADMIN_USERNAME fresh every request — never use cached JWT value
     import os as _os
