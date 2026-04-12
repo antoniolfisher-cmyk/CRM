@@ -296,7 +296,13 @@ async def run_keepa_enrichment(tenant_id: Optional[int] = None, batch_size: int 
                         },
                     )
                 if r.status_code == 200:
-                    keepa_products = r.json().get("products", [])
+                    body = r.json()
+                    # Keepa returns 200 but tokensLeft < 0 when exhausted
+                    if (body.get("tokensLeft", 1) or 1) < 0:
+                        log.info("Keepa enrichment paused — tokens exhausted, will resume next scheduled sync")
+                        skipped += len(products) - i  # count remaining as skipped
+                        break
+                    keepa_products = body.get("products", [])
                     kp_by_asin = {kp.get("asin", ""): kp for kp in keepa_products}
 
                     for product in batch:
@@ -306,11 +312,16 @@ async def run_keepa_enrichment(tenant_id: Optional[int] = None, batch_size: int 
                             enriched += 1
                         else:
                             skipped += 1
+                elif r.status_code in (429, 403):
+                    # Hard token limit — stop immediately, scheduler will retry
+                    log.info("Keepa enrichment paused (HTTP %s) — will resume next scheduled sync", r.status_code)
+                    skipped += len(products) - i
+                    break
                 else:
-                    log.warning("Keepa batch error %s: %s", r.status_code, r.text[:200])
+                    log.debug("Keepa batch error %s — skipping", r.status_code)
                     skipped += len(batch)
             except Exception as e:
-                log.warning("Keepa batch failed: %s", e)
+                log.debug("Keepa batch skipped: %s", e)
                 skipped += len(batch)
 
             # Small delay between batches to be kind to Keepa's rate limits

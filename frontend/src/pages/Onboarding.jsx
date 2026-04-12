@@ -201,7 +201,7 @@ export default function Onboarding() {
 
             {syncing && (
               <p className="text-gray-500 text-sm mb-4">
-                Pulling your FBA inventory and Keepa data.<br />
+                Pulling your FBA inventory.<br />
                 <span className="text-xs text-gray-400">This can take a few minutes for large catalogs — you can navigate away and it will keep running.</span>
               </p>
             )}
