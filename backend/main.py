@@ -2105,22 +2105,17 @@ async def amazon_inventory_sync_now(current: dict = Depends(require_auth)):
 
 @app.post("/api/support/chat")
 async def support_chat(body: dict, current: dict = Depends(require_auth)):
-    """AI support assistant powered by Claude."""
-    from anthropic import AsyncAnthropic
-    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    """AI support assistant powered by Groq (Llama 3.3 70B)."""
+    from groq import AsyncGroq
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
     if not api_key:
-        raise HTTPException(503, "ANTHROPIC_API_KEY is not configured")
+        raise HTTPException(503, "GROQ_API_KEY is not configured")
 
     messages = body.get("messages") or []
     if not messages:
         raise HTTPException(400, "messages required")
 
-    try:
-        client = AsyncAnthropic(api_key=api_key)
-        result = await client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1024,
-            system="""You are the built-in support assistant for Delight Shoppe Distribution Suite — a wholesale CRM platform for Amazon FBA sellers.
+    system_prompt = """You are the built-in support assistant for Delight Shoppe Distribution Suite — a wholesale CRM platform for Amazon FBA sellers.
 
 You help users with the platform's features:
 - **Dashboard**: repricer performance stats (price updates, buy box %, units sold)
@@ -2135,10 +2130,16 @@ You help users with the platform's features:
 
 Integrations: Keepa API, Amazon SP-API (inventory sync, ungating), Aura Repricer, SMTP email.
 
-Be concise, friendly, and specific. If you don't know something about their specific setup, say so.""",
-            messages=messages,
+Be concise, friendly, and specific. If you don't know something about their specific setup, say so."""
+
+    try:
+        client = AsyncGroq(api_key=api_key)
+        result = await client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            max_tokens=1024,
+            messages=[{"role": "system", "content": system_prompt}, *messages],
         )
-        return {"response": result.content[0].text}
+        return {"response": result.choices[0].message.content}
     except Exception as e:
         raise HTTPException(502, f"AI error: {str(e)}")
 
