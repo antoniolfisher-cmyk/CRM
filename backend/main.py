@@ -2347,6 +2347,7 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
         raise HTTPException(400, "ASIN must be 10 characters")
 
     # ── Always pull live offer data from Amazon SP-API (no Keepa tokens needed) ─
+    import asyncio as _asyncio
     from datetime import timezone as _tz
     _chart_url = f"https://graph.keepa.com/pricehistory.png?asin={asin}&domain=1&salesrank=1&bb=1&new=1&fbafba=1&range=90"
     _tenant_id = current.get("tenant_id", 1)
@@ -2488,8 +2489,31 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
             print(f"[sp_data] FAILED asin={asin} error={_e}", flush=True)
             return {}
 
-    # ── Run Amazon SP-API fetch first — always, zero Keepa tokens ─────────────
-    _live = await _sp_data()
+    # ── Run SP-API + Keepa concurrently (saves ~2-3s vs sequential) ─────────────
+    _keepa_api_key = os.getenv("KEEPA_API_KEY", "").strip()
+
+    async def _keepa_raw():
+        """Fetch raw Keepa product JSON. Returns {} on any error or rate-limit."""
+        if not _keepa_api_key:
+            return {}
+        try:
+            import httpx as _hk
+            async with _hk.AsyncClient(timeout=6) as _kc:
+                _kr = await _kc.get(
+                    "https://api.keepa.com/product",
+                    params={"key": _keepa_api_key, "domain": _KEEPA_DOMAIN,
+                            "asin": asin, "stats": "90", "offers": "20"},
+                )
+            if _kr.status_code != 200:
+                return {}
+            _kd = _kr.json()
+            if ((_kd.get("tokensLeft") or 1) < 0) or _kd.get("error"):
+                return {}
+            return _kd
+        except Exception:
+            return {}
+
+    _live, _keepa_concurrent = await _asyncio.gather(_sp_data(), _keepa_raw())
 
     def _base_resp(title="", buy_box=None, amazon_fee=None, bsr=None, category="",
                    estimated_sales=None, num_sellers=None,
@@ -2562,40 +2586,14 @@ async def keepa_lookup(asin: str, current: dict = Depends(require_auth), db: Ses
             fbm_low=_any.fbm_low, fbm_high=_any.fbm_high, fbm_median=_any.fbm_median,
         )
 
-    # ── Unknown ASIN: if SP-API returned enough, respond immediately ──────────
-    if _live.get("offers_available") or _live.get("title"):
-        return _base_resp()   # _live already merged in
-
-    # ── Last resort: try Keepa API ─────────────────────────────────────────────
-    api_key = os.getenv("KEEPA_API_KEY", "").strip()
-    if not api_key:
-        raise HTTPException(404, f"ASIN {asin} not found")
-
-    # Add offers=20 to get FBA vs FBM seller breakdown
-    url = (
-        f"https://api.keepa.com/product"
-        f"?key={api_key}&domain={_KEEPA_DOMAIN}&asin={asin}&stats=90&offers=20"
-    )
-    import httpx as _httpx
-    try:
-        async with _httpx.AsyncClient(timeout=8) as client:
-            resp = await client.get(url)
-        data = resp.json() if resp.status_code == 200 else {}
-    except Exception:
-        data = {}
-
-    # Keepa unavailable or rate-limited — return what SP-API gave us
-    # (Market Analysis still renders with live offer counts + buy box)
-    if (
-        not data
-        or (data.get("tokensLeft") or 1) < 0
-        or data.get("error")
-    ):
+    # ── No DB cache: use concurrently-fetched Keepa data ─────────────────────────
+    # If Keepa returned nothing, still show SP-API data (buy box, sellers, fee)
+    if not _keepa_concurrent:
         return _base_resp()
 
-    products_data = data.get("products") or []
+    products_data = _keepa_concurrent.get("products") or []
     if not products_data:
-        return _base_resp()   # ASIN unknown — still show Market Analysis with SP-API data
+        return _base_resp()   # ASIN not in Keepa — show Market Analysis with SP-API data only
 
     kp = products_data[0]
     stats = kp.get("stats") or {}
