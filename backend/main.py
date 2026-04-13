@@ -42,36 +42,57 @@ try:
     # Pipeline stage columns on accounts
     try:
         _cols = [c["name"] for c in _inspector.get_columns("accounts")]
-        with engine.connect() as _conn:
-            for _col, _ddl in [
-                ("pipeline_stage", "VARCHAR NOT NULL DEFAULT 'new'"),
-                ("pipeline_updated_at", "DATETIME"),
-                ("last_auto_followup_at", "DATETIME"),
-            ]:
-                if _col not in _cols:
-                    _conn.execute(text(f"ALTER TABLE accounts ADD COLUMN {_col} {_ddl}"))
-            _conn.commit()
+        for _col, _ddl in [
+            ("pipeline_stage",        "VARCHAR NOT NULL DEFAULT 'new'"),
+            ("pipeline_updated_at",   "TIMESTAMP WITH TIME ZONE"),
+            ("last_auto_followup_at", "TIMESTAMP WITH TIME ZONE"),
+        ]:
+            if _col not in _cols:
+                try:
+                    with engine.connect() as _conn:
+                        _conn.execute(text(f"ALTER TABLE accounts ADD COLUMN {_col} {_ddl}"))
+                        _conn.commit()
+                except Exception:
+                    pass
     except Exception:
         pass
-    # Keepa + Aria columns on products
+    # Keepa + Aria columns on products — each in its own connection so one failure
+    # doesn't block the rest (PostgreSQL DDL is transactional).
     try:
         _cols = [c["name"] for c in _inspector.get_columns("products")]
-        with engine.connect() as _conn:
-            for _col, _ddl in [
-                ("keepa_bsr", "INTEGER"),
-                ("keepa_category", "VARCHAR"),
-                ("keepa_last_synced", "DATETIME"),
-                ("aria_suggested_price", "REAL"),
-                ("aria_suggested_at", "DATETIME"),
-                ("aria_reasoning", "TEXT"),
-                ("aria_last_buy_box", "REAL"),
-                ("status", "TEXT DEFAULT 'sourcing'"),
-                ("aria_strategy_id", "INTEGER"),
-            ]:
-                if _col not in _cols:
-                    _conn.execute(text(f"ALTER TABLE products ADD COLUMN {_col} {_ddl}"))
-            _conn.execute(text("UPDATE products SET status = 'approved' WHERE status IS NULL"))
-            _conn.commit()
+        for _col, _ddl in [
+            ("keepa_bsr",           "INTEGER"),
+            ("keepa_category",      "VARCHAR"),
+            ("keepa_last_synced",   "TIMESTAMP WITH TIME ZONE"),
+            ("aria_suggested_price","DOUBLE PRECISION"),
+            ("aria_suggested_at",   "TIMESTAMP WITH TIME ZONE"),
+            ("aria_reasoning",      "TEXT"),
+            ("aria_last_buy_box",   "DOUBLE PRECISION"),
+            ("aria_strategy_id",    "INTEGER"),
+        ]:
+            if _col not in _cols:
+                try:
+                    with engine.connect() as _conn:
+                        _conn.execute(text(f"ALTER TABLE products ADD COLUMN {_col} {_ddl}"))
+                        _conn.commit()
+                except Exception as _ce:
+                    print(f"[migration] products.{_col}: {_ce}", flush=True)
+        # Ensure status column exists and default old rows
+        if "status" not in _cols:
+            try:
+                with engine.connect() as _conn:
+                    _conn.execute(text("ALTER TABLE products ADD COLUMN status TEXT DEFAULT 'sourcing'"))
+                    _conn.execute(text("UPDATE products SET status = 'approved' WHERE status IS NULL"))
+                    _conn.commit()
+            except Exception:
+                pass
+        else:
+            try:
+                with engine.connect() as _conn:
+                    _conn.execute(text("UPDATE products SET status = 'approved' WHERE status IS NULL"))
+                    _conn.commit()
+            except Exception:
+                pass
     except Exception:
         pass
     # One-time migration: approve all pre-workflow sourcing products
