@@ -280,6 +280,14 @@ export default function Onboarding() {
                 >
                   Go to Dashboard →
                 </button>
+                {isAdmin && oauthUrl && (
+                  <a
+                    href={oauthUrl}
+                    className="w-full py-2.5 text-sm text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-xl border border-blue-200 transition-colors text-center block font-medium"
+                  >
+                    ↻ Refresh API Permissions (re-authorize)
+                  </a>
+                )}
                 {isAdmin && (
                   <button
                     onClick={handleDisconnect}
