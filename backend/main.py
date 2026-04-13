@@ -21,7 +21,10 @@ from notifications import start_scheduler, stop_scheduler, send_daily_digests, s
 import aria_repricer
 import stripe_billing
 
-models.Base.metadata.create_all(bind=engine)
+try:
+    models.Base.metadata.create_all(bind=engine)
+except Exception as _create_all_err:
+    print(f"[startup] create_all warning: {_create_all_err}", flush=True)
 
 # ─── Migrations: add new columns to existing tables ───────────────────────────
 try:
@@ -667,6 +670,17 @@ async def aria_run_all(force: bool = False, db: Session = Depends(get_db), curre
         raise HTTPException(500, detail=f"Aria run failed: {str(e)}")
 
 
+@app.get("/api/health")
+def health_check():
+    """Simple health check — returns DB table list to confirm startup succeeded."""
+    try:
+        from sqlalchemy import inspect as _si
+        tables = _si(engine).get_table_names()
+        return {"status": "ok", "tables": tables}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
 @app.get("/api/repricer/logs")
 def list_repricer_logs(
     product_id: int = None,
@@ -676,12 +690,15 @@ def list_repricer_logs(
 ):
     """Return Aria price-change history for the current tenant."""
     tid = current.get("tenant_id")
-    q = db.query(models.RepricerLog)
-    if tid:
-        q = q.filter(models.RepricerLog.tenant_id == tid)
-    if product_id is not None:
-        q = q.filter(models.RepricerLog.product_id == product_id)
-    rows = q.order_by(models.RepricerLog.created_at.desc()).limit(min(limit, 500)).all()
+    try:
+        q = db.query(models.RepricerLog)
+        if tid:
+            q = q.filter(models.RepricerLog.tenant_id == tid)
+        if product_id is not None:
+            q = q.filter(models.RepricerLog.product_id == product_id)
+        rows = q.order_by(models.RepricerLog.created_at.desc()).limit(min(limit, 500)).all()
+    except Exception:
+        return []  # table may not exist yet on first deploy
     return [
         {
             "id":            r.id,
