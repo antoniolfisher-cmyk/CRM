@@ -639,7 +639,7 @@ async def aria_run_all(force: bool = False, db: Session = Depends(get_db), curre
 def list_repricer_strategies(db: Session = Depends(get_db), current: dict = Depends(require_admin)):
     tid = current.get("tenant_id")
     q = db.query(models.RepricerStrategy)
-    if tid and not current.get("is_superadmin"):
+    if tid:
         q = q.filter(models.RepricerStrategy.tenant_id == tid)
     return q.order_by(models.RepricerStrategy.created_at).all()
 
@@ -664,7 +664,7 @@ def create_repricer_strategy(data: schemas.RepricerStrategyCreate, db: Session =
 def update_repricer_strategy(strategy_id: int, data: schemas.RepricerStrategyUpdate, db: Session = Depends(get_db), current: dict = Depends(require_admin)):
     tid = current.get("tenant_id")
     q = db.query(models.RepricerStrategy).filter(models.RepricerStrategy.id == strategy_id)
-    if tid and not current.get("is_superadmin"):
+    if tid:
         q = q.filter(models.RepricerStrategy.tenant_id == tid)
     s = q.first()
     if not s:
@@ -689,7 +689,7 @@ def update_repricer_strategy(strategy_id: int, data: schemas.RepricerStrategyUpd
 def delete_repricer_strategy(strategy_id: int, db: Session = Depends(get_db), current: dict = Depends(require_admin)):
     tid = current.get("tenant_id")
     q = db.query(models.RepricerStrategy).filter(models.RepricerStrategy.id == strategy_id)
-    if tid and not current.get("is_superadmin"):
+    if tid:
         q = q.filter(models.RepricerStrategy.tenant_id == tid)
     s = q.first()
     if not s:
