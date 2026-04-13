@@ -297,9 +297,11 @@ try:
     try:
         _p2_cols = [c["name"] for c in _inspector.get_columns("products")]
         for _col, _ddl in [
-            ("seller_sku",          "VARCHAR"),
-            ("aria_live_price",     "DOUBLE PRECISION"),
-            ("aria_live_pushed_at", "TIMESTAMP WITH TIME ZONE"),
+            ("seller_sku",           "VARCHAR"),
+            ("aria_live_price",      "DOUBLE PRECISION"),
+            ("aria_live_pushed_at",  "TIMESTAMP WITH TIME ZONE"),
+            ("buy_box_winner",       "BOOLEAN"),
+            ("buy_box_checked_at",   "TIMESTAMP WITH TIME ZONE"),
         ]:
             if _col not in _p2_cols:
                 try:

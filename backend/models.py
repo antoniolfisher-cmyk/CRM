@@ -359,6 +359,8 @@ class Product(Base):
     aria_strategy_id     = Column(Integer, nullable=True)
     aria_live_price      = Column(Float, nullable=True)      # last price actually pushed to Amazon
     aria_live_pushed_at  = Column(DateTime(timezone=True), nullable=True)
+    buy_box_winner       = Column(Boolean, nullable=True)    # True=we have Buy Box, False=we don't, None=unknown
+    buy_box_checked_at   = Column(DateTime(timezone=True), nullable=True)
     fulfillment_channel  = Column(String, nullable=True)   # 'FBA' | 'FBM' | None (legacy)
 
     ungate_requests = relationship("UngateRequest", back_populates="product", cascade="all, delete-orphan")
