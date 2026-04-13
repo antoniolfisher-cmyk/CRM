@@ -17,7 +17,6 @@ from auth import (
     require_superadmin, hash_password, verify_password, ensure_bootstrap_admin, get_tenant_id,
 )
 from notifications import start_scheduler, stop_scheduler, send_daily_digests, send_email, build_digest_html, _smtp_configured
-import aura as aura_client
 import aria_repricer
 import stripe_billing
 
@@ -278,8 +277,11 @@ def shutdown():
 @app.post("/api/auth/login")
 def login(data: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.username == data.username).first()
+    if not user:
+        # Also allow login by email address
+        user = db.query(models.User).filter(models.User.email == data.username).first()
     if not user or not verify_password(data.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid username or password")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is disabled")
     tenant_id = user.tenant_id or 1
@@ -2344,60 +2346,6 @@ def delete_order(order_id: int, db: Session = Depends(get_db), current: dict = D
     _check_owner(order, current)
     db.delete(order)
     db.commit()
-
-
-# ─── Aura Repricer ────────────────────────────────────────────────────────────
-
-@app.get("/api/aura/status")
-def aura_status(_ = Depends(require_auth)):
-    return {"configured": bool(aura_client.AURA_API_KEY)}
-
-
-@app.get("/api/aura/listings")
-def aura_listings(_ = Depends(require_auth)):
-    """Fetch all listings from Aura (for preview/debugging)."""
-    if not aura_client.AURA_API_KEY:
-        raise HTTPException(status_code=400, detail="AURA_API_KEY not set")
-    try:
-        listings = aura_client.fetch_all_listings()
-        return {"count": len(listings), "listings": listings}
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-@app.post("/api/aura/sync")
-def aura_sync_all(db: Session = Depends(get_db), _ = Depends(require_auth)):
-    """Sync all products that have an ASIN to Aura."""
-    if not aura_client.AURA_API_KEY:
-        raise HTTPException(status_code=400, detail="AURA_API_KEY not set — add it to Railway environment variables")
-    products = db.query(models.Product).filter(
-        models.Product.asin != None,
-        models.Product.asin != "",
-    ).all()
-    if not products:
-        raise HTTPException(status_code=400, detail="No products with ASINs found")
-    try:
-        result = aura_client.sync_products_to_aura(products)
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-@app.post("/api/aura/sync/{product_id}")
-def aura_sync_one(product_id: int, db: Session = Depends(get_db), _ = Depends(require_auth)):
-    """Sync a single product to Aura."""
-    if not aura_client.AURA_API_KEY:
-        raise HTTPException(status_code=400, detail="AURA_API_KEY not set")
-    p = db.query(models.Product).filter(models.Product.id == product_id).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Product not found")
-    if not p.asin:
-        raise HTTPException(status_code=400, detail="Product has no ASIN — add an ASIN first")
-    try:
-        result = aura_client.sync_products_to_aura([p])
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
 
 
 # ─── Products ─────────────────────────────────────────────────────────────────
@@ -5205,11 +5153,11 @@ You help users with the platform's features:
 - **Orders**: purchase order tracking
 - **Sourcing**: adding new products to research — ASIN lookup pulls Keepa data (BSR, buy box price, FBA/FBM sellers, price history chart), auto-checks Amazon ungating, auto-fills product name and fees
 - **Current Inventory**: live FBA inventory synced from Amazon hourly, tabs by stage (In Stock, In Transit, At Prep, At Amazon, Out of Stock), click any row to open detail drawer
-- **Repricer**: Aria AI repricer sets prices per strategy; Aura repricer integration
+- **Repricer**: Aria AI repricer sets prices per strategy
 - **Time Clock**: clock in/out with notes, admin can view reports
 - **Support**: this page
 
-Integrations: Keepa API, Amazon SP-API (inventory sync, ungating), Aura Repricer, SMTP email.
+Integrations: Keepa API, Amazon SP-API (inventory sync, ungating), SMTP email.
 
 Be concise, friendly, and specific. If you don't know something about their specific setup, say so."""
 

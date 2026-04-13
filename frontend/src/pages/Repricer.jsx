@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react'
 import { api } from '../api'
 import Modal from '../components/Modal'
 
-// Mirrors Aura's strategy type catalogue
 const STRATEGY_CATALOG = {
   ai: [
     {

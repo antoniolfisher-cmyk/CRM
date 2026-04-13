@@ -53,11 +53,11 @@ export default function Login() {
 
           <form onSubmit={submit} className="space-y-4">
             <div>
-              <label className="label">Username</label>
+              <label className="label">Email or Username</label>
               <input
                 className="input"
                 type="text"
-                autoComplete="username"
+                autoComplete="username email"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 required

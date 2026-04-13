@@ -98,12 +98,8 @@ export default function Products() {
   const [filterReplenish, setFilterReplenish] = useState('')
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState(null)
-  const [auraConfigured, setAuraConfigured] = useState(false)
   const [keepaConfigured, setKeepaConfigured] = useState(false)
   const [amazonConfigured, setAmazonConfigured] = useState(false)
-  const [syncing, setSyncing] = useState(false)
-  const [syncingId, setSyncingId] = useState(null)
-  const [syncResult, setSyncResult] = useState(null)
   const [keepaSyncingId, setKeepaSyncingId] = useState(null)
   const [ungatingId, setUngatingId] = useState(null)
   const [submittingId, setSubmittingId] = useState(null)
@@ -122,7 +118,6 @@ export default function Products() {
 
   useEffect(() => {
     load()
-    api.getAuraStatus().then(r => setAuraConfigured(r.configured)).catch(() => {})
     api.keepaStatus().then(r => setKeepaConfigured(r.configured)).catch(() => {})
     api.amazonStatus().then(r => setAmazonConfigured(r.configured)).catch(() => {})
     api.ariaStatus().then(r => setAriaConfigured(r.configured)).catch(() => {})
@@ -143,27 +138,6 @@ export default function Products() {
     setShowForm(false)
     setEditing(null)
     load()
-  }
-
-  const handleSyncAll = async () => {
-    setSyncing(true); setSyncResult(null)
-    try {
-      const result = await api.syncAllToAura()
-      setSyncResult(result)
-    } catch (e) {
-      setSyncResult({ error: e.message })
-    } finally { setSyncing(false) }
-  }
-
-  const handleSyncOne = async (productId, e) => {
-    e.stopPropagation()
-    setSyncingId(productId); setSyncResult(null)
-    try {
-      const result = await api.syncOneToAura(productId)
-      setSyncResult(result)
-    } catch (e) {
-      setSyncResult({ error: e.message })
-    } finally { setSyncingId(null) }
   }
 
   const handleKeepaSyncOne = async (productId, e) => {
@@ -259,12 +233,6 @@ export default function Products() {
               {importing ? 'Importing...' : 'Import from Amazon'}
             </button>
           )}
-          {auraConfigured && (
-            <button className="btn-secondary flex items-center gap-2" onClick={handleSyncAll} disabled={syncing}>
-              <AuraIcon />
-              {syncing ? 'Syncing...' : 'Sync All to Aura'}
-            </button>
-          )}
           <button className="btn-primary" onClick={() => { setEditing(null); setShowForm(true) }}>
             <PlusIcon /> Add Product
           </button>
@@ -283,36 +251,6 @@ export default function Products() {
             </p>
           )}
           <button className="text-xs underline mt-1 opacity-60" onClick={() => setImportResult(null)}>dismiss</button>
-        </div>
-      )}
-
-      {/* Aura not configured banner */}
-      {!auraConfigured && (
-        <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-sm text-amber-800 flex items-center gap-2">
-          <AuraIcon className="text-amber-600 shrink-0" />
-          <span>Add <code className="bg-amber-100 px-1 rounded">AURA_API_KEY</code> to your Railway environment variables to enable Aura sync.</span>
-        </div>
-      )}
-
-      {/* Sync result */}
-      {syncResult && (
-        <div className={`rounded-lg p-4 text-sm ${syncResult.error ? 'bg-red-50 border border-red-200' : 'bg-green-50 border border-green-200'}`}>
-          {syncResult.error ? (
-            <p className="text-red-700">✗ {syncResult.error}</p>
-          ) : (
-            <div className="space-y-1">
-              <p className="font-medium text-green-800">
-                ✓ Synced {syncResult.synced?.length || 0} · Skipped {syncResult.skipped?.length || 0} · Errors {syncResult.errors?.length || 0}
-              </p>
-              {syncResult.skipped?.length > 0 && (
-                <p className="text-amber-700 text-xs">{syncResult.skipped.map(s => `${s.product}: ${s.reason}`).join(' · ')}</p>
-              )}
-              {syncResult.errors?.length > 0 && (
-                <p className="text-red-700 text-xs">{syncResult.errors.map(e => `${e.product}: ${e.error}`).join(' · ')}</p>
-              )}
-            </div>
-          )}
-          <button className="text-xs underline mt-1 opacity-60" onClick={() => setSyncResult(null)}>dismiss</button>
         </div>
       )}
 
@@ -422,16 +360,6 @@ export default function Products() {
                           title={p.aria_suggested_price ? `Aria: ${fmtCurrency(p.aria_suggested_price)} — click to refresh` : 'Run Aria AI Repricer'}
                         >
                           {ariaRunningId === p.id ? '⏳' : '✦'}
-                        </button>
-                      )}
-                      {auraConfigured && p.asin && (
-                        <button
-                          className="btn-ghost py-1 px-2 text-xs text-purple-600 hover:bg-purple-50"
-                          onClick={(e) => handleSyncOne(p.id, e)}
-                          disabled={syncingId === p.id}
-                          title="Sync to Aura Repricer"
-                        >
-                          {syncingId === p.id ? '...' : <AuraIcon />}
                         </button>
                       )}
                       <button
@@ -552,7 +480,20 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
   const [keepaLoading, setKeepaLoading] = useState(false)
-  const [keepaFilled, setKeepaFilled] = useState(null)  // full Keepa response or null
+  // Pre-populate from stored product data so Market Analysis shows without waiting for Keepa
+  const [keepaFilled, setKeepaFilled] = useState(() => {
+    if (initial && (initial.estimated_sales != null || initial.buy_box != null || initial.num_sellers != null)) {
+      return {
+        estimated_sales: initial.estimated_sales,
+        buy_box: initial.buy_box,
+        amazon_fee: initial.amazon_fee,
+        num_sellers: initial.num_sellers,
+        bsr: initial.keepa_bsr,
+        category: initial.keepa_category,
+      }
+    }
+    return null
+  })
   const [keepaError, setKeepaError] = useState('')
   const [ungatingStatus, setUngatingStatus] = useState(null)  // null | 'loading' | true | false
   const [ungatingRestrictions, setUngatingRestrictions] = useState([])
@@ -1019,12 +960,3 @@ function KeepaIcon({ spinning = false }) {
   )
 }
 
-function AuraIcon({ className = '' }) {
-  return (
-    <svg className={`w-4 h-4 ${className}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 2L2 7l10 5 10-5-10-5z" />
-      <path d="M2 17l10 5 10-5" />
-      <path d="M2 12l10 5 10-5" />
-    </svg>
-  )
-}
