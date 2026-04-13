@@ -1438,19 +1438,23 @@ async def get_dashboard_amazon_sales(
             groups = fin_resp.json().get("payload", {}).get("FinancialEventGroupList", [])
             total_balance = 0.0
             for g in groups:
-                if g.get("ProcessingStatus") == "Open":
+                fund_status = g.get("FundTransferStatus", "")
+                # Sum all groups Amazon hasn't yet paid out (Open + Closed-pending-transfer)
+                if fund_status not in ("Successful",):
                     orig = g.get("OriginalTotal") or g.get("ConvertedTotal") or {}
                     amt  = float(orig.get("Amount") or 0)
                     cur2 = orig.get("CurrencyCode", currency)
                     if cur2:
                         payment_currency = cur2
                     total_balance += amt
-            # Fallback: if no Open group, use most recent Closed group
-            if total_balance == 0.0 and groups:
-                g    = groups[0]
-                orig = g.get("OriginalTotal") or g.get("ConvertedTotal") or {}
-                total_balance = float(orig.get("Amount") or 0)
+            # If everything was already paid out (or no groups), fall back to Open groups only
+            if total_balance == 0.0:
+                for g in groups:
+                    if g.get("ProcessingStatus") == "Open":
+                        orig = g.get("OriginalTotal") or g.get("ConvertedTotal") or {}
+                        total_balance += float(orig.get("Amount") or 0)
             payment_balance = round(total_balance, 2)
+            print(f"[finances] balance={payment_balance} from {len(groups)} groups", flush=True)
             # Store in cache
             _finances_cache[tenant_id] = {
                 "balance":    payment_balance,

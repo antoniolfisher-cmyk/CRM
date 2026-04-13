@@ -217,7 +217,11 @@ function AmazonSalesPanel() {
             <div className="flex items-start justify-between mb-3">
               <div>
                 <p className="text-xs font-semibold text-green-600 uppercase tracking-wider">Amazon Balance</p>
-                <p className="text-4xl font-bold text-gray-900 mt-1">{fmt$(data.payment_balance ?? data.revenue)}</p>
+                <p className="text-4xl font-bold text-gray-900 mt-1">
+                  {data.payment_balance !== null && data.payment_balance !== undefined
+                    ? fmt$(data.payment_balance)
+                    : <span className="text-2xl text-gray-400">Fetching…</span>}
+                </p>
               </div>
               <div className="w-10 h-10 bg-green-50 text-green-600 rounded-lg flex items-center justify-center shrink-0 group-hover:bg-green-100 transition-colors">
                 <PaymentIcon />
@@ -226,7 +230,7 @@ function AmazonSalesPanel() {
             <div className="pt-3 border-t border-gray-100">
               <div className="flex items-center gap-1.5">
                 <span className="w-2 h-2 bg-green-400 rounded-full inline-block" />
-                <p className="text-xs text-gray-500">{data.payment_balance !== null ? 'Balance held by Amazon' : `${periodLabel} revenue from orders`}</p>
+                <p className="text-xs text-gray-500">{data.payment_balance !== null ? 'Balance held by Amazon' : 'Balance unavailable — check Amazon connection'}</p>
               </div>
             </div>
           </button>
@@ -302,8 +306,14 @@ function AmazonSalesPanel() {
                 <div className="p-5 space-y-4">
                   <div className="bg-green-50 border border-green-200 rounded-xl p-4">
                     <p className="text-xs text-green-600 font-semibold uppercase tracking-wider mb-1">Total Balance</p>
-                    <p className="text-3xl font-bold text-green-900">{fmt$(data.payment_balance ?? data.revenue)}</p>
-                    <p className="text-xs text-green-600 mt-1">{data.payment_balance !== null ? 'Funds held by Amazon pending next disbursement' : `${periodLabel} revenue — balance unavailable`}</p>
+                    <p className="text-3xl font-bold text-green-900">
+                      {data.payment_balance !== null && data.payment_balance !== undefined
+                        ? fmt$(data.payment_balance)
+                        : <span className="text-gray-400 text-xl">Balance unavailable</span>}
+                    </p>
+                    <p className="text-xs text-green-600 mt-1">
+                      {data.payment_balance !== null ? 'Funds held by Amazon pending next disbursement' : 'Could not load from Finances API — check Amazon connection at /onboarding/amazon'}
+                    </p>
                   </div>
                   {(data.balance_breakdown || []).length > 0 && (
                     <div>
