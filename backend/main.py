@@ -228,14 +228,16 @@ try:
                 _conn.commit()
     except Exception:
         pass
-    # ── Add dashboard_sections to users ─────────────────────────────────────
+    # ── Add dashboard_sections and page_permissions to users ─────────────────
     try:
         if "users" in _inspector.get_table_names():
             _u_cols = [c["name"] for c in _inspector.get_columns("users")]
-            if "dashboard_sections" not in _u_cols:
-                with engine.connect() as _conn:
+            with engine.connect() as _conn:
+                if "dashboard_sections" not in _u_cols:
                     _conn.execute(text("ALTER TABLE users ADD COLUMN dashboard_sections TEXT"))
-                    _conn.commit()
+                if "page_permissions" not in _u_cols:
+                    _conn.execute(text("ALTER TABLE users ADD COLUMN page_permissions TEXT"))
+                _conn.commit()
     except Exception:
         pass
     # ── Apply STORE_NAME env var to "Default" tenant on startup ─────────────
@@ -423,6 +425,7 @@ def me(payload: dict = Depends(require_auth), db: Session = Depends(get_db)):
         "email":               db_user.email if db_user else None,
         "notify_email":        db_user.notify_email if db_user else True,
         "dashboard_sections":  db_user.dashboard_sections if db_user else None,
+        "page_permissions":    db_user.page_permissions if db_user else None,
     }
 
 

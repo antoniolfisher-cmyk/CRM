@@ -35,7 +35,7 @@ export default function App() {
 }
 
 function PrivateRoute() {
-  const { isAuthenticated, isAdmin, isSuperAdmin, checking } = useAuth()
+  const { isAuthenticated, isAdmin, isSuperAdmin, user, checking } = useAuth()
   const location = useLocation()
 
   if (checking) {
@@ -50,24 +50,32 @@ function PrivateRoute() {
     return <Navigate to="/login" state={{ from: location.pathname }} replace />
   }
 
+  // Check page-level permission for non-admins
+  const canAccessPage = (permKey) => {
+    if (isAdmin) return true
+    if (!user?.page_permissions) return true   // no restriction
+    return user.page_permissions.split(',').map(s => s.trim()).includes(permKey)
+  }
+  const guard = (permKey, el) => canAccessPage(permKey) ? el : <Navigate to="/" replace />
+
   return (
     <Layout>
       <Routes>
-        <Route path="/"            element={<Dashboard />} />
-        <Route path="/accounts"    element={<Accounts />} />
-        <Route path="/follow-ups"  element={<FollowUps />} />
-        <Route path="/orders"      element={<Orders />} />
-        <Route path="/sourcing"    element={<Products />} />
-        <Route path="/inventory"   element={<Inventory />} />
+        <Route path="/"            element={guard('dashboard',   <Dashboard />)} />
+        <Route path="/accounts"    element={guard('accounts',    <Accounts />)} />
+        <Route path="/follow-ups"  element={guard('follow_ups',  <FollowUps />)} />
+        <Route path="/orders"      element={guard('orders',      <Orders />)} />
+        <Route path="/sourcing"    element={guard('sourcing',    <Products />)} />
+        <Route path="/inventory"   element={guard('inventory',   <Inventory />)} />
         <Route path="/products"    element={<Navigate to="/sourcing" replace />} />
-        <Route path="/timeclock"   element={<TimeClock />} />
-        <Route path="/support"     element={<Support />} />
-        <Route path="/upc-scanner" element={<UpcScanner />} />
-        <Route path="/ungate"      element={<Ungate />} />
+        <Route path="/timeclock"   element={guard('timeclock',   <TimeClock />)} />
+        <Route path="/support"     element={guard('support',     <Support />)} />
+        <Route path="/upc-scanner" element={guard('upc_scanner', <UpcScanner />)} />
+        <Route path="/ungate"      element={guard('ungate',      <Ungate />)} />
         <Route path="/billing"        element={<Billing />} />
-        <Route path="/approvals"      element={isAdmin ? <Approvals /> : <Navigate to="/" replace />} />
-        <Route path="/repricer"       element={isAdmin ? <Repricer /> : <Navigate to="/" replace />} />
-        <Route path="/admin"          element={isAdmin ? <Admin /> : <Navigate to="/" replace />} />
+        <Route path="/approvals"      element={isAdmin ? <Approvals />    : <Navigate to="/" replace />} />
+        <Route path="/repricer"       element={isAdmin ? <Repricer />     : <Navigate to="/" replace />} />
+        <Route path="/admin"          element={isAdmin ? <Admin />        : <Navigate to="/" replace />} />
         <Route path="/admin-billing"  element={isSuperAdmin ? <AdminBilling /> : <Navigate to="/" replace />} />
         <Route path="/profile"        element={<Profile />} />
         <Route path="*"               element={<Navigate to="/" replace />} />

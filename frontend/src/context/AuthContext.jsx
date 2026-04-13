@@ -29,6 +29,7 @@ export function AuthProvider({ children }) {
         email:              data.email || '',
         notify_email:       data.notify_email !== false,
         dashboard_sections: data.dashboard_sections || null,
+        page_permissions:   data.page_permissions || null,
       }))
       .catch(() => { localStorage.removeItem(TOKEN_KEY); setToken(null) })
       .finally(() => setChecking(false))
@@ -60,6 +61,7 @@ export function AuthProvider({ children }) {
       email:              me.email || '',
       notify_email:       me.notify_email !== false,
       dashboard_sections: me.dashboard_sections || null,
+      page_permissions:   me.page_permissions || null,
     })
   }
 

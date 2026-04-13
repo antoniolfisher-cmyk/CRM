@@ -1,21 +1,32 @@
 import { NavLink, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 
+// Each entry has a `permKey` matching the page_permissions field values
 const nav = [
-  { to: '/', label: 'Dashboard', icon: DashIcon },
-  { to: '/accounts', label: 'Accounts', icon: BuildingIcon },
-  { to: '/follow-ups', label: 'Follow-Ups', icon: CalendarIcon },
-  { to: '/orders', label: 'Orders', icon: BoxIcon },
-  { to: '/sourcing', label: 'Sourcing', icon: TagIcon },
-  { to: '/inventory', label: 'Current Inventory', icon: InventoryIcon },
-  { to: '/timeclock', label: 'Time Clock', icon: ClockIcon },
-  { to: '/upc-scanner', label: 'UPC Scanner', icon: BarcodeIcon },
-  { to: '/ungate', label: 'Ungate Requests', icon: UnlockIcon },
-  { to: '/support', label: 'Support', icon: SupportIcon },
+  { to: '/',           label: 'Dashboard',        icon: DashIcon,      permKey: 'dashboard' },
+  { to: '/accounts',   label: 'Accounts',         icon: BuildingIcon,  permKey: 'accounts' },
+  { to: '/follow-ups', label: 'Follow-Ups',       icon: CalendarIcon,  permKey: 'follow_ups' },
+  { to: '/orders',     label: 'Orders',           icon: BoxIcon,       permKey: 'orders' },
+  { to: '/sourcing',   label: 'Sourcing',         icon: TagIcon,       permKey: 'sourcing' },
+  { to: '/inventory',  label: 'Current Inventory',icon: InventoryIcon, permKey: 'inventory' },
+  { to: '/timeclock',  label: 'Time Clock',       icon: ClockIcon,     permKey: 'timeclock' },
+  { to: '/upc-scanner',label: 'UPC Scanner',      icon: BarcodeIcon,   permKey: 'upc_scanner' },
+  { to: '/ungate',     label: 'Ungate Requests',  icon: UnlockIcon,    permKey: 'ungate' },
+  { to: '/support',    label: 'Support',          icon: SupportIcon,   permKey: 'support' },
 ]
 
 export default function Layout({ children }) {
   const { user, logout, isAdmin, isSuperAdmin } = useAuth()
+
+  // Admins and users with no restriction see all nav items
+  const allowedPages = (isAdmin || !user?.page_permissions)
+    ? null  // null = no filter
+    : user.page_permissions.split(',').map(s => s.trim())
+
+  const visibleNav = allowedPages
+    ? nav.filter(item => allowedPages.includes(item.permKey))
+    : nav
+
   return (
     <div className="min-h-screen flex">
       {/* Sidebar */}
@@ -38,7 +49,7 @@ export default function Layout({ children }) {
           </div>
         </div>
         <nav className="flex-1 px-3 py-4 space-y-1">
-          {nav.map(({ to, label, icon: Icon }) => (
+          {visibleNav.map(({ to, label, icon: Icon }) => (
             <NavLink
               key={to}
               to={to}

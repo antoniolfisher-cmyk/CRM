@@ -12,6 +12,7 @@ class UserCreate(BaseModel):
     email: Optional[str] = None
     notify_email: bool = True
     dashboard_sections: Optional[str] = None   # comma-separated; None = all visible
+    page_permissions:   Optional[str] = None   # comma-separated page keys; None = all pages
 
 
 class UserUpdate(BaseModel):
@@ -22,6 +23,7 @@ class UserUpdate(BaseModel):
     email: Optional[str] = None
     notify_email: Optional[bool] = None
     dashboard_sections: Optional[str] = None
+    page_permissions:   Optional[str] = None
 
 
 class UserOut(BaseModel):
@@ -32,6 +34,7 @@ class UserOut(BaseModel):
     email: Optional[str] = None
     notify_email: bool = True
     dashboard_sections: Optional[str] = None
+    page_permissions:   Optional[str] = None
     created_at: Optional[datetime] = None
 
     class Config:
