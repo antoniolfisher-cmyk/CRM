@@ -636,8 +636,38 @@ def set_my_email(body: dict, db: Session = Depends(get_db), current: dict = Depe
 # ─── Aria AI Repricer ─────────────────────────────────────────────────────────
 
 @app.get("/api/repricer/aria/status")
-def aria_status(current: dict = Depends(require_auth)):
-    return {"configured": aria_repricer.aria_configured()}
+def aria_status(db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    tid = current.get("tenant_id")
+
+    base_q = db.query(models.Product)
+    if tid:
+        base_q = base_q.filter(models.Product.tenant_id == tid)
+
+    # Products eligible for Aria (have both buy_box and buy_cost)
+    eligible = base_q.filter(
+        models.Product.buy_box > 0,
+        models.Product.buy_cost > 0,
+    ).count()
+
+    # Products with buy_box but missing buy_cost (need cost data to run)
+    need_cost = base_q.filter(
+        models.Product.buy_box > 0,
+        models.Product.buy_cost == None,
+    ).count()
+
+    # Eligible products missing seller_sku (will reprice but NOT push to Amazon)
+    no_sku = base_q.filter(
+        models.Product.buy_box > 0,
+        models.Product.buy_cost > 0,
+        models.Product.seller_sku == None,
+    ).count()
+
+    return {
+        "configured":    aria_repricer.aria_configured(),
+        "eligible":      eligible,
+        "need_cost":     need_cost,
+        "no_sku":        no_sku,
+    }
 
 
 @app.post("/api/repricer/aria/run/{product_id}", response_model=schemas.ProductOut)

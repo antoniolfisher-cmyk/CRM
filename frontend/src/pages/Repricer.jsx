@@ -404,7 +404,7 @@ export default function Repricer() {
   const [picking, setPicking] = useState(false)
   const [pickedType, setPickedType] = useState(null)
   const [error, setError] = useState('')
-  const [ariaConfigured, setAriaConfigured] = useState(false)
+  const [ariaStatus, setAriaStatus] = useState({ configured: false, eligible: 0, need_cost: 0, no_sku: 0 })
   const [ariaRunning, setAriaRunning] = useState(false)
   const [ariaResult, setAriaResult] = useState(null)
   const [logs, setLogs] = useState([])
@@ -427,7 +427,7 @@ export default function Repricer() {
   useEffect(() => {
     load()
     loadLogs()
-    api.ariaStatus().then(r => setAriaConfigured(r.configured)).catch(() => {})
+    api.ariaStatus().then(r => setAriaStatus(r)).catch(() => {})
   }, [])
 
   const handleAriaRunAll = async () => {
@@ -435,7 +435,8 @@ export default function Repricer() {
     try {
       const result = await api.ariaRunAll()
       setAriaResult(result)
-      if (result.repriced > 0) loadLogs()
+      loadLogs()
+      api.ariaStatus().then(r => setAriaStatus(r)).catch(() => {})
     }
     catch (e) { setError(e.message) }
     finally { setAriaRunning(false) }
@@ -480,38 +481,48 @@ export default function Repricer() {
       )}
 
       {/* Aria status card */}
-      <div className={`card p-4 border-l-4 ${ariaConfigured ? 'border-violet-500' : 'border-gray-300'}`}>
+      <div className={`card p-4 border-l-4 ${ariaStatus.configured ? 'border-violet-500' : 'border-gray-300'}`}>
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-3">
             <span className="text-2xl">✦</span>
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-semibold text-gray-900">Aria AI Repricer</span>
-                <span className={`badge ${ariaConfigured ? 'bg-violet-100 text-violet-700' : 'bg-gray-100 text-gray-500'}`}>
-                  {ariaConfigured ? 'Ready' : 'Not Configured'}
+                <span className={`badge ${ariaStatus.configured ? 'bg-violet-100 text-violet-700' : 'bg-gray-100 text-gray-500'}`}>
+                  {ariaStatus.configured ? 'Ready' : 'Not Configured'}
                 </span>
               </div>
-              <p className="text-xs text-gray-500 mt-0.5">
-                {ariaConfigured
-                  ? 'Aria will analyze market data and suggest optimal prices for all products with a buy box price.'
-                  : 'Add ANTHROPIC_API_KEY to your environment variables to enable Aria.'}
-              </p>
+              {ariaStatus.configured ? (
+                <p className="text-xs text-gray-500 mt-0.5">
+                  {ariaStatus.eligible > 0
+                    ? <>{ariaStatus.eligible} product{ariaStatus.eligible !== 1 ? 's' : ''} eligible to reprice
+                       {ariaStatus.no_sku > 0 && <> · <span className="text-amber-600">{ariaStatus.no_sku} missing seller SKU (won't push to Amazon)</span></>}
+                       {ariaStatus.need_cost > 0 && <> · <span className="text-amber-600">{ariaStatus.need_cost} need a Buy Cost set</span></>}
+                    </>
+                    : ariaStatus.need_cost > 0
+                      ? <span className="text-amber-600">No eligible products — {ariaStatus.need_cost} product{ariaStatus.need_cost !== 1 ? 's' : ''} need a Buy Cost entered before Aria can reprice them.</span>
+                      : 'No products with both Buy Box price and Buy Cost set. Add cost data to your products to enable repricing.'
+                  }
+                </p>
+              ) : (
+                <p className="text-xs text-gray-500 mt-0.5">Add ANTHROPIC_API_KEY to your environment variables to enable Aria.</p>
+              )}
             </div>
           </div>
-          <div className="flex gap-2 items-center">
+          <div className="flex gap-2 items-center flex-wrap">
             {ariaResult && (
               <span className="text-xs text-gray-500">
                 Last run: {ariaResult.repriced} repriced
                 {' · '}{ariaResult.pushed ?? 0} pushed to Amazon
                 {ariaResult.no_sku > 0 && <> · <span className="text-amber-600">{ariaResult.no_sku} missing SKU</span></>}
                 {ariaResult.skipped > 0 && <> · {ariaResult.skipped} skipped</>}
-                {ariaResult.errors > 0 && <> · {ariaResult.errors} errors</>}
+                {ariaResult.errors > 0 && <> · <span className="text-red-500">{ariaResult.errors} errors</span></>}
               </span>
             )}
             <button
               className="btn-primary flex items-center gap-2"
               onClick={handleAriaRunAll}
-              disabled={!ariaConfigured || ariaRunning}
+              disabled={!ariaStatus.configured || ariaRunning}
             >
               {ariaRunning ? '⏳ Running...' : '✦ Run Aria on All Products'}
             </button>
