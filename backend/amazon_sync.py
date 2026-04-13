@@ -507,6 +507,8 @@ async def run_sync(tenant_id: Optional[int] = None) -> dict:
             if existing:
                 existing.quantity = item["quantity"]
                 existing.fulfillment_channel = channel
+                if item.get("seller_sku"):
+                    existing.seller_sku = item["seller_sku"]
                 updated += 1
             else:
                 now = datetime.now(timezone.utc)
@@ -515,7 +517,7 @@ async def run_sync(tenant_id: Optional[int] = None) -> dict:
                     asin=asin,
                     product_name=item["product_name"] or asin,
                     quantity=item["quantity"],
-                    order_number=item["seller_sku"] or None,
+                    seller_sku=item.get("seller_sku") or None,
                     status="approved",
                     date_sent_to_amazon=now if channel == "FBA" else None,
                     created_by="system",

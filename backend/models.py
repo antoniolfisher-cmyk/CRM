@@ -349,14 +349,36 @@ class Product(Base):
 
     status = Column(String, default='sourcing')
 
+    seller_sku           = Column(String, nullable=True, index=True)   # Amazon seller-assigned SKU
     aria_suggested_price = Column(Float, nullable=True)
     aria_suggested_at    = Column(DateTime(timezone=True), nullable=True)
     aria_reasoning       = Column(Text, nullable=True)
     aria_last_buy_box    = Column(Float, nullable=True)
     aria_strategy_id     = Column(Integer, nullable=True)
+    aria_live_price      = Column(Float, nullable=True)      # last price actually pushed to Amazon
+    aria_live_pushed_at  = Column(DateTime(timezone=True), nullable=True)
     fulfillment_channel  = Column(String, nullable=True)   # 'FBA' | 'FBM' | None (legacy)
 
     ungate_requests = relationship("UngateRequest", back_populates="product", cascade="all, delete-orphan")
+
+
+class RepricerLog(Base):
+    """One row per price change Aria pushes to Amazon."""
+    __tablename__ = "repricer_logs"
+
+    id           = Column(Integer, primary_key=True, index=True)
+    tenant_id    = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
+    product_id   = Column(Integer, nullable=True)   # soft ref — product may be deleted
+    asin         = Column(String, nullable=False, index=True)
+    seller_sku   = Column(String, nullable=True)
+    product_name = Column(String, nullable=True)
+    old_price    = Column(Float, nullable=True)
+    new_price    = Column(Float, nullable=False)
+    buy_box      = Column(Float, nullable=True)
+    reasoning    = Column(Text, nullable=True)
+    pushed       = Column(Boolean, default=False)    # True = sent to Amazon successfully
+    amazon_status = Column(Integer, nullable=True)   # HTTP status from Listings API
+    created_at   = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class UngateTemplate(Base):

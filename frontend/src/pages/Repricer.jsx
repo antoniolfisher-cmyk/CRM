@@ -330,6 +330,72 @@ function PlusIcon() {
   return <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
 }
 
+function AriaActivityLog({ logs, loading, onRefresh }) {
+  if (loading) return <p className="text-gray-400 text-sm text-center py-4">Loading activity...</p>
+  if (!logs.length) return (
+    <div className="text-center py-6 text-gray-400 text-sm">
+      No price changes yet. Run Aria to see activity here.
+    </div>
+  )
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-left text-xs text-gray-400 uppercase tracking-wide border-b border-gray-100">
+            <th className="pb-2 font-medium">Product</th>
+            <th className="pb-2 font-medium text-right">Old Price</th>
+            <th className="pb-2 font-medium text-right">New Price</th>
+            <th className="pb-2 font-medium text-right">Buy Box</th>
+            <th className="pb-2 font-medium">Reasoning</th>
+            <th className="pb-2 font-medium text-center">Status</th>
+            <th className="pb-2 font-medium text-right">When</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-50">
+          {logs.map(l => {
+            const delta = l.old_price != null ? l.new_price - l.old_price : null
+            const ts = l.created_at ? new Date(l.created_at) : null
+            const timeStr = ts ? ts.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—'
+            return (
+              <tr key={l.id} className="hover:bg-gray-50 transition-colors">
+                <td className="py-2 pr-3">
+                  <div className="font-medium text-gray-900 truncate max-w-[180px]" title={l.product_name}>{l.product_name || '—'}</div>
+                  {l.asin && <div className="text-xs text-gray-400">{l.asin}</div>}
+                </td>
+                <td className="py-2 text-right text-gray-500 tabular-nums">
+                  {l.old_price != null ? `$${l.old_price.toFixed(2)}` : '—'}
+                </td>
+                <td className="py-2 text-right font-semibold tabular-nums">
+                  <span className={delta == null ? '' : delta > 0 ? 'text-green-600' : delta < 0 ? 'text-red-500' : 'text-gray-700'}>
+                    ${l.new_price.toFixed(2)}
+                    {delta != null && delta !== 0 && (
+                      <span className="text-xs ml-1">{delta > 0 ? '+' : ''}{delta.toFixed(2)}</span>
+                    )}
+                  </span>
+                </td>
+                <td className="py-2 text-right text-gray-500 tabular-nums">
+                  {l.buy_box != null ? `$${l.buy_box.toFixed(2)}` : '—'}
+                </td>
+                <td className="py-2 px-3 text-gray-500 text-xs max-w-[220px]">
+                  <span title={l.reasoning} className="line-clamp-2">{l.reasoning || '—'}</span>
+                </td>
+                <td className="py-2 text-center">
+                  {l.pushed
+                    ? <span className="badge bg-green-100 text-green-700 text-xs">Pushed</span>
+                    : <span className="badge bg-gray-100 text-gray-400 text-xs">Not pushed</span>
+                  }
+                </td>
+                <td className="py-2 text-right text-gray-400 text-xs whitespace-nowrap">{timeStr}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 export default function Repricer() {
   const [strategies, setStrategies] = useState([])
   const [loading, setLoading] = useState(true)
@@ -341,6 +407,15 @@ export default function Repricer() {
   const [ariaConfigured, setAriaConfigured] = useState(false)
   const [ariaRunning, setAriaRunning] = useState(false)
   const [ariaResult, setAriaResult] = useState(null)
+  const [logs, setLogs] = useState([])
+  const [logsLoading, setLogsLoading] = useState(false)
+
+  const loadLogs = async () => {
+    setLogsLoading(true)
+    try { setLogs(await api.ariaLogs(null, 100)) }
+    catch { /* silently ignore */ }
+    finally { setLogsLoading(false) }
+  }
 
   const load = async () => {
     setLoading(true)
@@ -351,12 +426,17 @@ export default function Repricer() {
 
   useEffect(() => {
     load()
+    loadLogs()
     api.ariaStatus().then(r => setAriaConfigured(r.configured)).catch(() => {})
   }, [])
 
   const handleAriaRunAll = async () => {
     setAriaRunning(true); setAriaResult(null)
-    try { setAriaResult(await api.ariaRunAll()) }
+    try {
+      const result = await api.ariaRunAll()
+      setAriaResult(result)
+      if (result.repriced > 0) loadLogs()
+    }
     catch (e) { setError(e.message) }
     finally { setAriaRunning(false) }
   }
@@ -421,7 +501,11 @@ export default function Repricer() {
           <div className="flex gap-2 items-center">
             {ariaResult && (
               <span className="text-xs text-gray-500">
-                Last run: {ariaResult.repriced} repriced · {ariaResult.skipped ?? 0} skipped · {ariaResult.errors} errors
+                Last run: {ariaResult.repriced} repriced
+                {' · '}{ariaResult.pushed ?? 0} pushed to Amazon
+                {ariaResult.no_sku > 0 && <> · <span className="text-amber-600">{ariaResult.no_sku} missing SKU</span></>}
+                {ariaResult.skipped > 0 && <> · {ariaResult.skipped} skipped</>}
+                {ariaResult.errors > 0 && <> · {ariaResult.errors} errors</>}
               </span>
             )}
             <button
@@ -497,6 +581,20 @@ export default function Repricer() {
             </div>
           )
         })}
+      </div>
+
+      {/* Aria Activity Log */}
+      <div className="card p-4">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h2 className="font-semibold text-gray-900">Aria Price Change History</h2>
+            <p className="text-xs text-gray-400 mt-0.5">Every price Aria has set — including whether it was pushed live to Amazon</p>
+          </div>
+          <button className="btn-ghost py-1 px-2 text-xs" onClick={loadLogs} disabled={logsLoading}>
+            {logsLoading ? 'Loading...' : 'Refresh'}
+          </button>
+        </div>
+        <AriaActivityLog logs={logs} loading={logsLoading} onRefresh={loadLogs} />
       </div>
 
       {picking && (
