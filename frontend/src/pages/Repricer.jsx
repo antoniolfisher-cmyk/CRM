@@ -501,7 +501,11 @@ export default function Repricer() {
           <div className="flex gap-2 items-center">
             {ariaResult && (
               <span className="text-xs text-gray-500">
-                Last run: {ariaResult.repriced} repriced · {ariaResult.pushed ?? 0} pushed to Amazon · {ariaResult.skipped ?? 0} skipped · {ariaResult.errors} errors
+                Last run: {ariaResult.repriced} repriced
+                {' · '}{ariaResult.pushed ?? 0} pushed to Amazon
+                {ariaResult.no_sku > 0 && <> · <span className="text-amber-600">{ariaResult.no_sku} missing SKU</span></>}
+                {ariaResult.skipped > 0 && <> · {ariaResult.skipped} skipped</>}
+                {ariaResult.errors > 0 && <> · {ariaResult.errors} errors</>}
               </span>
             )}
             <button

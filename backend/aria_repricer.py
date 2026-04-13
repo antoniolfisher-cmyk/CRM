@@ -194,7 +194,17 @@ async def run_all_async(force: bool = False, tenant_id=None) -> dict:
             q = q.filter(models.Product.tenant_id == tenant_id)
         candidates = q.all()
 
-        repriced = skipped = errors = pushed = 0
+        # Diagnostic: log credential status once before the loop
+        if cred:
+            log.info(
+                "Aria cred check — seller_id=%s has_refresh=%s has_lwa_id=%s",
+                bool(cred.seller_id), bool(cred.sp_refresh_token),
+                bool(cred.lwa_client_id or os.getenv("AMAZON_LWA_CLIENT_ID", "")),
+            )
+        else:
+            log.warning("Aria: no Amazon credentials found for tenant_id=%s — prices will NOT be pushed", tenant_id)
+
+        repriced = skipped = errors = pushed = no_sku = 0
         now = datetime.utcnow()
 
         for p in candidates:
@@ -212,7 +222,17 @@ async def run_all_async(force: bool = False, tenant_id=None) -> dict:
 
                 # Push to Amazon if we have a SKU and credentials
                 amazon_result = {"ok": False, "status": 0, "error": "No SKU or credentials"}
-                if sku and cred and cred.sp_refresh_token and cred.seller_id:
+                if not sku:
+                    no_sku += 1
+                    log.warning(
+                        "Aria: no seller_sku for %s (id=%d asin=%s) — price NOT pushed to Amazon",
+                        p.product_name, p.id, p.asin or "none",
+                    )
+                elif not cred or not cred.sp_refresh_token:
+                    log.warning("Aria: no Amazon credentials for tenant %s — price NOT pushed", tenant_id)
+                elif not cred.seller_id:
+                    log.warning("Aria: cred.seller_id is empty for tenant %s — price NOT pushed", tenant_id)
+                else:
                     amazon_result = await push_price_to_amazon(sku, new_px, cred)
 
                 # Log the change
@@ -243,8 +263,8 @@ async def run_all_async(force: bool = False, tenant_id=None) -> dict:
 
                 repriced += 1
                 log.info(
-                    "Aria repriced %s → $%.2f  push=%s (%s)",
-                    p.product_name, new_px, amazon_result["ok"], r["reasoning"]
+                    "Aria repriced %s → $%.2f  push=%s  sku=%s  (%s)",
+                    p.product_name, new_px, amazon_result["ok"], sku or "NONE", r["reasoning"]
                 )
             except Exception as e:
                 errors += 1
@@ -252,10 +272,16 @@ async def run_all_async(force: bool = False, tenant_id=None) -> dict:
 
         db.commit()
         log.info(
-            "Aria run complete — repriced=%d pushed=%d skipped=%d errors=%d",
-            repriced, pushed, skipped, errors
+            "Aria run complete — repriced=%d pushed=%d no_sku=%d skipped=%d errors=%d",
+            repriced, pushed, no_sku, skipped, errors
         )
-        return {"repriced": repriced, "pushed": pushed, "skipped": skipped, "errors": errors}
+        return {
+            "repriced": repriced,
+            "pushed":   pushed,
+            "no_sku":   no_sku,
+            "skipped":  skipped,
+            "errors":   errors,
+        }
     finally:
         db.close()
 

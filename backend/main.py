@@ -275,6 +275,19 @@ try:
             _conn.commit()
     except Exception:
         pass
+    # ── Backfill seller_sku from order_number for legacy products ─────────────
+    # order_number previously stored the Amazon seller SKU from inventory sync.
+    # Copy it to seller_sku so Aria can push prices immediately.
+    try:
+        with engine.connect() as _conn:
+            _conn.execute(text(
+                "UPDATE products SET seller_sku = order_number "
+                "WHERE seller_sku IS NULL AND order_number IS NOT NULL "
+                "AND order_number != ''"
+            ))
+            _conn.commit()
+    except Exception:
+        pass
     # ── Create repricer_logs table if it doesn't exist ────────────────────────
     try:
         if "repricer_logs" not in _inspector.get_table_names():
