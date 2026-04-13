@@ -179,18 +179,128 @@ async def _fetch_fba_inventory(tenant_id: Optional[int] = None) -> list:
 
 # ── FBM listings fetch ─────────────────────────────────────────────────────────
 
+def _parse_listings_tsv(text: str) -> list:
+    """Parse an Active Listings Report TSV into a list of FBM product dicts."""
+    import io, csv
+    delimiter = "\t" if text.count("\t") > text.count(",") else ","
+    reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
+    items = []
+    for row in reader:
+        row = {k.strip().lower() if k else k: v for k, v in row.items()}
+        asin = (row.get("asin1") or row.get("asin") or "").strip()
+        if not asin or len(asin) < 10:
+            continue
+        # Skip FBA rows — Amazon uses "AMAZON_NA", "AMAZON_EU", "AFN" etc.
+        channel = (row.get("fulfillment-channel") or row.get("fulfillment_channel") or "").strip().upper()
+        if channel.startswith("AMAZON") or channel in ("AFN", "FBA"):
+            continue
+        # Skip inactive
+        status_val = (row.get("status") or "").strip().lower()
+        if status_val and status_val not in ("active", ""):
+            continue
+        name = (row.get("item-name") or row.get("item_name") or "").strip()
+        sku  = (row.get("seller-sku") or row.get("seller_sku") or "").strip()
+        try:
+            qty = int(float(row.get("quantity") or 0))
+        except (ValueError, TypeError):
+            qty = 0
+        if qty == 0:
+            qty = 1  # active listing = buyable
+        items.append({
+            "asin":                asin,
+            "product_name":        name,
+            "seller_sku":          sku,
+            "quantity":            qty,
+            "fulfillment_channel": "FBM",
+        })
+    return items
+
+
+async def _reports_api_fbm(token: str, mkt_id: str, base: str) -> Optional[list]:
+    """
+    Try to get FBM listings via the Reports API (GET_MERCHANT_LISTINGS_ALL_DATA).
+    Returns list of items if successful, None if the Reports API isn't available (403/404).
+    Polls up to 30 seconds for the report to be ready.
+    """
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as client:
+        # Request the report
+        r = await client.post(
+            f"{base}/reports/2021-06-30/reports",
+            headers={"x-amz-access-token": token, "Content-Type": "application/json"},
+            json={"reportType": "GET_MERCHANT_LISTINGS_ALL_DATA", "marketplaceIds": [mkt_id]},
+        )
+        if r.status_code in (403, 404):
+            return None  # Reports API not available for this app
+        if r.status_code not in (200, 202):
+            log.debug("Reports API create returned %s: %s", r.status_code, r.text[:120])
+            return None
+
+        report_id = r.json().get("reportId")
+        if not report_id:
+            return None
+
+        # Poll up to 30 s (6 polls × 5 s)
+        doc_id = None
+        for _ in range(6):
+            await asyncio.sleep(5)
+            r = await client.get(
+                f"{base}/reports/2021-06-30/reports/{report_id}",
+                headers={"x-amz-access-token": token},
+            )
+            if r.status_code != 200:
+                return None
+            body = r.json()
+            ps = body.get("processingStatus", "")
+            if ps == "DONE":
+                doc_id = body.get("reportDocumentId")
+                break
+            if ps in ("FATAL", "CANCELLED"):
+                return None
+
+        if not doc_id:
+            log.debug("Reports API: report %s not ready in time", report_id)
+            return None
+
+        # Get document URL
+        r = await client.get(
+            f"{base}/reports/2021-06-30/documents/{doc_id}",
+            headers={"x-amz-access-token": token},
+        )
+        if r.status_code != 200:
+            return None
+        url = r.json().get("url")
+        if not url:
+            return None
+
+        # Download the report content
+        async with httpx.AsyncClient(timeout=60) as dl:
+            r = await dl.get(url)
+        if r.status_code != 200:
+            return None
+
+        try:
+            text = r.content.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = r.content.decode("latin-1")
+
+        items = _parse_listings_tsv(text)
+        log.info("Reports API FBM: fetched %d FBM items", len(items))
+        return items
+
+
 async def _fetch_fbm_listings(tenant_id: Optional[int] = None) -> list:
     """
-    Fetch all active FBM (merchant-fulfilled) listings via the Listings Items API.
-    Returns list of dicts: asin, product_name, seller_sku, quantity, fulfillment_channel='FBM'.
-    Requires seller_id to be stored in AmazonCredential or AMAZON_SELLER_ID env var.
-    Silently returns [] if seller_id is unavailable or the API permission is not granted.
+    Fetch all active FBM listings. Tries two methods in order:
+      1. Listings Items API  (needs listingsItems:read_write role)
+      2. Reports API         (needs reports:read_write — standard for most SP-API apps)
+    Raises RuntimeError with a user-friendly message if both fail.
     """
     import httpx
 
     token, mkt_id, base = await _get_access_token_for_tenant(tenant_id)
 
-    # Resolve seller_id
+    # ── Method 1: Listings Items API ──────────────────────────────────────────
     seller_id = None
     if tenant_id:
         db = SessionLocal()
@@ -202,78 +312,81 @@ async def _fetch_fbm_listings(tenant_id: Optional[int] = None) -> list:
     if not seller_id:
         seller_id = os.getenv("AMAZON_SELLER_ID", "").strip()
 
-    if not seller_id:
-        raise RuntimeError(
-            "Seller ID not found. Go to Settings → Connect Amazon and reconnect your account "
-            "so the Seller ID can be captured."
-        )
-
-    items = []
-    page_token = None
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        while True:
-            params = {
-                "marketplaceIds":  mkt_id,
-                "includedData":    "summaries,fulfillmentAvailability",
-                "pageSize":        20,
-            }
-            if page_token:
-                params["pageToken"] = page_token
-
-            resp = await client.get(
-                f"{base}/listings/2021-08-01/items/{seller_id}",
-                headers={"x-amz-access-token": token},
-                params=params,
-            )
-            if resp.status_code == 403:
-                raise RuntimeError(
-                    "FBM auto-sync requires the 'listingsItems:read_write' SP-API role on your Amazon Developer app. "
-                    "Use ↑ Import FBM to upload an Active Listings Report from Seller Central instead."
+    if seller_id:
+        items = []
+        page_token = None
+        listings_ok = True
+        async with httpx.AsyncClient(timeout=30) as client:
+            while listings_ok:
+                params = {
+                    "marketplaceIds": mkt_id,
+                    "includedData":   "summaries,fulfillmentAvailability",
+                    "pageSize":       20,
+                }
+                if page_token:
+                    params["pageToken"] = page_token
+                resp = await client.get(
+                    f"{base}/listings/2021-08-01/items/{seller_id}",
+                    headers={"x-amz-access-token": token},
+                    params=params,
                 )
-            if resp.status_code != 200:
-                raise RuntimeError(f"Listings API returned {resp.status_code}: {resp.text[:120]}")
+                if resp.status_code in (403, 404):
+                    listings_ok = False
+                    break
+                if resp.status_code != 200:
+                    listings_ok = False
+                    break
 
-            data = resp.json()
-            for listing in data.get("items", []):
-                summaries = listing.get("summaries") or []
-                # Only include merchant-fulfilled (FBM) items
-                is_fbm = any(
-                    s.get("fulfillmentChannel") in ("MERCHANT", "DEFAULT", "MFN")
-                    for s in summaries
-                )
-                if not is_fbm:
-                    continue
+                data = resp.json()
+                for listing in data.get("items", []):
+                    summaries = listing.get("summaries") or []
+                    is_fbm = any(
+                        s.get("fulfillmentChannel") in ("MERCHANT", "DEFAULT", "MFN")
+                        for s in summaries
+                    )
+                    if not is_fbm:
+                        continue
+                    asin         = (summaries[0].get("asin") or "") if summaries else ""
+                    product_name = (summaries[0].get("itemName") or "") if summaries else ""
+                    seller_sku   = listing.get("sku", "")
+                    qty = 0
+                    for fa in (listing.get("fulfillmentAvailability") or []):
+                        if fa.get("fulfillmentChannelCode") in ("DEFAULT", "MERCHANT", "MFN"):
+                            q = fa.get("quantity") or 0
+                            if q > 0:
+                                qty = q
+                                break
+                    if qty == 0:
+                        qty = 1
+                    if asin:
+                        items.append({
+                            "asin":                asin,
+                            "product_name":        product_name,
+                            "seller_sku":          seller_sku,
+                            "quantity":            qty,
+                            "fulfillment_channel": "FBM",
+                        })
+                page_token = (data.get("pagination") or {}).get("nextPageToken")
+                if not page_token:
+                    break
 
-                asin = (summaries[0].get("asin") or "") if summaries else ""
-                product_name = (summaries[0].get("itemName") or "") if summaries else ""
-                seller_sku = listing.get("sku", "")
+        if listings_ok:
+            log.info("FBM via Listings API tenant=%s: %d items", tenant_id, len(items))
+            return items
+        log.info("FBM Listings API unavailable for tenant %s, trying Reports API…", tenant_id)
 
-                # Quantity from fulfillmentAvailability
-                qty = 0
-                for fa in (listing.get("fulfillmentAvailability") or []):
-                    if fa.get("fulfillmentChannelCode") in ("DEFAULT", "MERCHANT", "MFN"):
-                        q = fa.get("quantity") or 0
-                        if q > 0:
-                            qty = q
-                            break
-                # ACTIVE listing = buyable even if quantity field is 0
-                if qty == 0:
-                    qty = 1
+    # ── Method 2: Reports API (GET_MERCHANT_LISTINGS_ALL_DATA) ────────────────
+    report_items = await _reports_api_fbm(token, mkt_id, base)
+    if report_items is not None:
+        log.info("FBM via Reports API tenant=%s: %d items", tenant_id, len(report_items))
+        return report_items
 
-                if asin:
-                    items.append({
-                        "asin":               asin,
-                        "product_name":       product_name,
-                        "seller_sku":         seller_sku,
-                        "quantity":           qty,
-                        "fulfillment_channel": "FBM",
-                    })
-
-            page_token = (data.get("pagination") or {}).get("nextPageToken")
-            if not page_token:
-                break
-
+    # Both methods failed
+    raise RuntimeError(
+        "FBM auto-sync unavailable. Your SP-API app needs either the "
+        "'listingsItems:read_write' or 'Reports' role. "
+        "Use ↑ Import FBM to upload an Active Listings Report from Seller Central."
+    )
     log.info("FBM listings fetched for tenant %s: %d items", tenant_id, len(items))
     return items
 

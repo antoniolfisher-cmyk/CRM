@@ -4286,7 +4286,7 @@ async def upload_fbm_listings(
 
         # Skip FBA rows
         channel = (row.get("fulfillment-channel") or row.get("fulfillment_channel") or "").strip().upper()
-        if channel in ("AMAZON", "AFN", "FBA"):
+        if channel.startswith("AMAZON") or channel in ("AFN", "FBA"):
             skipped += 1
             continue
 
