@@ -3182,7 +3182,7 @@ def _parse_keepa_product(kp: dict, product) -> None:
     csv   = kp.get("csv") or []
 
     # Overall 90-day range from FBA price history
-    fba_csv = csv[7] if len(csv) > 7 else []
+    fba_csv = (csv[7] if len(csv) > 7 else None) or []  # csv[7] can be null in Keepa response
     _prices = []
     i = 0
     while i + 1 < len(fba_csv):
@@ -4013,9 +4013,20 @@ async def keepa_refresh_one(
     if not products_data:
         raise HTTPException(404, f"ASIN {product.asin} not found in Keepa")
 
-    _parse_keepa_product(products_data[0], product)
-    db.commit()
-    db.refresh(product)
+    try:
+        _parse_keepa_product(products_data[0], product)
+    except Exception as _pe:
+        import traceback
+        print(f"[keepa-refresh] _parse_keepa_product failed for {product.asin}: {_pe}\n{traceback.format_exc()}", flush=True)
+        raise HTTPException(500, f"Failed to parse Keepa data: {_pe}")
+    try:
+        db.commit()
+        db.refresh(product)
+    except Exception as _ce:
+        import traceback
+        print(f"[keepa-refresh] db.commit() failed for {product.asin}: {_ce}\n{traceback.format_exc()}", flush=True)
+        db.rollback()
+        raise HTTPException(500, f"Database error after Keepa sync: {_ce}")
     return product
 
 
