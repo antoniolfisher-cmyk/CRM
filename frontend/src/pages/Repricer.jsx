@@ -404,7 +404,7 @@ export default function Repricer() {
   const [picking, setPicking] = useState(false)
   const [pickedType, setPickedType] = useState(null)
   const [error, setError] = useState('')
-  const [ariaStatus, setAriaStatus] = useState({ configured: false, eligible: 0, need_cost: 0, no_sku: 0 })
+  const [ariaStatus, setAriaStatus] = useState({ configured: false, eligible: 0, need_buy_box: 0, need_cost: 0, no_sku: 0 })
   const [ariaRunning, setAriaRunning] = useState(false)
   const [ariaResult, setAriaResult] = useState(null)
   const [logs, setLogs] = useState([])
@@ -498,10 +498,16 @@ export default function Repricer() {
                     ? <>{ariaStatus.eligible} product{ariaStatus.eligible !== 1 ? 's' : ''} eligible to reprice
                        {ariaStatus.no_sku > 0 && <> · <span className="text-amber-600">{ariaStatus.no_sku} missing seller SKU (won't push to Amazon)</span></>}
                        {ariaStatus.need_cost > 0 && <> · <span className="text-amber-600">{ariaStatus.need_cost} need a Buy Cost set</span></>}
+                       {ariaStatus.need_buy_box > 0 && <> · <span className="text-amber-600">{ariaStatus.need_buy_box} need Keepa sync for Buy Box price</span></>}
                     </>
-                    : ariaStatus.need_cost > 0
-                      ? <span className="text-amber-600">No eligible products — {ariaStatus.need_cost} product{ariaStatus.need_cost !== 1 ? 's' : ''} need a Buy Cost entered before Aria can reprice them.</span>
-                      : 'No products with both Buy Box price and Buy Cost set. Add cost data to your products to enable repricing.'
+                    : ariaStatus.need_buy_box > 0
+                      ? <span className="text-amber-600">
+                          {ariaStatus.need_buy_box} product{ariaStatus.need_buy_box !== 1 ? 's have' : ' has'} a Buy Cost but no Buy Box price yet —
+                          open each product and click <strong>Sync Keepa</strong> to fetch the current market price.
+                        </span>
+                      : ariaStatus.need_cost > 0
+                        ? <span className="text-amber-600">No eligible products — {ariaStatus.need_cost} product{ariaStatus.need_cost !== 1 ? 's' : ''} need a Buy Cost entered before Aria can reprice them.</span>
+                        : 'No products with both Buy Box price and Buy Cost set. Add a Buy Cost to your products and Sync Keepa to fetch the Buy Box price.'
                   }
                 </p>
               ) : (

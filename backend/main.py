@@ -649,6 +649,16 @@ def aria_status(db: Session = Depends(get_db), current: dict = Depends(require_a
         models.Product.buy_cost > 0,
     ).count()
 
+    # Products with buy_cost but no buy_box yet (need Keepa sync)
+    need_buy_box = base_q.filter(
+        models.Product.buy_cost > 0,
+        models.Product.buy_box == None,
+    ).count()
+    need_buy_box += base_q.filter(
+        models.Product.buy_cost > 0,
+        models.Product.buy_box == 0,
+    ).count()
+
     # Products with buy_box but missing buy_cost (need cost data to run)
     need_cost = base_q.filter(
         models.Product.buy_box > 0,
@@ -665,6 +675,7 @@ def aria_status(db: Session = Depends(get_db), current: dict = Depends(require_a
     return {
         "configured":    aria_repricer.aria_configured(),
         "eligible":      eligible,
+        "need_buy_box":  need_buy_box,
         "need_cost":     need_cost,
         "no_sku":        no_sku,
     }
