@@ -255,6 +255,10 @@ class ProductBase(BaseModel):
     aria_reasoning: Optional[str] = None
     aria_last_buy_box: Optional[float] = None
     aria_strategy_id: Optional[int] = None
+    aria_live_price: Optional[float] = None
+    aria_live_pushed_at: Optional[datetime] = None
+    buy_box_winner: Optional[bool] = None        # True=winning Buy Box, False=not winning, None=unknown
+    buy_box_checked_at: Optional[datetime] = None
     status: Optional[str] = 'sourcing'   # sourcing | pending | approved
     fulfillment_channel: Optional[str] = None  # 'FBA' | 'FBM' | None
 

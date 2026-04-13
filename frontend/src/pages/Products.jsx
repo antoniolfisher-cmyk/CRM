@@ -5,32 +5,33 @@ import { formatDate, fmtCurrency } from '../utils'
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-function BuyBoxBadge({ buyBox, livePrice, large = false }) {
+/**
+ * Aura-style Buy Box indicator — colored box around the price.
+ * Green box = we're winning the Buy Box (buy_box_winner === true from SP-API)
+ * Red box   = we're not winning (buy_box_winner === false)
+ * Gray text = no Buy Box data yet
+ */
+function BuyBoxBadge({ buyBox, buyBoxWinner, large = false }) {
   if (!buyBox) return <span className={large ? 'text-2xl font-bold text-gray-300' : 'text-gray-300 text-xs'}>—</span>
 
-  const winning = livePrice > 0 && livePrice <= buyBox
   const priceStr = fmtCurrency(buyBox)
 
-  if (livePrice > 0) {
-    return winning ? (
-      <span className={`inline-flex items-center gap-1 font-semibold ${large ? 'text-2xl text-green-600' : 'text-sm text-green-600'}`}>
-        <svg className={large ? 'w-5 h-5' : 'w-3.5 h-3.5'} viewBox="0 0 14 14" fill="none">
-          <circle cx="7" cy="7" r="6.5" stroke="currentColor" strokeWidth="1.5"/>
-          <path d="M4 7l2 2 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
+  if (buyBoxWinner === true) {
+    return (
+      <span className={`inline-block font-semibold rounded border-2 border-green-500 bg-green-50 text-green-800 ${large ? 'text-2xl px-2 py-1' : 'text-sm px-1.5 py-0.5'}`}>
         {priceStr}
       </span>
-    ) : (
-      <span className={`inline-flex items-center gap-1 font-semibold ${large ? 'text-2xl text-red-500' : 'text-sm text-red-500'}`}>
-        <svg className={large ? 'w-5 h-5' : 'w-3.5 h-3.5'} viewBox="0 0 14 14" fill="none">
-          <circle cx="7" cy="7" r="6.5" stroke="currentColor" strokeWidth="1.5"/>
-          <path d="M4.5 4.5l5 5M9.5 4.5l-5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-        </svg>
+    )
+  }
+  if (buyBoxWinner === false) {
+    return (
+      <span className={`inline-block font-semibold rounded border-2 border-red-500 bg-red-50 text-red-700 ${large ? 'text-2xl px-2 py-1' : 'text-sm px-1.5 py-0.5'}`}>
         {priceStr}
       </span>
     )
   }
 
+  // buy_box_winner is null/undefined — unknown, show neutral
   return <span className={large ? 'text-2xl font-bold text-emerald-600' : 'font-medium text-gray-600 text-sm'}>{priceStr}</span>
 }
 
@@ -93,7 +94,7 @@ const COLS = [
   { key: 'money_spent',       label: 'Money Spent',          width: 'w-28', render: (v) => fmtCurrency(v) },
   { key: 'amazon_fee',        label: 'Amazon Fee',           width: 'w-24', render: (v) => fmtCurrency(v) },
   { key: 'total_cost',        label: 'Total Cost',           width: 'w-24', render: (v) => fmtCurrency(v) },
-  { key: 'buy_box',           label: 'Buy Box',              width: 'w-28', render: (v, r) => <BuyBoxBadge buyBox={v} livePrice={r?.aria_live_price} /> },
+  { key: 'buy_box',           label: 'Buy Box',              width: 'w-28', render: (v, r) => <BuyBoxBadge buyBox={v} buyBoxWinner={r?.buy_box_winner} /> },
   { key: 'keepa_bsr',        label: 'BSR',                  width: 'w-24', render: (v) => v ? `#${Number(v).toLocaleString()}` : '—' },
   { key: 'keepa_category',   label: 'Category',             width: 'w-36', render: (v) => <span className="text-xs text-gray-500 truncate block max-w-[9rem]">{v || '—'}</span> },
   { key: 'aria_suggested_price', label: '✦ Aria Price',     width: 'w-28', render: (v, r) => v ? (
@@ -881,7 +882,7 @@ function MarketAnalysis({ data, asin }) {
             <div>
               <p className="text-xs text-gray-500">Buy Box</p>
               <p className="mt-0.5">
-                <BuyBoxBadge buyBox={data.buy_box} livePrice={data.aria_live_price} large />
+                <BuyBoxBadge buyBox={data.buy_box} buyBoxWinner={data.buy_box_winner} large />
               </p>
             </div>
             <div>

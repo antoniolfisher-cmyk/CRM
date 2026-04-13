@@ -446,6 +446,87 @@ async def _reports_api_fbm(tenant_id, token: str, mkt_id: str, base: str):
     return items
 
 
+# ── Buy Box winner check ───────────────────────────────────────────────────────
+
+async def check_buy_box_winners(products: list, tenant_id, db) -> None:
+    """
+    For each product with an ASIN, call Amazon Competitive Pricing API to
+    determine if we currently hold the Buy Box (belongsToRequester=true on
+    CompetitivePriceId "1"). Updates buy_box_winner and buy_box_checked_at.
+    Silently skips on any API error so the main sync never fails because of this.
+    """
+    import httpx
+
+    prods_with_asin = [p for p in products if p.asin]
+    if not prods_with_asin:
+        return
+
+    try:
+        token, mkt_id, base = await _get_access_token_for_tenant(tenant_id)
+    except Exception as e:
+        log.warning("Buy Box check: could not get access token for tenant %s: %s", tenant_id, e)
+        return
+
+    now = datetime.now(timezone.utc)
+    BATCH = 20
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        for i in range(0, len(prods_with_asin), BATCH):
+            batch = prods_with_asin[i:i + BATCH]
+            asins = [p.asin for p in batch]
+
+            try:
+                resp = await client.get(
+                    f"{base}/products/pricing/v0/competitivePrice",
+                    headers={"x-amz-access-token": token},
+                    params={
+                        "MarketplaceId": mkt_id,
+                        "Asins": ",".join(asins),
+                        "ItemType": "Asin",
+                    },
+                )
+
+                if resp.status_code != 200:
+                    log.warning(
+                        "Competitive pricing API %s for tenant %s: %s",
+                        resp.status_code, tenant_id, resp.text[:200],
+                    )
+                    continue
+
+                payload = resp.json().get("payload", [])
+                results_by_asin: dict[str, bool] = {}
+
+                for item in payload:
+                    asin = item.get("ASIN") or item.get("asin", "")
+                    if not asin or item.get("status") != "Success":
+                        continue
+                    competitive_prices = (
+                        (item.get("Product") or {})
+                        .get("CompetitivePricing", {})
+                        .get("CompetitivePrices", [])
+                    )
+                    # CompetitivePriceId "1" = Featured Merchant offer (Buy Box)
+                    winner = any(
+                        str(cp.get("CompetitivePriceId", "")) == "1"
+                        and cp.get("belongsToRequester")
+                        for cp in competitive_prices
+                    )
+                    results_by_asin[asin] = winner
+
+                for p in batch:
+                    if p.asin in results_by_asin:
+                        p.buy_box_winner = results_by_asin[p.asin]
+                    else:
+                        # ASIN not in response (new listing / suppressed / no offers)
+                        p.buy_box_winner = False
+                    p.buy_box_checked_at = now
+
+            except Exception as e:
+                log.warning("Buy Box batch check failed for tenant %s: %s", tenant_id, e)
+
+            await asyncio.sleep(0.3)  # gentle rate limiting between batches
+
+
 # ── Core sync logic ────────────────────────────────────────────────────────────
 
 async def run_sync(tenant_id: Optional[int] = None) -> dict:
@@ -532,6 +613,18 @@ async def run_sync(tenant_id: Optional[int] = None) -> dict:
                 fbm_synced += 1
 
         db.commit()
+
+        # Pull real Buy Box winner status from Amazon Competitive Pricing API
+        # Load all products for this tenant so we can check ASINs we own
+        all_products_q = db.query(models.Product).filter(models.Product.asin.isnot(None))
+        if tenant_id:
+            all_products_q = all_products_q.filter(models.Product.tenant_id == tenant_id)
+        all_products = all_products_q.all()
+        try:
+            await check_buy_box_winners(all_products, tenant_id, db)
+            db.commit()
+        except Exception as _bb_err:
+            log.warning("Buy Box winner check failed (non-fatal) for tenant %s: %s", tenant_id, _bb_err)
 
         result = {
             "last_sync_at": datetime.now(timezone.utc).isoformat(),
