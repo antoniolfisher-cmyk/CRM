@@ -1,6 +1,6 @@
 import os
 import urllib.parse
-from fastapi import FastAPI, Depends, HTTPException, Request, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, Request, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
@@ -216,6 +216,16 @@ try:
                     " WHERE subject LIKE '%{SELLER_ID}%'"
                 ))
                 _conn.commit()
+    except Exception:
+        pass
+    # ── Add invoice_filename to ungate_requests ───────────────────────────────
+    try:
+        if "ungate_requests" in _inspector.get_table_names():
+            _ur_cols = [c["name"] for c in _inspector.get_columns("ungate_requests")]
+            if "invoice_filename" not in _ur_cols:
+                with engine.connect() as _conn:
+                    _conn.execute(text("ALTER TABLE ungate_requests ADD COLUMN invoice_filename VARCHAR"))
+                    _conn.commit()
     except Exception:
         pass
     # ── Apply STORE_NAME env var to "Default" tenant on startup ─────────────
@@ -4242,6 +4252,91 @@ async def amazon_inventory_sync_now(current: dict = Depends(require_auth)):
         raise HTTPException(502, str(e))
 
 
+@app.post("/api/amazon/fbm-upload")
+async def upload_fbm_listings(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_auth),
+):
+    """Parse an Active Listings Report (TSV/CSV) from Seller Central and import FBM products."""
+    import io, csv
+    tid = current.get("tenant_id")
+    content = await file.read()
+    try:
+        text_data = content.decode("utf-8-sig")  # strip BOM if present
+    except UnicodeDecodeError:
+        text_data = content.decode("latin-1")
+
+    # Auto-detect delimiter: tab for TSV (Seller Central default), comma for CSV
+    sample = text_data[:2000]
+    delimiter = "\t" if sample.count("\t") > sample.count(",") else ","
+
+    reader = csv.DictReader(io.StringIO(text_data), delimiter=delimiter)
+    created = updated = skipped = 0
+    errors = []
+
+    for row in reader:
+        # Normalize header keys (strip whitespace)
+        row = {k.strip().lower() if k else k: v for k, v in row.items()}
+
+        asin = (row.get("asin1") or row.get("asin") or "").strip()
+        if not asin or len(asin) < 10:
+            skipped += 1
+            continue
+
+        # Skip FBA rows
+        channel = (row.get("fulfillment-channel") or row.get("fulfillment_channel") or "").strip().upper()
+        if channel in ("AMAZON", "AFN", "FBA"):
+            skipped += 1
+            continue
+
+        # Skip inactive rows
+        status_val = (row.get("status") or "").strip().lower()
+        if status_val and status_val not in ("active", ""):
+            skipped += 1
+            continue
+
+        name = (row.get("item-name") or row.get("item_name") or row.get("product-name") or "").strip()
+        sku  = (row.get("seller-sku") or row.get("seller_sku") or "").strip()
+
+        try:
+            qty = int(float(row.get("quantity") or 0))
+        except (ValueError, TypeError):
+            qty = 0
+        if qty == 0:
+            qty = 1  # active listing means it's buyable
+
+        try:
+            q = db.query(models.Product).filter(models.Product.asin == asin)
+            if tid:
+                q = q.filter(models.Product.tenant_id == tid)
+            existing = q.first()
+            if existing:
+                existing.quantity            = qty
+                existing.fulfillment_channel = "FBM"
+                if name and not existing.product_name:
+                    existing.product_name = name
+                updated += 1
+            else:
+                p = models.Product(
+                    tenant_id=tid,
+                    asin=asin,
+                    product_name=name or asin,
+                    quantity=qty,
+                    order_number=sku or None,
+                    status="approved",
+                    fulfillment_channel="FBM",
+                    created_by="system",
+                )
+                db.add(p)
+                created += 1
+        except Exception as e:
+            errors.append(f"ASIN {asin}: {e}")
+
+    db.commit()
+    return {"created": created, "updated": updated, "skipped": skipped, "errors": errors[:10]}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # UNGATING SYSTEM
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -4988,18 +5083,33 @@ async def send_ungate_email(req_id: int, body: dict, db: Session = Depends(get_d
     if not all([smtp_host, smtp_user, smtp_pass]):
         raise HTTPException(503, "SMTP not configured — add SMTP_HOST, SMTP_USER, SMTP_PASS to environment")
 
-    to_email   = body.get("to_email", "seller-performance@amazon.com")
-    subject    = body.get("subject", "")
-    email_body = body.get("body", "")
+    to_email        = body.get("to_email", "seller-performance@amazon.com")
+    subject         = body.get("subject", "")
+    email_body      = body.get("body", "")
+    include_invoice = body.get("include_invoice", True)
 
     if not subject or not email_body:
         raise HTTPException(400, "subject and body required")
 
-    msg = MIMEMultipart("alternative")
+    # Check for attached invoice
+    import base64 as _b64
+    from email.mime.base import MIMEBase
+    from email import encoders as _enc
+    inv = db.query(models.UngateInvoice).filter_by(req_id=req_id).first() if include_invoice else None
+    has_invoice = bool(inv and inv.data_b64)
+
+    msg = MIMEMultipart("mixed" if has_invoice else "alternative")
     msg["Subject"] = subject
     msg["From"]    = smtp_user
     msg["To"]      = to_email
     msg.attach(MIMEText(email_body, "plain"))
+
+    if has_invoice:
+        att = MIMEBase("application", "octet-stream")
+        att.set_payload(_b64.b64decode(inv.data_b64))
+        _enc.encode_base64(att)
+        att.add_header("Content-Disposition", f'attachment; filename="{inv.filename}"')
+        msg.attach(att)
 
     try:
         with smtplib.SMTP(smtp_host, smtp_port) as server:
@@ -5012,22 +5122,76 @@ async def send_ungate_email(req_id: int, body: dict, db: Session = Depends(get_d
 
     # Record the send in history
     history = _json.loads(req.history or "[]")
+    entry_extra = {"invoice_attached": inv.filename} if has_invoice else {}
     if history:
-        history[-1]["emailed_at"]  = datetime.utcnow().isoformat()
-        history[-1]["emailed_to"]  = to_email
-        history[-1]["status"]      = "submitted"
+        history[-1].update({"emailed_at": datetime.utcnow().isoformat(), "emailed_to": to_email, "status": "submitted", **entry_extra})
     else:
         history.append({
             "template_num": req.current_template_num,
             "submitted_at": datetime.utcnow().isoformat(),
             "emailed_to":   to_email,
             "status":       "submitted",
+            **entry_extra,
         })
     req.history = _json.dumps(history)
     req.status  = "in_progress"
     db.commit()
     db.refresh(req)
-    return {"ok": True, "sent_to": to_email}
+    return {"ok": True, "sent_to": to_email, "invoice_attached": bool(has_invoice)}
+
+
+@app.post("/api/ungate/requests/{req_id}/invoice")
+async def upload_ungate_invoice(
+    req_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_auth),
+):
+    """Attach an invoice PDF/image to an ungating request (stored as base64)."""
+    import base64 as _b64
+    req = db.query(models.UngateRequest).filter(
+        models.UngateRequest.id == req_id,
+        models.UngateRequest.tenant_id == current.get("tenant_id"),
+    ).first()
+    if not req:
+        raise HTTPException(404, "Request not found")
+
+    data = await file.read()
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(413, "Invoice file too large — max 10 MB")
+
+    inv = db.query(models.UngateInvoice).filter_by(req_id=req_id).first()
+    if inv:
+        inv.filename   = file.filename
+        inv.data_b64   = _b64.b64encode(data).decode()
+        inv.size_bytes = len(data)
+    else:
+        inv = models.UngateInvoice(
+            req_id=req_id,
+            filename=file.filename,
+            data_b64=_b64.b64encode(data).decode(),
+            size_bytes=len(data),
+        )
+        db.add(inv)
+
+    req.invoice_filename = file.filename
+    db.commit()
+    return {"ok": True, "filename": file.filename, "size_bytes": len(data)}
+
+
+@app.delete("/api/ungate/requests/{req_id}/invoice")
+def delete_ungate_invoice(req_id: int, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    """Remove the invoice attached to an ungating request."""
+    req = db.query(models.UngateRequest).filter(
+        models.UngateRequest.id == req_id,
+        models.UngateRequest.tenant_id == current.get("tenant_id"),
+    ).first()
+    if not req:
+        raise HTTPException(404, "Request not found")
+    db.query(models.UngateInvoice).filter_by(req_id=req_id).delete()
+    req.invoice_filename = None
+    db.commit()
+    return {"ok": True}
 
 
 @app.post("/api/support/chat")

@@ -156,6 +156,8 @@ function RequestDetail({ request: r, onUpdate, onDelete }) {
   const [copied, setCopied]     = useState(false)
   const [submitModal, setSubmitModal] = useState(false)
   const [applyLink, setApplyLink] = useState(null)
+  const [invoiceFilename, setInvoiceFilename] = useState(r.invoice_filename || null)
+  const [invoiceUploading, setInvoiceUploading] = useState(false)
 
   // Fetch apply link from requirements when loaded
   useEffect(() => {
@@ -204,17 +206,38 @@ function RequestDetail({ request: r, onUpdate, onDelete }) {
     finally { setBusy(false) }
   }
 
-  const sendEmail = async (toEmail) => {
+  const sendEmail = async (toEmail, includeInvoice = false) => {
     const body   = latestDraft?.ai_response || rendered?.body || ''
     const subject = latestDraft?.subject || rendered?.subject || `Ungate Request — ${r.product_name} (${r.asin})`
     setBusy(true)
     try {
-      await api.sendUngateEmail(r.id, { to_email: toEmail, subject, body })
+      await api.sendUngateEmail(r.id, { to_email: toEmail, subject, body, include_invoice: includeInvoice })
       const updated = await api.getUngateRequest(r.id)
       onUpdate(updated)
       setSubmitModal(false)
     } catch (e) { alert(e.message) }
     finally { setBusy(false) }
+  }
+
+  const handleInvoiceUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setInvoiceUploading(true)
+    try {
+      const result = await api.uploadUngateInvoice(r.id, file)
+      setInvoiceFilename(result.filename)
+      onUpdate({ ...r, invoice_filename: result.filename })
+    } catch (err) { alert(`Invoice upload failed: ${err.message}`) }
+    finally { setInvoiceUploading(false); e.target.value = '' }
+  }
+
+  const handleInvoiceRemove = async () => {
+    if (!confirm('Remove attached invoice?')) return
+    try {
+      await api.deleteUngateInvoice(r.id)
+      setInvoiceFilename(null)
+      onUpdate({ ...r, invoice_filename: null })
+    } catch (err) { alert(`Failed to remove invoice: ${err.message}`) }
   }
 
   const markApproved = async () => {
@@ -332,6 +355,32 @@ function RequestDetail({ request: r, onUpdate, onDelete }) {
         </div>
       )}
 
+      {/* Invoice attachment */}
+      {r.status !== 'approved' && r.status !== 'rejected_final' && (
+        <div className="px-5 py-3 border-t border-gray-50 bg-gray-50/40">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Invoice</span>
+            {invoiceFilename ? (
+              <>
+                <span className="text-xs text-green-700 font-medium flex items-center gap-1">
+                  📎 {invoiceFilename}
+                </span>
+                <label className={`text-xs text-blue-600 hover:text-blue-800 cursor-pointer ${invoiceUploading ? 'opacity-50 pointer-events-none' : ''}`}>
+                  {invoiceUploading ? 'Uploading…' : '↑ Replace'}
+                  <input type="file" className="hidden" accept=".pdf,.jpg,.jpeg,.png,.gif" onChange={handleInvoiceUpload} />
+                </label>
+                <button onClick={handleInvoiceRemove} className="text-xs text-red-500 hover:text-red-700">Remove</button>
+              </>
+            ) : (
+              <label className={`text-xs text-blue-600 hover:text-blue-800 cursor-pointer flex items-center gap-1 ${invoiceUploading ? 'opacity-50 pointer-events-none' : ''}`}>
+                {invoiceUploading ? 'Uploading…' : '+ Attach Invoice'}
+                <input type="file" className="hidden" accept=".pdf,.jpg,.jpeg,.png,.gif" onChange={handleInvoiceUpload} />
+              </label>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Actions */}
       {r.status !== 'approved' && r.status !== 'rejected_final' && (
         <div className="px-5 py-4 border-t border-gray-100 space-y-2">
@@ -402,6 +451,7 @@ function RequestDetail({ request: r, onUpdate, onDelete }) {
           onClose={() => setSubmitModal(false)}
           onSend={sendEmail}
           busy={busy}
+          invoiceFilename={invoiceFilename}
         />
       )}
     </div>
@@ -798,8 +848,9 @@ function TemplateEditModal({ template: t, onClose, onSave }) {
 
 // ─── Submit Email Modal ───────────────────────────────────────────────────────
 
-function SubmitEmailModal({ onClose, onSend, busy }) {
+function SubmitEmailModal({ onClose, onSend, busy, invoiceFilename }) {
   const [toEmail, setToEmail] = useState('seller-performance@amazon.com')
+  const [includeInvoice, setIncludeInvoice] = useState(true)
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-md">
@@ -821,15 +872,28 @@ function SubmitEmailModal({ onClose, onSend, busy }) {
             />
             <p className="text-xs text-gray-400 mt-1">Common Amazon emails: seller-performance@amazon.com · brand-registry@amazon.com</p>
           </div>
+          {invoiceFilename && (
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeInvoice}
+                onChange={e => setIncludeInvoice(e.target.checked)}
+                className="w-4 h-4 accent-blue-600"
+              />
+              <span className="text-sm text-gray-700">
+                Attach invoice: <span className="font-medium text-gray-800">{invoiceFilename}</span>
+              </span>
+            </label>
+          )}
         </div>
         <div className="px-5 py-4 border-t flex justify-end gap-2">
           <button onClick={onClose} className="btn-secondary">Cancel</button>
           <button
-            onClick={() => onSend(toEmail)}
+            onClick={() => onSend(toEmail, invoiceFilename ? includeInvoice : false)}
             disabled={!toEmail.trim() || busy}
             className="btn-primary disabled:opacity-50 flex items-center gap-1.5"
           >
-            {busy ? 'Sending…' : '✉ Send Email'}
+            {busy ? 'Sending…' : invoiceFilename && includeInvoice ? '✉ Send Email + Invoice' : '✉ Send Email'}
           </button>
         </div>
       </div>

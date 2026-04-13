@@ -351,7 +351,7 @@ function ProductDrawer({ product, strategies, keepaConfigured, onClose, onSave, 
 
 // ── Status cards ───────────────────────────────────────────────────────────────
 
-function AmazonSyncCard({ status, onSync, syncing, onPurge, purging, isAdmin }) {
+function AmazonSyncCard({ status, onSync, syncing, onPurge, purging, isAdmin, onFbmUpload, fbmUploading, fbmUploadResult }) {
   if (!status) return null
   if (!status.configured) {
     return (
@@ -365,40 +365,73 @@ function AmazonSyncCard({ status, onSync, syncing, onPurge, purging, isAdmin }) 
   }
   const ago = fmtAgo(status.last_sync_at)
   const hasError = Boolean(status.error)
+  const hasFbmError = Boolean(status.fbm_error)
+  const hasSyncData = status.last_sync_at && (status.fba_synced != null || status.fbm_synced != null)
   return (
-    <div className={`card p-4 flex flex-wrap items-center justify-between gap-3 ${hasError ? 'border-l-4 border-red-400' : ''}`}>
-      <div className="flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full ${hasError ? 'bg-red-500' : 'bg-green-500'}`} />
-          <span className="text-sm font-medium text-gray-800">Amazon FBA Sync</span>
-          <span className="text-xs text-gray-400">— auto-refreshes every hour</span>
-        </div>
-        {ago && !hasError && (
-          <div className="flex items-center gap-3 text-xs text-gray-500">
-            <span>Last sync: <span className="font-medium text-gray-700">{ago}</span></span>
-            {status.updated > 0 && <span className="text-green-600">↑ {status.updated} updated</span>}
-            {status.created > 0 && <span className="text-blue-600">+ {status.created} new</span>}
+    <div className={`card overflow-hidden ${hasError ? 'border-l-4 border-red-400' : hasFbmError ? 'border-l-4 border-amber-400' : ''}`}>
+      <div className="p-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full ${hasError ? 'bg-red-500' : hasFbmError ? 'bg-amber-500' : 'bg-green-500'}`} />
+            <span className="text-sm font-medium text-gray-800">Amazon Sync</span>
+            <span className="text-xs text-gray-400">— auto-refreshes every hour</span>
           </div>
-        )}
-        {hasError && <span className="text-xs text-red-600 font-medium">Last error: {status.error}</span>}
-        {status.running && <span className="text-xs text-blue-600 animate-pulse">Syncing…</span>}
-      </div>
-      <div className="flex items-center gap-2">
-        {isAdmin && (
-          <button
-            onClick={onPurge}
-            disabled={purging || syncing || status.running}
-            className="btn-secondary text-sm text-red-600 hover:bg-red-50 border-red-200"
-            title="Delete all auto-synced products and re-import from your Amazon account"
-          >
-            {purging ? 'Clearing…' : 'Clear & Re-import'}
+          {ago && !hasError && (
+            <div className="flex items-center gap-3 text-xs text-gray-500">
+              <span>Last sync: <span className="font-medium text-gray-700">{ago}</span></span>
+              {hasSyncData && (
+                <span className="text-blue-600 font-medium">
+                  FBA: {status.fba_synced ?? '—'} &nbsp;|&nbsp; FBM: {status.fbm_synced ?? '—'}
+                </span>
+              )}
+              {status.updated > 0 && <span className="text-green-600">↑ {status.updated} updated</span>}
+              {status.created > 0 && <span className="text-blue-600">+ {status.created} new</span>}
+            </div>
+          )}
+          {hasError && <span className="text-xs text-red-600 font-medium">Last error: {status.error}</span>}
+          {hasFbmError && !hasError && (
+            <span className="text-xs text-amber-700 font-medium" title={status.fbm_error}>
+              FBM auto-sync: {status.fbm_error?.split('.')[0]}
+            </span>
+          )}
+          {status.running && <span className="text-xs text-blue-600 animate-pulse">Syncing…</span>}
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {isAdmin && (
+            <>
+              <label
+                className={`btn-secondary text-sm text-purple-700 hover:bg-purple-50 border-purple-200 cursor-pointer flex items-center gap-1.5 ${fbmUploading ? 'opacity-50 pointer-events-none' : ''}`}
+                title="Upload Active Listings Report from Seller Central to import FBM inventory"
+              >
+                {fbmUploading ? 'Importing FBM…' : '↑ Import FBM'}
+                <input type="file" className="hidden" accept=".txt,.tsv,.csv,.tab" onChange={onFbmUpload} disabled={fbmUploading} />
+              </label>
+              {fbmUploadResult && (
+                <span className={`text-xs font-medium ${fbmUploadResult.errors?.length ? 'text-amber-700' : 'text-green-700'}`}>
+                  FBM: +{fbmUploadResult.created} new, {fbmUploadResult.updated} updated
+                </span>
+              )}
+              <button
+                onClick={onPurge}
+                disabled={purging || syncing || status.running}
+                className="btn-secondary text-sm text-red-600 hover:bg-red-50 border-red-200"
+                title="Delete all auto-synced products and re-import from your Amazon account"
+              >
+                {purging ? 'Clearing…' : 'Clear & Re-import'}
+              </button>
+            </>
+          )}
+          <button onClick={onSync} disabled={syncing || status.running} className="btn-secondary text-sm flex items-center gap-1.5">
+            <SyncIcon spinning={syncing || status.running} />
+            {syncing || status.running ? 'Syncing…' : 'Sync Now'}
           </button>
-        )}
-        <button onClick={onSync} disabled={syncing || status.running} className="btn-secondary text-sm flex items-center gap-1.5">
-          <SyncIcon spinning={syncing || status.running} />
-          {syncing || status.running ? 'Syncing…' : 'Sync Now'}
-        </button>
+        </div>
       </div>
+      {isAdmin && (
+        <div className="px-4 py-2 border-t border-gray-100 bg-purple-50/40 text-xs text-gray-500">
+          <span className="font-medium text-purple-800">FBM not auto-syncing?</span> In Seller Central go to <strong>Reports → Inventory Reports → Active Listings Report</strong>, download the file, then click <strong>↑ Import FBM</strong> above.
+        </div>
+      )}
     </div>
   )
 }
@@ -454,6 +487,8 @@ export default function Inventory() {
   const [amazonSyncStatus, setAmazonSyncStatus] = useState(null)
   const [amazonSyncing, setAmazonSyncing] = useState(false)
   const [amazonPurging, setAmazonPurging] = useState(false)
+  const [fbmUploading, setFbmUploading] = useState(false)
+  const [fbmUploadResult, setFbmUploadResult] = useState(null)
   const [strategyMap, setStrategyMap] = useState({})
   const [selectedProduct, setSelectedProduct] = useState(null)
 
@@ -502,8 +537,8 @@ export default function Inventory() {
   const totalUnits = activeProducts.reduce((s, p) => s + (Number(p.quantity) || 0), 0)
   const totalSpent = products.reduce((s, p) => s + (Number(p.money_spent) || 0), 0)
   const oosCount   = products.filter(p => !Number(p.quantity)).length
-  const fbaCount   = products.filter(p => (p.fulfillment_channel || 'FBA') === 'FBA').length
-  const fbmCount   = products.filter(p => p.fulfillment_channel === 'FBM').length
+  const fbaCount   = products.filter(p => (p.fulfillment_channel || 'FBA') === 'FBA' && Number(p.quantity) > 0).length
+  const fbmCount   = products.filter(p => p.fulfillment_channel === 'FBM' && Number(p.quantity) > 0).length
 
   const handleBulkSync = async () => {
     setBulkLoading(true)
@@ -556,6 +591,24 @@ export default function Inventory() {
     }
   }
 
+  const handleFbmUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setFbmUploading(true)
+    setFbmUploadResult(null)
+    try {
+      const result = await api.uploadFbmListings(file)
+      setFbmUploadResult(result)
+      load()
+      if (result.errors?.length) alert(`FBM import completed with errors:\n${result.errors.join('\n')}`)
+    } catch (err) {
+      alert(`FBM import failed: ${err.message}`)
+    } finally {
+      setFbmUploading(false)
+      e.target.value = ''
+    }
+  }
+
   const handleStrategyChange = async (productId, value, e) => {
     e.stopPropagation()
     const strategyId = value === '' ? null : Number(value)
@@ -585,7 +638,7 @@ export default function Inventory() {
         <p className="text-gray-500 text-sm mt-1">All approved products — auto-synced from Amazon FBA hourly</p>
       </div>
 
-      <AmazonSyncCard status={amazonSyncStatus} onSync={handleAmazonSync} syncing={amazonSyncing} onPurge={handleAmazonPurge} purging={amazonPurging} isAdmin={isAdmin} />
+      <AmazonSyncCard status={amazonSyncStatus} onSync={handleAmazonSync} syncing={amazonSyncing} onPurge={handleAmazonPurge} purging={amazonPurging} isAdmin={isAdmin} onFbmUpload={handleFbmUpload} fbmUploading={fbmUploading} fbmUploadResult={fbmUploadResult} />
       <KeepaStatusCard status={keepaStatus} onBulkSync={handleBulkSync} bulkLoading={bulkLoading} bulkResult={bulkResult} isAdmin={isAdmin} />
 
       {/* KPIs */}
@@ -616,6 +669,7 @@ export default function Inventory() {
             <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">Amazon</span>
           </div>
           <p className="text-2xl font-bold text-blue-700 mt-1">{fbaCount}</p>
+          <p className="text-xs text-gray-400 mt-0.5">active SKUs</p>
           {channelFilter === 'FBA' && <p className="text-xs text-blue-500 mt-1">Filtered ✕ click to clear</p>}
         </div>
         {/* FBM tile */}
@@ -628,6 +682,10 @@ export default function Inventory() {
             <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-purple-100 text-purple-700">Merchant</span>
           </div>
           <p className="text-2xl font-bold text-purple-700 mt-1">{fbmCount}</p>
+          {fbmCount === 0
+            ? <p className="text-xs text-gray-400 mt-0.5">run Sync Now to populate</p>
+            : <p className="text-xs text-gray-400 mt-0.5">active SKUs</p>
+          }
           {channelFilter === 'FBM' && <p className="text-xs text-purple-500 mt-1">Filtered ✕ click to clear</p>}
         </div>
       </div>
