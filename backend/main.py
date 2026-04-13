@@ -1421,10 +1421,22 @@ async def get_dashboard_amazon_sales(
                 orig = g.get("OriginalTotal") or g.get("ConvertedTotal") or {}
                 total_balance = float(orig.get("Amount") or 0)
             payment_balance = round(total_balance, 2)
-        elif fin_resp.status_code == 403:
-            finances_error = "Finances role not enabled"
         else:
-            finances_error = f"Finances API {fin_resp.status_code}"
+            # Log the full Amazon response so we can diagnose the real error
+            try:
+                err_body = fin_resp.json()
+            except Exception:
+                err_body = fin_resp.text[:300]
+            log.warning("Finances API %s: %s", fin_resp.status_code, err_body)
+            if fin_resp.status_code == 403:
+                # Extract Amazon's specific error code from the response body
+                err_codes = [e.get("code", "") for e in (err_body if isinstance(err_body, list) else err_body.get("errors", []))]
+                if "InvalidInput" in err_codes or "InvalidToken" in err_codes:
+                    finances_error = "Finances role not enabled"
+                else:
+                    finances_error = f"Finances API 403: {err_body}"
+            else:
+                finances_error = f"Finances API {fin_resp.status_code}: {str(err_body)[:120]}"
     except Exception as e:
         finances_error = str(e)
 

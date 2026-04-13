@@ -364,13 +364,7 @@ function AmazonSalesPanel() {
                 {data.payment_balance !== null ? (
                   <p className="text-4xl font-bold text-gray-900 mt-1">{fmt$(data.payment_balance)}</p>
                 ) : (
-                  <p className="text-lg font-semibold text-gray-400 mt-2">
-                    {data.finances_error === 'Finances role not enabled'
-                      ? 'Enable Finances role'
-                      : data.finances_error
-                        ? 'Unavailable'
-                        : '—'}
-                  </p>
+                  <p className="text-sm font-semibold text-gray-400 mt-2">Unavailable</p>
                 )}
               </div>
               <div className="w-10 h-10 bg-green-50 text-green-600 rounded-lg flex items-center justify-center shrink-0">
@@ -383,12 +377,10 @@ function AmazonSalesPanel() {
                   <span className="w-2 h-2 bg-green-400 rounded-full inline-block"></span>
                   <p className="text-xs text-gray-500">Total balance held by Amazon</p>
                 </div>
+              ) : data.finances_error ? (
+                <p className="text-xs text-red-500 break-all">{data.finances_error}</p>
               ) : (
-                <p className="text-xs text-gray-400">
-                  {data.finances_error === 'Finances role not enabled'
-                    ? 'Grant Finances role in Seller Central → SP-API app permissions'
-                    : 'Add Finances API role to your SP-API app'}
-                </p>
+                <p className="text-xs text-gray-400">No data</p>
               )}
             </div>
           </div>
