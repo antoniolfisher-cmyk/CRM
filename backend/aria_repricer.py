@@ -4,6 +4,9 @@ Powered by Claude Haiku for cost-efficient, automated Amazon pricing.
 
 Smart triggering: a product is skipped if its Buy Box price hasn't changed
 since Aria last ran, avoiding unnecessary API calls.
+
+Live repricing: after Claude determines the optimal price, Aria immediately
+pushes it to Amazon via the Listings Items API and logs every change.
 """
 
 import os
@@ -13,6 +16,7 @@ import logging
 from datetime import datetime
 
 import anthropic
+import httpx
 
 from database import SessionLocal
 import models
@@ -21,27 +25,98 @@ log = logging.getLogger(__name__)
 
 _MODEL = "claude-haiku-4-5-20251001"   # ~75% cheaper than Sonnet, plenty smart for pricing
 
+# ─── Amazon SP-API base ───────────────────────────────────────────────────────
+_SP_BASE      = "https://sellingpartnerapi-na.amazon.com"
+_LWA_URL      = "https://api.amazon.com/auth/o2/token"
+_DEFAULT_MKT  = "ATVPDKIKX0DER"   # US marketplace
+
 
 def aria_configured() -> bool:
     return bool(os.getenv("ANTHROPIC_API_KEY", "").strip())
 
 
-def _get_strategy(db):
-    """Return the active Aria strategy, or None."""
-    s = db.query(models.RepricerStrategy).filter(
-        models.RepricerStrategy.strategy_type == "aria",
+# ─── Amazon token helper (self-contained so scheduler thread can use it) ──────
+
+async def _get_access_token(cred) -> str:
+    """Exchange the stored refresh token for a short-lived access token."""
+    client_id     = cred.lwa_client_id     or os.getenv("AMAZON_LWA_CLIENT_ID", "")
+    client_secret = cred.lwa_client_secret or os.getenv("AMAZON_LWA_CLIENT_SECRET", "")
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(_LWA_URL, data={
+            "grant_type":    "refresh_token",
+            "refresh_token": cred.sp_refresh_token,
+            "client_id":     client_id,
+            "client_secret": client_secret,
+        })
+    r.raise_for_status()
+    return r.json()["access_token"]
+
+
+# ─── Push price to Amazon ─────────────────────────────────────────────────────
+
+async def push_price_to_amazon(seller_sku: str, price: float, cred) -> dict:
+    """
+    PATCH /listings/2021-08-01/items/{sellerId}/{sku} with the new price.
+    Returns {"ok": bool, "status": int, "error": str|None}.
+    """
+    if not seller_sku or not cred or not cred.seller_id:
+        return {"ok": False, "status": 0, "error": "Missing seller_sku or seller_id"}
+
+    try:
+        token  = await _get_access_token(cred)
+        mkt_id = cred.marketplace_id or _DEFAULT_MKT
+        body   = {
+            "productType": "PRODUCT",
+            "patches": [{
+                "op":    "replace",
+                "path":  "/attributes/purchasable_offer",
+                "value": [{
+                    "marketplace_id": mkt_id,
+                    "currency":       "USD",
+                    "our_price": [{"schedule": [{"value_with_tax": price}]}],
+                }],
+            }],
+        }
+        sp_base = os.getenv("AMAZON_SP_BASE", _SP_BASE)
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.patch(
+                f"{sp_base}/listings/2021-08-01/items/{cred.seller_id}/{seller_sku}",
+                headers={
+                    "x-amz-access-token": token,
+                    "Content-Type":       "application/json",
+                },
+                params={"marketplaceIds": mkt_id},
+                json=body,
+            )
+        ok = resp.status_code in (200, 202)
+        if not ok:
+            log.warning("Aria price push failed %s → $%.2f  HTTP %d: %s",
+                        seller_sku, price, resp.status_code, resp.text[:200])
+        return {"ok": ok, "status": resp.status_code, "error": None if ok else resp.text[:200]}
+    except Exception as e:
+        log.warning("Aria price push exception for %s: %s", seller_sku, e)
+        return {"ok": False, "status": 0, "error": str(e)}
+
+
+# ─── Strategy helpers ─────────────────────────────────────────────────────────
+
+def _get_strategy(db, tenant_id=None):
+    """Return the active Aria strategy for the given tenant, or None."""
+    base = db.query(models.RepricerStrategy).filter(
         models.RepricerStrategy.is_active == True,
-    ).first()
+    )
+    if tenant_id is not None:
+        base = base.filter(models.RepricerStrategy.tenant_id == tenant_id)
+    s = base.filter(models.RepricerStrategy.strategy_type == "aria").first()
     if not s:
-        s = db.query(models.RepricerStrategy).filter(
-            models.RepricerStrategy.is_default == True,
-            models.RepricerStrategy.is_active == True,
-        ).first()
+        s = base.filter(models.RepricerStrategy.is_default == True).first()
     return s
 
 
+# ─── Claude pricing call ──────────────────────────────────────────────────────
+
 async def price_product(product: models.Product, strategy) -> dict:
-    """Call Claude Haiku and return {price, reasoning}.  Enforces min/max constraints."""
+    """Call Claude Haiku and return {price, reasoning}. Enforces min/max constraints."""
     buy_cost   = product.buy_cost   or 0
     amazon_fee = product.amazon_fee or 0
     buy_box    = product.buy_box    or 0
@@ -91,23 +166,36 @@ Respond with ONLY valid JSON (no markdown):
     return {"price": round(price, 2), "reasoning": data.get("reasoning", "")}
 
 
-async def run_all_async(force: bool = False) -> dict:
+# ─── Main reprice loop ────────────────────────────────────────────────────────
+
+async def run_all_async(force: bool = False, tenant_id=None) -> dict:
     """
-    Reprice all eligible products.
+    Reprice all eligible products for a specific tenant.
     Smart trigger: skips products whose Buy Box price hasn't changed since
     the last Aria run (unless force=True).
+    Pushes the new price to Amazon via the Listings Items API.
+    Logs every change to RepricerLog.
     Returns summary dict.
     """
     db = SessionLocal()
     try:
-        strategy = _get_strategy(db)
+        strategy = _get_strategy(db, tenant_id=tenant_id)
 
-        candidates = db.query(models.Product).filter(
+        # Get Amazon credentials for this tenant (needed to push prices)
+        cred = None
+        if tenant_id is not None:
+            cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
+
+        q = db.query(models.Product).filter(
             models.Product.buy_box > 0,
             models.Product.buy_cost > 0,
-        ).all()
+        )
+        if tenant_id is not None:
+            q = q.filter(models.Product.tenant_id == tenant_id)
+        candidates = q.all()
 
-        repriced = skipped = errors = 0
+        repriced = skipped = errors = pushed = 0
+        now = datetime.utcnow()
 
         for p in candidates:
             # Smart trigger: skip if buy box unchanged since last run
@@ -116,20 +204,58 @@ async def run_all_async(force: bool = False) -> dict:
                 continue
 
             try:
-                r = await price_product(p, strategy)
-                p.aria_suggested_price = r["price"]
-                p.aria_suggested_at    = datetime.utcnow()
+                r      = await price_product(p, strategy)
+                new_px = r["price"]
+
+                # Determine seller SKU — prefer dedicated field, fall back to order_number (legacy)
+                sku = p.seller_sku or p.order_number or None
+
+                # Push to Amazon if we have a SKU and credentials
+                amazon_result = {"ok": False, "status": 0, "error": "No SKU or credentials"}
+                if sku and cred and cred.sp_refresh_token and cred.seller_id:
+                    amazon_result = await push_price_to_amazon(sku, new_px, cred)
+
+                # Log the change
+                entry = models.RepricerLog(
+                    tenant_id    = tenant_id,
+                    product_id   = p.id,
+                    asin         = p.asin or "",
+                    seller_sku   = sku,
+                    product_name = p.product_name,
+                    old_price    = p.aria_live_price,   # last price we actually pushed
+                    new_price    = new_px,
+                    buy_box      = p.buy_box,
+                    reasoning    = r["reasoning"],
+                    pushed       = amazon_result["ok"],
+                    amazon_status = amazon_result["status"] or None,
+                )
+                db.add(entry)
+
+                # Update product record
+                p.aria_suggested_price = new_px
+                p.aria_suggested_at    = now
                 p.aria_reasoning       = r["reasoning"]
-                p.aria_last_buy_box    = p.buy_box   # record buy box at time of run
+                p.aria_last_buy_box    = p.buy_box
+                if amazon_result["ok"]:
+                    p.aria_live_price     = new_px
+                    p.aria_live_pushed_at = now
+                    pushed += 1
+
                 repriced += 1
-                log.info("Aria repriced %s → $%.2f (%s)", p.product_name, r["price"], r["reasoning"])
+                log.info(
+                    "Aria repriced %s → $%.2f  push=%s (%s)",
+                    p.product_name, new_px, amazon_result["ok"], r["reasoning"]
+                )
             except Exception as e:
                 errors += 1
                 log.warning("Aria failed for product %d (%s): %s", p.id, p.product_name, e)
 
         db.commit()
-        log.info("Aria run complete — repriced=%d skipped=%d errors=%d", repriced, skipped, errors)
-        return {"repriced": repriced, "skipped": skipped, "errors": errors}
+        log.info(
+            "Aria run complete — repriced=%d pushed=%d skipped=%d errors=%d",
+            repriced, pushed, skipped, errors
+        )
+        return {"repriced": repriced, "pushed": pushed, "skipped": skipped, "errors": errors}
     finally:
         db.close()
 

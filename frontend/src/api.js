@@ -149,6 +149,11 @@ export const api = {
   ariaStatus: () => req('GET', '/repricer/aria/status'),
   ariaRunOne: (productId) => req('POST', `/repricer/aria/run/${productId}`, {}),
   ariaRunAll: (force = true) => req('POST', `/repricer/aria/run-all?force=${force}`, {}),
+  ariaLogs: (productId = null, limit = 100) => {
+    const params = new URLSearchParams({ limit })
+    if (productId != null) params.append('product_id', productId)
+    return req('GET', `/repricer/logs?${params}`)
+  },
 
   // Notifications (admin only)
   getNotificationStatus: () => req('GET', '/notifications/status'),
