@@ -1670,26 +1670,14 @@ async def get_dashboard_amazon_orders(
 
     access_token = await _get_tenant_access_token(cred)
 
-    # Broad query: no OrderStatuses filter so Amazon returns ALL order statuses
-    # (including orders that may have unusual/transitional statuses).
-    # We classify FBA vs FBM and open vs closed entirely on the Python side.
+    # Broad query: no OrderStatuses filter — fetches all orders updated in last 14 days.
+    # We classify FBA vs FBM and open vs shipped entirely on the Python side.
     open_since = (now - timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ")
     open_params = [
         ("MarketplaceIds",   mkt_id),
         ("LastUpdatedAfter", open_since),
     ]
-    # FBM orders shipped recently (last 7 days)
-    fbm_shipped_since = (now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    fbm_shipped_params = [
-        ("MarketplaceIds",   mkt_id),
-        ("LastUpdatedAfter", fbm_shipped_since),
-        ("OrderStatuses",    "Shipped"),
-        ("FulfillmentChannels", "MFN"),
-    ]
-    # Run sequentially — Amazon Orders API has a low quota (burst 20, restore
-    # 0.0167 req/s). Parallel calls double quota consumption and trigger 429s.
-    open_raw      = await _amazon_fetch_orders(access_token, open_params)
-    fbm_shipped_raw = await _amazon_fetch_orders(access_token, fbm_shipped_params)
+    open_raw = await _amazon_fetch_orders(access_token, open_params)
 
     def _fmt(o):
         total_obj = o.get("OrderTotal") or {}
@@ -1703,20 +1691,29 @@ async def get_dashboard_amazon_orders(
             "currency":    total_obj.get("CurrencyCode") or "USD",
         }
 
-    # Statuses that mean an order is closed/done — exclude these from the open tiles.
+    _OPEN   = {"Pending", "Unshipped", "PartiallyShipped"}
     _CLOSED = {"Shipped", "Canceled", "Unfulfillable", "InvoiceUnconfirmed"}
+
     fba = sorted(
         [_fmt(o) for o in open_raw
-         if o.get("FulfillmentChannel") == "AFN" and o.get("OrderStatus") not in _CLOSED],
+         if o.get("FulfillmentChannel") == "AFN" and o.get("OrderStatus") in _OPEN],
         key=lambda x: x["date"], reverse=True,
     )
     fbm = sorted(
         [_fmt(o) for o in open_raw
-         if o.get("FulfillmentChannel") != "AFN" and o.get("OrderStatus") not in _CLOSED],
+         if o.get("FulfillmentChannel") != "AFN" and o.get("OrderStatus") in _OPEN],
         key=lambda x: x["date"], reverse=True,
     )
-    fbm_shipped = sorted([_fmt(o) for o in fbm_shipped_raw],
-                         key=lambda x: x["date"], reverse=True)
+    # FBM shipped in last 7 days — extracted from the same open_raw batch (no extra API call)
+    # so there's no timing gap when a shipping label is just purchased.
+    seven_days_ago = (now - timedelta(days=7)).strftime("%Y-%m-%dT")
+    fbm_shipped = sorted(
+        [_fmt(o) for o in open_raw
+         if o.get("FulfillmentChannel") != "AFN"
+         and o.get("OrderStatus") == "Shipped"
+         and (o.get("LastUpdateDate") or o.get("PurchaseDate") or "") >= seven_days_ago],
+        key=lambda x: x["date"], reverse=True,
+    )
 
     return {
         "fba_orders":        fba,
