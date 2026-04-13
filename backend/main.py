@@ -1395,22 +1395,42 @@ async def get_dashboard_amazon_sales(
             + int(o.get("NumberOfItemsUnshipped") or 0)
         )
 
-    # ── 4. Fetch payment balance from Finances API ──────────────────────────
+    # ── 4. Fetch payment balance from Finances API (cached + retried) ─────────
     payment_balance  = None
     payment_currency = currency
     finances_error   = None
 
-    try:
+    # Return cached value if fresh enough (avoids Amazon throttle on rapid refresh)
+    _fin_cached = _finances_cache.get(tenant_id)
+    if _fin_cached and (now - _fin_cached["fetched_at"]).total_seconds() < _FINANCES_CACHE_TTL_SECONDS:
+        payment_balance  = _fin_cached["balance"]
+        payment_currency = _fin_cached["currency"]
+        print(f"[finances] serving cached balance={payment_balance} age={(now - _fin_cached['fetched_at']).total_seconds():.0f}s", flush=True)
+    else:
+        import asyncio as _asyncio
+        _fin_base      = _sp_base(cred.is_sandbox)
         finances_after = (now - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        _fin_base = _sp_base(cred.is_sandbox)
         print(f"[finances] calling {_fin_base}/finances/v0/financialEventGroups is_sandbox={cred.is_sandbox}", flush=True)
-        async with _httpx.AsyncClient(timeout=20) as client:
-            fin_resp = await client.get(
-                f"{_fin_base}/finances/v0/financialEventGroups",
-                params={"FinancialEventGroupStartedAfter": finances_after},
-                headers={"x-amz-access-token": access_token},
-            )
-        if fin_resp.status_code == 200:
+        fin_resp = None
+        for _attempt in range(3):
+            try:
+                async with _httpx.AsyncClient(timeout=20) as client:
+                    fin_resp = await client.get(
+                        f"{_fin_base}/finances/v0/financialEventGroups",
+                        params={"FinancialEventGroupStartedAfter": finances_after},
+                        headers={"x-amz-access-token": access_token},
+                    )
+                if fin_resp.status_code != 403:
+                    break
+                print(f"[finances] 403 on attempt {_attempt+1}/3 — {'retrying' if _attempt < 2 else 'giving up'}", flush=True)
+                if _attempt < 2:
+                    await _asyncio.sleep(1.5)
+            except Exception as _e:
+                finances_error = str(_e)
+                fin_resp = None
+                break
+
+        if fin_resp is not None and fin_resp.status_code == 200:
             groups = fin_resp.json().get("payload", {}).get("FinancialEventGroupList", [])
             total_balance = 0.0
             for g in groups:
@@ -1423,26 +1443,23 @@ async def get_dashboard_amazon_sales(
                     total_balance += amt
             # Fallback: if no Open group, use most recent Closed group
             if total_balance == 0.0 and groups:
-                g = groups[0]
+                g    = groups[0]
                 orig = g.get("OriginalTotal") or g.get("ConvertedTotal") or {}
                 total_balance = float(orig.get("Amount") or 0)
             payment_balance = round(total_balance, 2)
-        else:
+            # Store in cache
+            _finances_cache[tenant_id] = {
+                "balance":    payment_balance,
+                "currency":   payment_currency,
+                "fetched_at": now,
+            }
+        elif fin_resp is not None and not finances_error:
             try:
                 err_body = fin_resp.json()
             except Exception:
                 err_body = fin_resp.text[:300]
-            print(f"[finances] {fin_resp.status_code}: {err_body}", flush=True)
-            if fin_resp.status_code == 403:
-                err_codes = [e.get("code", "") for e in (err_body if isinstance(err_body, list) else err_body.get("errors", []))]
-                if "InvalidInput" in err_codes or "InvalidToken" in err_codes:
-                    finances_error = "Finances role not enabled"
-                else:
-                    finances_error = f"Finances API 403: {err_body}"
-            else:
-                finances_error = f"Finances API {fin_resp.status_code}: {str(err_body)[:120]}"
-    except Exception as e:
-        finances_error = str(e)
+            print(f"[finances] final error {fin_resp.status_code}: {err_body}", flush=True)
+            finances_error = f"Finances API {fin_resp.status_code}: {err_body}"
 
     return {
         "period":           period,
@@ -3762,6 +3779,11 @@ def _sp_base(is_sandbox: bool = False) -> str:
 # ── Legacy single-tenant helpers (kept for backwards compat) ─────────────────
 _AMAZON_SP_BASE = _sp_base(os.getenv("AMAZON_SP_SANDBOX", "").lower() in ("1", "true", "yes"))
 _AMAZON_MKT_ID  = os.getenv("AMAZON_MARKETPLACE_ID", "ATVPDKIKX0DER")
+
+# ── Finances API cache — avoid hammering Amazon on every dashboard refresh ───
+# {tenant_id: {"balance": float, "currency": str, "fetched_at": datetime}}
+_finances_cache: dict = {}
+_FINANCES_CACHE_TTL_SECONDS = 300  # 5 minutes
 
 
 def _amazon_sp_configured() -> bool:
