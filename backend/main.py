@@ -1436,6 +1436,11 @@ async def get_dashboard_amazon_sales(
 
         if fin_resp is not None and fin_resp.status_code == 200:
             groups = fin_resp.json().get("payload", {}).get("FinancialEventGroupList", [])
+            print(f"[finances] got {len(groups)} groups:", flush=True)
+            for g in groups:
+                print(f"  group id={g.get('FinancialEventGroupId')} status={g.get('ProcessingStatus')} "
+                      f"fund_status={g.get('FundTransferStatus')} "
+                      f"orig={g.get('OriginalTotal')} conv={g.get('ConvertedTotal')}", flush=True)
             total_balance = 0.0
             for g in groups:
                 fund_status = g.get("FundTransferStatus", "")
@@ -1454,7 +1459,7 @@ async def get_dashboard_amazon_sales(
                         orig = g.get("OriginalTotal") or g.get("ConvertedTotal") or {}
                         total_balance += float(orig.get("Amount") or 0)
             payment_balance = round(total_balance, 2)
-            print(f"[finances] balance={payment_balance} from {len(groups)} groups", flush=True)
+            print(f"[finances] final balance={payment_balance}", flush=True)
             # Store in cache
             _finances_cache[tenant_id] = {
                 "balance":    payment_balance,
