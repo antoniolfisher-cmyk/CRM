@@ -20,6 +20,7 @@ import Support from './pages/Support'
 import UpcScanner from './pages/UpcScanner'
 import Ungate from './pages/Ungate'
 import Profile from './pages/Profile'
+import Wholesale from './pages/Wholesale'
 
 export default function App() {
   return (
@@ -65,6 +66,7 @@ function PrivateRoute() {
         <Route path="/accounts"    element={guard('accounts',    <Accounts />)} />
         <Route path="/follow-ups"  element={guard('follow_ups',  <FollowUps />)} />
         <Route path="/orders"      element={guard('orders',      <Orders />)} />
+        <Route path="/wholesale"   element={guard('wholesale',   <Wholesale />)} />
         <Route path="/sourcing"    element={guard('sourcing',    <Products />)} />
         <Route path="/inventory"   element={guard('inventory',   <Inventory />)} />
         <Route path="/products"    element={<Navigate to="/sourcing" replace />} />

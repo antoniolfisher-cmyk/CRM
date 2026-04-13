@@ -7,6 +7,7 @@ const nav = [
   { to: '/accounts',   label: 'Accounts',         icon: BuildingIcon,  permKey: 'accounts' },
   { to: '/follow-ups', label: 'Follow-Ups',       icon: CalendarIcon,  permKey: 'follow_ups' },
   { to: '/orders',     label: 'Orders',           icon: BoxIcon,       permKey: 'orders' },
+  { to: '/wholesale',  label: 'Wholesale',         icon: WholesaleIcon, permKey: 'wholesale' },
   { to: '/sourcing',   label: 'Sourcing',         icon: TagIcon,       permKey: 'sourcing' },
   { to: '/inventory',  label: 'Current Inventory',icon: InventoryIcon, permKey: 'inventory' },
   { to: '/timeclock',  label: 'Time Clock',       icon: ClockIcon,     permKey: 'timeclock' },
@@ -293,6 +294,13 @@ function TruckIcon({ className }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M9 17a2 2 0 11-4 0 2 2 0 014 0zm10 0a2 2 0 11-4 0 2 2 0 014 0z" />
       <path strokeLinecap="round" strokeLinejoin="round" d="M13 16V6a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h1m8-1a1 1 0 01-1 1H9m4-1V8a1 1 0 011-1h2.586a1 1 0 01.707.293l3.414 3.414a1 1 0 01.293.707V16a1 1 0 01-1 1h-1m-6-1a1 1 0 001 1h1M5 17a2 2 0 104 0m-4 0a2 2 0 114 0m6 0a2 2 0 104 0m-4 0a2 2 0 114 0" />
+    </svg>
+  )
+}
+function WholesaleIcon({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
     </svg>
   )
 }
