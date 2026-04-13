@@ -113,6 +113,77 @@ def _get_strategy(db, tenant_id=None):
     return s
 
 
+# ─── Rule-based pricing engine ───────────────────────────────────────────────
+
+def price_rule_based(product: models.Product, strategy) -> dict:
+    """
+    Aura-style rule-based repricing. No Claude call — pure math.
+
+    Strategies:
+      buy_box           → compete against the current Buy Box winner
+      featured_merchants→ compete against the lowest featured merchant (same data: buy_box)
+      lowest_price      → compete against the lowest overall price (same data: buy_box)
+
+    compete_action: beat_pct | beat_amt | match
+    winning_action: raise_pct | raise_amt | raise_to_max | maintain
+
+    We determine "winning" as: our current live price <= buy_box (we ARE the box holder).
+    """
+    buy_cost   = product.buy_cost   or 0
+    amazon_fee = product.amazon_fee or 0
+    buy_box    = product.buy_box    or 0
+    breakeven  = buy_cost + amazon_fee
+
+    min_price    = strategy.min_price    or round(breakeven * 1.05, 2)
+    max_price    = strategy.max_price    or round(buy_box * 1.15, 2)
+    profit_floor = strategy.profit_floor or 0
+    if profit_floor > 0:
+        floor_min = round(breakeven + profit_floor, 2)
+        if floor_min > min_price:
+            min_price = floor_min
+
+    compete_action = strategy.compete_action or "beat_pct"
+    compete_value  = strategy.compete_value  or 1.0
+    winning_action = strategy.winning_action or "raise_pct"
+    winning_value  = strategy.winning_value  or 1.0
+
+    live_price = getattr(product, "aria_live_price", None) or 0
+
+    # Are we currently winning the Buy Box?
+    winning = live_price > 0 and live_price <= buy_box
+
+    if winning:
+        # We have the Buy Box — try to raise price toward max
+        if winning_action == "raise_to_max":
+            new_price = max_price
+        elif winning_action == "raise_amt":
+            new_price = live_price + winning_value
+        elif winning_action == "raise_pct":
+            new_price = live_price * (1 + winning_value / 100)
+        else:  # maintain
+            new_price = live_price
+        reason = f"Winning Buy Box — raising price toward max (${max_price:.2f})"
+    else:
+        # We're not winning — compete against the target price
+        target = buy_box  # for all three strategy types we use buy_box as the reference
+        if compete_action == "match":
+            new_price = target
+            reason = f"Matching Buy Box price of ${target:.2f}"
+        elif compete_action == "beat_amt":
+            new_price = target - compete_value
+            reason = f"Beating Buy Box by ${compete_value:.2f} (target ${target:.2f})"
+        else:  # beat_pct
+            new_price = target * (1 - compete_value / 100)
+            reason = f"Beating Buy Box by {compete_value:.1f}% (target ${target:.2f})"
+
+    # Clamp to min/max
+    new_price = max(new_price, min_price)
+    if max_price:
+        new_price = min(new_price, max_price)
+
+    return {"price": round(new_price, 2), "reasoning": reason}
+
+
 # ─── Claude pricing call ──────────────────────────────────────────────────────
 
 async def price_product(product: models.Product, strategy) -> dict:
@@ -125,6 +196,12 @@ async def price_product(product: models.Product, strategy) -> dict:
     min_price    = (strategy.min_price    if strategy else None) or round(breakeven * 1.05, 2)
     max_price    = (strategy.max_price    if strategy else None) or round(buy_box * 1.15, 2)
     profit_floor = (strategy.profit_floor if strategy else None) or 0
+
+    # Enforce profit floor as a hard minimum — if breakeven + floor > min_price, raise it
+    if profit_floor > 0:
+        floor_min = round(breakeven + profit_floor, 2)
+        if floor_min > min_price:
+            min_price = floor_min
 
     prompt = f"""You are Aria, an expert Amazon FBA repricing AI. Recommend the optimal listing price for this product to balance winning the Buy Box with healthy profit margins.
 
@@ -187,7 +264,7 @@ async def run_all_async(force: bool = False, tenant_id=None) -> dict:
     """
     db = SessionLocal()
     try:
-        strategy = _get_strategy(db, tenant_id=tenant_id)
+        default_strategy = _get_strategy(db, tenant_id=tenant_id)
 
         # Get Amazon credentials for this tenant (needed to push prices)
         cred = None
@@ -223,7 +300,18 @@ async def run_all_async(force: bool = False, tenant_id=None) -> dict:
                 continue
 
             try:
-                r      = await price_product(p, strategy)
+                # Per-product strategy → fall back to tenant default
+                strategy = (
+                    db.query(models.RepricerStrategy).get(p.aria_strategy_id)
+                    if p.aria_strategy_id else None
+                ) or default_strategy
+
+                # Route to Claude (Aria) or rule-based engine depending on strategy type
+                s_type = strategy.strategy_type if strategy else "aria"
+                if s_type == "aria":
+                    r = await price_product(p, strategy)
+                else:
+                    r = price_rule_based(p, strategy)
                 new_px = r["price"]
 
                 # Determine seller SKU — prefer dedicated field, fall back to order_number (legacy)
