@@ -1570,14 +1570,23 @@ async def get_dashboard_amazon_orders(
         ("OrderStatuses",   "Shipped"),
         ("FulfillmentChannels", "MFN"),
     ]
-    fba_raw, fbm_raw, fbm_shipped_raw = await asyncio.gather(
+    # Strategy D: no channel filter, all open statuses — broadest net for debug
+    all_open_params = [
+        ("MarketplaceIds",  mkt_id),
+        ("CreatedAfter",    since),
+        ("OrderStatuses",   "Pending"),
+        ("OrderStatuses",   "Unshipped"),
+        ("OrderStatuses",   "PartiallyShipped"),
+    ]
+    fba_raw, fbm_raw, fbm_shipped_raw, all_open_raw = await asyncio.gather(
         _amazon_fetch_orders(access_token, fba_open_params),
         _amazon_fetch_orders(access_token, fbm_open_params),
         _amazon_fetch_orders(access_token, fbm_shipped_params),
+        _amazon_fetch_orders(access_token, all_open_params),
     )
-    print(f"[orders] tenant={tenant_id} fba_raw={len(fba_raw)} fbm_raw={len(fbm_raw)} fbm_shipped_raw={len(fbm_shipped_raw)}", flush=True)
-    for o in fbm_raw:
-        print(f"[orders]   FBM open: {o.get('AmazonOrderId')} status={o.get('OrderStatus')} channel={o.get('FulfillmentChannel')} created={o.get('PurchaseDate')}", flush=True)
+    print(f"[orders] tenant={tenant_id} fba_raw={len(fba_raw)} fbm_raw={len(fbm_raw)} fbm_shipped_raw={len(fbm_shipped_raw)} all_open={len(all_open_raw)}", flush=True)
+    for o in all_open_raw:
+        print(f"[orders]   open: {o.get('AmazonOrderId')} status={o.get('OrderStatus')} channel={o.get('FulfillmentChannel')} created={o.get('PurchaseDate')}", flush=True)
 
     def _fmt(o):
         total_obj = o.get("OrderTotal") or {}
@@ -1605,12 +1614,13 @@ async def get_dashboard_amazon_orders(
         "fbm_shipped_count": len(fbm_shipped),
         "fetched_at":        now.isoformat(),
         "_debug": {
-            "tenant_id":      tenant_id,
-            "since":          since,
-            "fba_raw_count":  len(fba_raw),
-            "fbm_raw_count":  len(fbm_raw),
-            "fbm_raw_ids":    [o.get("AmazonOrderId") for o in fbm_raw],
-            "fbm_raw_statuses": [o.get("OrderStatus") for o in fbm_raw],
+            "tenant_id":       tenant_id,
+            "since":           since,
+            "fba_raw_count":   len(fba_raw),
+            "fbm_raw_count":   len(fbm_raw),
+            "all_open_count":  len(all_open_raw),
+            "all_open_orders": [{"id": o.get("AmazonOrderId"), "status": o.get("OrderStatus"),
+                                 "ch": o.get("FulfillmentChannel")} for o in all_open_raw],
         },
     }
 
@@ -1621,50 +1631,62 @@ async def debug_amazon_orders_tenant(
     db: Session = Depends(get_db),
 ):
     """
-    Debug: returns raw Amazon order lists for the current tenant's credentials.
-    Useful for diagnosing FBM order visibility issues.
+    Multi-strategy diagnostic: tries several query combinations to identify
+    why an FBM Unshipped order may not be appearing.
     """
     tenant_id = current.get("tenant_id", 1)
     cred = _get_tenant_amazon_creds(tenant_id, db)
     if not cred or not cred.sp_refresh_token:
         raise HTTPException(503, "Amazon SP-API credentials not configured for this tenant")
 
+    import httpx as _hx2
     from datetime import timezone as _tz3
     now    = datetime.now(_tz3.utc)
-    since  = (now - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    mkt_id = cred.marketplace_id or _AMAZON_MKT_ID
+    since60 = (now - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    since7  = (now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    mkt_id  = cred.marketplace_id or _AMAZON_MKT_ID
     access_token = await _get_tenant_access_token(cred)
 
-    fbm_open_params = [
-        ("MarketplaceIds",  mkt_id),
-        ("CreatedAfter",    since),
-        ("OrderStatuses",   "Pending"),
-        ("OrderStatuses",   "Unshipped"),
-        ("OrderStatuses",   "PartiallyShipped"),
+    def _summarise(orders):
+        return [{"id": o.get("AmazonOrderId"), "status": o.get("OrderStatus"),
+                 "channel": o.get("FulfillmentChannel"), "created": (o.get("PurchaseDate") or "")[:16]}
+                for o in orders]
+
+    # Strategy A: all open statuses, no channel filter (catches everything open)
+    a_params = [
+        ("MarketplaceIds", mkt_id), ("CreatedAfter", since60),
+        ("OrderStatuses", "Pending"), ("OrderStatuses", "Unshipped"), ("OrderStatuses", "PartiallyShipped"),
+    ]
+    # Strategy B: MFN + open statuses (current approach)
+    b_params = [
+        ("MarketplaceIds", mkt_id), ("CreatedAfter", since60),
+        ("OrderStatuses", "Pending"), ("OrderStatuses", "Unshipped"), ("OrderStatuses", "PartiallyShipped"),
         ("FulfillmentChannels", "MFN"),
     ]
-    fba_open_params = [
-        ("MarketplaceIds",  mkt_id),
-        ("CreatedAfter",    since),
-        ("OrderStatuses",   "Pending"),
-        ("OrderStatuses",   "Unshipped"),
-        ("OrderStatuses",   "PartiallyShipped"),
-        ("FulfillmentChannels", "AFN"),
+    # Strategy C: MFN only, no status filter, last 7 days
+    c_params = [
+        ("MarketplaceIds", mkt_id), ("LastUpdatedAfter", since7),
+        ("FulfillmentChannels", "MFN"),
     ]
-    fba_raw, fbm_raw = await asyncio.gather(
-        _amazon_fetch_orders(access_token, fba_open_params),
-        _amazon_fetch_orders(access_token, fbm_open_params),
+    # Strategy D: no filters at all, just last 7 days (broadest possible)
+    d_params = [
+        ("MarketplaceIds", mkt_id), ("LastUpdatedAfter", since7),
+    ]
+
+    a_raw, b_raw, c_raw, d_raw = await asyncio.gather(
+        _amazon_fetch_orders(access_token, a_params),
+        _amazon_fetch_orders(access_token, b_params),
+        _amazon_fetch_orders(access_token, c_params),
+        _amazon_fetch_orders(access_token, d_params),
     )
+
     return {
-        "tenant_id":    tenant_id,
-        "since":        since,
-        "marketplace":  mkt_id,
-        "fba_count":    len(fba_raw),
-        "fbm_count":    len(fbm_raw),
-        "fba_orders":   [{"id": o.get("AmazonOrderId"), "status": o.get("OrderStatus"),
-                          "channel": o.get("FulfillmentChannel"), "created": o.get("PurchaseDate")} for o in fba_raw],
-        "fbm_orders":   [{"id": o.get("AmazonOrderId"), "status": o.get("OrderStatus"),
-                          "channel": o.get("FulfillmentChannel"), "created": o.get("PurchaseDate")} for o in fbm_raw],
+        "tenant_id": tenant_id,
+        "marketplace": mkt_id,
+        "A_open_no_channel_filter":   {"count": len(a_raw), "orders": _summarise(a_raw)},
+        "B_open_MFN_only":            {"count": len(b_raw), "orders": _summarise(b_raw)},
+        "C_MFN_no_status_7days":      {"count": len(c_raw), "orders": _summarise(c_raw)},
+        "D_no_filter_7days":          {"count": len(d_raw), "orders": _summarise(d_raw)},
     }
 
 
