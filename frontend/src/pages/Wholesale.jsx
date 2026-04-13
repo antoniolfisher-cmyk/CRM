@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { api } from '../api'
 import { useAuth } from '../context/AuthContext'
 
@@ -7,12 +7,18 @@ export default function Wholesale() {
   const [stats, setStats]           = useState(null)
   const [tenantInfo, setTenantInfo] = useState(null)
   const [loading, setLoading]       = useState(true)
+  const [error, setError]           = useState(null)
 
-  useEffect(() => {
+  const loadStats = useCallback(() => {
+    setLoading(true)
+    setError(null)
     api.getDashboard()
       .then(s => setStats(s))
+      .catch(e => setError(e.message))
       .finally(() => setLoading(false))
   }, [])
+
+  useEffect(() => { loadStats() }, [loadStats])
 
   useEffect(() => {
     api.getTenantMe().catch(() => {}).then(t => setTenantInfo(t))
@@ -20,27 +26,50 @@ export default function Wholesale() {
 
   if (loading) return <LoadingSkeleton />
 
+  if (error || !stats) return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Wholesale</h1>
+          <p className="text-gray-500 text-sm mt-1">Your wholesale distribution business at a glance</p>
+        </div>
+        <button onClick={loadStats} className="px-3 py-1.5 text-xs font-medium bg-white border border-gray-200 rounded-lg hover:bg-gray-50">
+          Retry
+        </button>
+      </div>
+      <div className="card p-5 border border-red-200 bg-red-50">
+        <p className="text-sm text-red-700 font-medium">Could not load dashboard data</p>
+        <p className="text-xs text-red-500 mt-1">{error || 'Unknown error'}</p>
+      </div>
+    </div>
+  )
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Wholesale</h1>
-        <p className="text-gray-500 text-sm mt-1">Your wholesale distribution business at a glance</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Wholesale</h1>
+          <p className="text-gray-500 text-sm mt-1">Your wholesale distribution business at a glance</p>
+        </div>
+        <button onClick={loadStats} className="px-3 py-1.5 text-xs font-medium bg-white border border-gray-200 rounded-lg hover:bg-gray-50">
+          Refresh
+        </button>
       </div>
 
       <SetupChecklist user={user} tenantInfo={tenantInfo} />
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <KpiCard label="Active Accounts" value={stats.active_accounts} sub={`${stats.total_accounts} total`} color="blue" icon={<BuildingIcon />} />
-        <KpiCard label="Prospects" value={stats.prospect_accounts} sub="to convert" color="purple" icon={<StarIcon />} />
-        <KpiCard label="Overdue Follow-Ups" value={stats.follow_ups_overdue} sub="need attention" color={stats.follow_ups_overdue > 0 ? 'red' : 'green'} icon={<AlertIcon />} />
-        <KpiCard label="Due This Week" value={stats.follow_ups_this_week} sub={`${stats.follow_ups_due_today} due today`} color="amber" icon={<CalendarIcon />} />
+        <KpiCard label="Active Accounts" value={stats.active_accounts ?? 0} sub={`${stats.total_accounts ?? 0} total`} color="blue" icon={<BuildingIcon />} />
+        <KpiCard label="Prospects" value={stats.prospect_accounts ?? 0} sub="to convert" color="purple" icon={<StarIcon />} />
+        <KpiCard label="Overdue Follow-Ups" value={stats.follow_ups_overdue ?? 0} sub="need attention" color={(stats.follow_ups_overdue ?? 0) > 0 ? 'red' : 'green'} icon={<AlertIcon />} />
+        <KpiCard label="Due This Week" value={stats.follow_ups_this_week ?? 0} sub={`${stats.follow_ups_due_today ?? 0} due today`} color="amber" icon={<CalendarIcon />} />
       </div>
 
       {/* Order KPIs */}
       <div className="grid grid-cols-2 gap-4">
-        <KpiCard label="Open Orders" value={stats.open_orders} sub="pending / confirmed" color="indigo" icon={<BoxIcon />} />
-        <KpiCard label="Pipeline Value" value={`$${stats.total_order_value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} sub="active orders" color="green" icon={<DollarIcon />} />
+        <KpiCard label="Open Orders" value={stats.open_orders ?? 0} sub="pending / confirmed" color="indigo" icon={<BoxIcon />} />
+        <KpiCard label="Pipeline Value" value={`$${(stats.total_order_value ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} sub="active orders" color="green" icon={<DollarIcon />} />
       </div>
     </div>
   )

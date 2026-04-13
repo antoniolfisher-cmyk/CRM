@@ -1361,7 +1361,10 @@ async def get_dashboard_amazon_sales(
     existing_ids = {o.get("AmazonOrderId") for o in sales_orders}
     for o in fbm_shipped_orders:
         oid = o.get("AmazonOrderId")
-        if oid and oid not in existing_ids:
+        # Only include FBM shipped orders placed within the current period
+        # (prevents yesterday's orders from appearing under "Today")
+        purchase_date = o.get("PurchaseDate", "")
+        if oid and oid not in existing_ids and purchase_date >= created_after:
             sales_orders.append(o)
             existing_ids.add(oid)
 
@@ -1475,21 +1478,45 @@ async def get_dashboard_amazon_sales(
             "ship_city": (o.get("ShippingAddress") or {}).get("City", ""),
         }
 
+    # ── 5. Build per-marketplace balance breakdown ──────────────────────────
+    _MKT_MAP = {
+        "ATVPDKIKX0DER": ("United States",  "North America"),
+        "A2EUQ1WTGCTBG2": ("Canada",        "North America"),
+        "A1AM78C64UM0Y8": ("Mexico",        "North America"),
+        "A2Q3Y263D00KWC": ("Brazil",        "South America"),
+        "A1PA6795UKMFR9": ("Germany",       "Europe"),
+        "A1RKKUPIHCS9HS": ("Spain",         "Europe"),
+        "A13V1IB3VIYZZH": ("France",        "Europe"),
+        "A1F83G8C2ARO7P": ("United Kingdom","Europe"),
+        "APJ6JRA9NG5V4":  ("Italy",         "Europe"),
+        "A1805IZSGTT6HS": ("Netherlands",   "Europe"),
+    }
+    _REGION_ORDER = ["North America", "South America", "Europe"]
+    region_data: dict = {}
+    for _mid, (_sname, _region) in _MKT_MAP.items():
+        _bal = round(payment_balance, 2) if (payment_balance is not None and _mid == mkt_id) else 0.0
+        if _region not in region_data:
+            region_data[_region] = {"region": _region, "total": 0.0, "stores": []}
+        region_data[_region]["stores"].append({"store": _sname, "balance": _bal})
+        region_data[_region]["total"] = round(region_data[_region]["total"] + _bal, 2)
+    balance_breakdown = [region_data[r] for r in _REGION_ORDER if r in region_data]
+
     return {
-        "period":           period,
-        "period_start":     period_start.isoformat(),
-        "fetched_at":       now.isoformat(),
-        "currency":         currency,
-        "revenue":          round(sales_revenue, 2),
-        "order_count":      len(sales_orders),
-        "units_sold":       units_sold,
-        "open_order_count": len(open_orders),
-        "payment_balance":  payment_balance,
-        "payment_currency": payment_currency,
-        "finances_error":   finances_error,
-        "total_orders":     len(sales_orders),
-        "orders":           [_fmt_order(o) for o in sorted(sales_orders, key=lambda x: x.get("PurchaseDate",""), reverse=True)[:50]],
-        "open_orders":      [_fmt_order(o) for o in open_orders[:50]],
+        "period":            period,
+        "period_start":      period_start.isoformat(),
+        "fetched_at":        now.isoformat(),
+        "currency":          currency,
+        "revenue":           round(sales_revenue, 2),
+        "order_count":       len(sales_orders),
+        "units_sold":        units_sold,
+        "open_order_count":  len(open_orders),
+        "payment_balance":   payment_balance,
+        "payment_currency":  payment_currency,
+        "finances_error":    finances_error,
+        "total_orders":      len(sales_orders),
+        "balance_breakdown": balance_breakdown,
+        "orders":            [_fmt_order(o) for o in sorted(sales_orders, key=lambda x: x.get("PurchaseDate",""), reverse=True)[:50]],
+        "open_orders":       [_fmt_order(o) for o in open_orders[:50]],
     }
 
 

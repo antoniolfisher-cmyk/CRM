@@ -301,10 +301,33 @@ function AmazonSalesPanel() {
               {modal === 'balance' && (
                 <div className="p-5 space-y-4">
                   <div className="bg-green-50 border border-green-200 rounded-xl p-4">
-                    <p className="text-xs text-green-600 font-semibold uppercase tracking-wider mb-1">Current Balance</p>
+                    <p className="text-xs text-green-600 font-semibold uppercase tracking-wider mb-1">Total Balance</p>
                     <p className="text-3xl font-bold text-green-900">{fmt$(data.payment_balance ?? data.revenue)}</p>
                     <p className="text-xs text-green-600 mt-1">{data.payment_balance !== null ? 'Funds held by Amazon pending next disbursement' : `${periodLabel} revenue — balance unavailable`}</p>
                   </div>
+                  {(data.balance_breakdown || []).length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Total Balance Breakdown</p>
+                      <div className="space-y-3">
+                        {data.balance_breakdown.map(region => (
+                          <div key={region.region}>
+                            <div className="flex items-center justify-between py-1.5 border-b border-gray-100">
+                              <span className="text-sm font-semibold text-gray-700">{region.region}</span>
+                              <span className="text-sm font-bold text-gray-900">{fmt$(region.total)}</span>
+                            </div>
+                            <div className="mt-1 space-y-0.5">
+                              {region.stores.map(s => (
+                                <div key={s.store} className="flex items-center justify-between px-2 py-1">
+                                  <span className="text-xs text-gray-500">{s.store}</span>
+                                  <span className="text-xs font-medium text-gray-700">{fmt$(s.balance)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="bg-gray-50 rounded-xl p-3"><p className="text-xs text-gray-400">Period Revenue</p><p className="text-lg font-bold text-gray-900 mt-0.5">{fmt$(data.revenue)}</p></div>
                     <div className="bg-gray-50 rounded-xl p-3"><p className="text-xs text-gray-400">Orders</p><p className="text-lg font-bold text-gray-900 mt-0.5">{data.total_orders}</p></div>
