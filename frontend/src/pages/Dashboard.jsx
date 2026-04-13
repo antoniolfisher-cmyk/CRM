@@ -999,9 +999,45 @@ ${label?.tracking_number ? `<div class="tracking"><strong>Tracking Number</stron
 
         {/* Body */}
         <div className="overflow-y-auto flex-1 px-6 py-5">
-          {error && (
+          {error && (error === 'MFN_PERMISSIONS' ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-5 space-y-3">
+              <div className="flex items-start gap-3">
+                <div className="w-8 h-8 bg-amber-100 rounded-lg flex items-center justify-center shrink-0 mt-0.5">
+                  <svg className="w-4 h-4 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /></svg>
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-amber-900">Amazon SP-API missing Merchant Fulfillment permission</p>
+                  <p className="text-xs text-amber-700 mt-1">The SP-API app connected to this account needs the <strong>Merchant Fulfillment</strong> role enabled before shipping labels can be purchased.</p>
+                </div>
+              </div>
+              <div className="bg-white border border-amber-200 rounded-lg p-4 space-y-2">
+                <p className="text-xs font-semibold text-gray-700 uppercase tracking-wider">Steps to fix</p>
+                {[
+                  'Log in to Seller Central (sellercentral.amazon.com)',
+                  'Go to Apps & Services → Develop Apps',
+                  'Click Edit on your SP-API application',
+                  'Under API sections, enable Merchant Fulfillment (Amazon Shipping)',
+                  'Save — no re-authorization needed for private apps',
+                  'Return here and try again',
+                ].map((s, i) => (
+                  <div key={i} className="flex items-start gap-2 text-sm text-gray-700">
+                    <span className="w-5 h-5 rounded-full bg-amber-100 text-amber-700 text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">{i + 1}</span>
+                    <span>{s}</span>
+                  </div>
+                ))}
+              </div>
+              <a
+                href="https://sellercentral.amazon.com/apps/manage"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors"
+              >
+                Open Seller Central Apps →
+              </a>
+            </div>
+          ) : (
             <div className="mb-4 px-4 py-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">{error}</div>
-          )}
+          ))}
 
           {/* Step 1 — Ship-from + package */}
           {step === 'address' && (

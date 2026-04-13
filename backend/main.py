@@ -5786,7 +5786,7 @@ async def get_fbm_rates(
         )
 
     if r.status_code == 403:
-        raise HTTPException(403, "Amazon MFN API: insufficient permissions. Enable 'Merchant Fulfillment' role in Seller Central → SP-API app.")
+        raise HTTPException(403, "MFN_PERMISSIONS")
     if r.status_code != 200:
         raise HTTPException(502, f"Amazon MFN API {r.status_code}: {r.text[:400]}")
 
@@ -5853,7 +5853,7 @@ async def purchase_fbm_label(
         )
 
     if r.status_code == 403:
-        raise HTTPException(403, "Amazon MFN API: insufficient permissions.")
+        raise HTTPException(403, "MFN_PERMISSIONS")
     if r.status_code not in (200, 201):
         raise HTTPException(502, f"Amazon MFN API {r.status_code}: {r.text[:400]}")
 
