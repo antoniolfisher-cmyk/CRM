@@ -1007,24 +1007,27 @@ ${label?.tracking_number ? `<div class="tracking"><strong>Tracking Number</stron
                 </div>
                 <div>
                   <p className="text-sm font-semibold text-amber-900">Amazon SP-API missing Merchant Fulfillment permission</p>
-                  <p className="text-xs text-amber-700 mt-1">The SP-API app connected to this account needs the <strong>Merchant Fulfillment</strong> role enabled before shipping labels can be purchased.</p>
+                  <p className="text-xs text-amber-700 mt-1">The SP-API app needs the <strong>Direct to Consumer Shipping</strong> role enabled. This is a restricted role — you must request access from Amazon before it can be used.</p>
                 </div>
               </div>
               <div className="bg-white border border-amber-200 rounded-lg p-4 space-y-2">
-                <p className="text-xs font-semibold text-gray-700 uppercase tracking-wider">Steps to fix</p>
+                <p className="text-xs font-semibold text-gray-700 uppercase tracking-wider">Steps to enable</p>
                 {[
                   'Log in to Seller Central (sellercentral.amazon.com)',
                   'Go to Apps & Services → Develop Apps',
                   'Click Edit on your SP-API application',
-                  'Under API sections, enable Merchant Fulfillment (Amazon Shipping)',
-                  'Save — no re-authorization needed for private apps',
-                  'Return here and try again',
+                  'Under API sections, find Direct to Consumer Shipping (Restricted)',
+                  'Click Request Approval — Amazon will review your use case',
+                  'Once approved, return here and try again',
                 ].map((s, i) => (
                   <div key={i} className="flex items-start gap-2 text-sm text-gray-700">
                     <span className="w-5 h-5 rounded-full bg-amber-100 text-amber-700 text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">{i + 1}</span>
                     <span>{s}</span>
                   </div>
                 ))}
+              </div>
+              <div className="text-xs text-amber-700 bg-amber-100 rounded-lg px-3 py-2">
+                <strong>Note:</strong> "Amazon Logistics" is for Amazon's own last-mile delivery network and does not grant access to buy carrier labels (UPS, USPS, FedEx) through the shipping API. You need <em>Direct to Consumer Shipping</em> for that.
               </div>
               <a
                 href="https://sellercentral.amazon.com/apps/manage"
