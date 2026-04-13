@@ -4,9 +4,9 @@ import { useAuth } from '../context/AuthContext'
 
 export default function Wholesale() {
   const { user } = useAuth()
-  const [stats, setStats]       = useState(null)
+  const [stats, setStats]           = useState(null)
   const [tenantInfo, setTenantInfo] = useState(null)
-  const [loading, setLoading]   = useState(true)
+  const [loading, setLoading]       = useState(true)
 
   useEffect(() => {
     api.getDashboard()
