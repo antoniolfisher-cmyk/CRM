@@ -33,6 +33,9 @@ def _default_state() -> dict:
         "created":      0,
         "updated":      0,
         "skipped":      0,
+        "fba_synced":   0,
+        "fbm_synced":   0,
+        "fbm_error":    None,
         "error":        None,
         "running":      False,
     }
@@ -200,8 +203,10 @@ async def _fetch_fbm_listings(tenant_id: Optional[int] = None) -> list:
         seller_id = os.getenv("AMAZON_SELLER_ID", "").strip()
 
     if not seller_id:
-        log.info("FBM sync skipped for tenant %s — no seller_id", tenant_id)
-        return []
+        raise RuntimeError(
+            "Seller ID not found. Go to Settings → Connect Amazon and reconnect your account "
+            "so the Seller ID can be captured."
+        )
 
     items = []
     page_token = None
@@ -222,18 +227,19 @@ async def _fetch_fbm_listings(tenant_id: Optional[int] = None) -> list:
                 params=params,
             )
             if resp.status_code == 403:
-                log.info("FBM listings API 403 for tenant %s — seller may not have listings permission", tenant_id)
-                break
+                raise RuntimeError(
+                    "FBM auto-sync requires the 'listingsItems:read_write' SP-API role on your Amazon Developer app. "
+                    "Use ↑ Import FBM to upload an Active Listings Report from Seller Central instead."
+                )
             if resp.status_code != 200:
-                log.warning("FBM listings API %s for tenant %s: %s", resp.status_code, tenant_id, resp.text[:120])
-                break
+                raise RuntimeError(f"Listings API returned {resp.status_code}: {resp.text[:120]}")
 
             data = resp.json()
             for listing in data.get("items", []):
                 summaries = listing.get("summaries") or []
                 # Only include merchant-fulfilled (FBM) items
                 is_fbm = any(
-                    s.get("fulfillmentChannel") in ("MERCHANT", "DEFAULT")
+                    s.get("fulfillmentChannel") in ("MERCHANT", "DEFAULT", "MFN")
                     for s in summaries
                 )
                 if not is_fbm:
@@ -243,12 +249,17 @@ async def _fetch_fbm_listings(tenant_id: Optional[int] = None) -> list:
                 product_name = (summaries[0].get("itemName") or "") if summaries else ""
                 seller_sku = listing.get("sku", "")
 
-                # Quantity from fulfillmentAvailability for the MERCHANT channel
+                # Quantity from fulfillmentAvailability
                 qty = 0
                 for fa in (listing.get("fulfillmentAvailability") or []):
-                    if fa.get("fulfillmentChannelCode") in ("DEFAULT", "MERCHANT"):
-                        qty = fa.get("quantity") or 0
-                        break
+                    if fa.get("fulfillmentChannelCode") in ("DEFAULT", "MERCHANT", "MFN"):
+                        q = fa.get("quantity") or 0
+                        if q > 0:
+                            qty = q
+                            break
+                # ACTIVE listing = buyable even if quantity field is 0
+                if qty == 0:
+                    qty = 1
 
                 if asin:
                     items.append({
@@ -285,6 +296,7 @@ async def run_sync(tenant_id: Optional[int] = None) -> dict:
 
     db = SessionLocal()
     created = updated = skipped = 0
+    fbm_error = None
 
     try:
         # Pull FBA inventory (tag each item)
@@ -292,10 +304,11 @@ async def run_sync(tenant_id: Optional[int] = None) -> dict:
         for item in fba_items:
             item["fulfillment_channel"] = "FBA"
 
-        # Pull FBM listings (silently skips if seller_id missing or no permission)
+        # Pull FBM listings — capture error for UI display but don't fail the whole sync
         try:
             fbm_items = await _fetch_fbm_listings(tenant_id)
         except Exception as _e:
+            fbm_error = str(_e)
             log.warning("FBM fetch failed for tenant %s (non-fatal): %s", tenant_id, _e)
             fbm_items = []
 
@@ -345,17 +358,22 @@ async def run_sync(tenant_id: Optional[int] = None) -> dict:
             "created":      created,
             "updated":      updated,
             "skipped":      skipped,
+            "fba_synced":   len(fba_items),
+            "fbm_synced":   len(fbm_items),
+            "fbm_error":    fbm_error,
             "error":        None,
             "running":      False,
         }
         _sync_states[key] = result
-        log.info("Amazon sync tenant=%s — created=%d updated=%d skipped=%d", tenant_id, created, updated, skipped)
+        log.info("Amazon sync tenant=%s — created=%d updated=%d fba=%d fbm=%d fbm_error=%s",
+                 tenant_id, created, updated, len(fba_items), len(fbm_items), fbm_error)
         return result
 
     except Exception as e:
         _sync_states[key] = {
             **_default_state(),
             "last_sync_at": datetime.now(timezone.utc).isoformat(),
+            "fbm_error":    fbm_error,
             "error":        str(e),
             "running":      False,
         }
