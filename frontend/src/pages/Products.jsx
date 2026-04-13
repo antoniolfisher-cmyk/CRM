@@ -5,6 +5,35 @@ import { formatDate, fmtCurrency } from '../utils'
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
+function BuyBoxBadge({ buyBox, livePrice, large = false }) {
+  if (!buyBox) return <span className={large ? 'text-2xl font-bold text-gray-300' : 'text-gray-300 text-xs'}>—</span>
+
+  const winning = livePrice > 0 && livePrice <= buyBox
+  const priceStr = fmtCurrency(buyBox)
+
+  if (livePrice > 0) {
+    return winning ? (
+      <span className={`inline-flex items-center gap-1 font-semibold ${large ? 'text-2xl text-green-600' : 'text-sm text-green-600'}`}>
+        <svg className={large ? 'w-5 h-5' : 'w-3.5 h-3.5'} viewBox="0 0 14 14" fill="none">
+          <circle cx="7" cy="7" r="6.5" stroke="currentColor" strokeWidth="1.5"/>
+          <path d="M4 7l2 2 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+        {priceStr}
+      </span>
+    ) : (
+      <span className={`inline-flex items-center gap-1 font-semibold ${large ? 'text-2xl text-red-500' : 'text-sm text-red-500'}`}>
+        <svg className={large ? 'w-5 h-5' : 'w-3.5 h-3.5'} viewBox="0 0 14 14" fill="none">
+          <circle cx="7" cy="7" r="6.5" stroke="currentColor" strokeWidth="1.5"/>
+          <path d="M4.5 4.5l5 5M9.5 4.5l-5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+        </svg>
+        {priceStr}
+      </span>
+    )
+  }
+
+  return <span className={large ? 'text-2xl font-bold text-emerald-600' : 'font-medium text-gray-600 text-sm'}>{priceStr}</span>
+}
+
 function pct(val) {
   if (!val && val !== 0) return '—'
   return `${(Number(val) * 100).toFixed(1)}%`
@@ -64,7 +93,7 @@ const COLS = [
   { key: 'money_spent',       label: 'Money Spent',          width: 'w-28', render: (v) => fmtCurrency(v) },
   { key: 'amazon_fee',        label: 'Amazon Fee',           width: 'w-24', render: (v) => fmtCurrency(v) },
   { key: 'total_cost',        label: 'Total Cost',           width: 'w-24', render: (v) => fmtCurrency(v) },
-  { key: 'buy_box',           label: 'Buy Box',              width: 'w-24', render: (v) => fmtCurrency(v) },
+  { key: 'buy_box',           label: 'Buy Box',              width: 'w-28', render: (v, r) => <BuyBoxBadge buyBox={v} livePrice={r?.aria_live_price} /> },
   { key: 'keepa_bsr',        label: 'BSR',                  width: 'w-24', render: (v) => v ? `#${Number(v).toLocaleString()}` : '—' },
   { key: 'keepa_category',   label: 'Category',             width: 'w-36', render: (v) => <span className="text-xs text-gray-500 truncate block max-w-[9rem]">{v || '—'}</span> },
   { key: 'aria_suggested_price', label: '✦ Aria Price',     width: 'w-28', render: (v, r) => v ? (
@@ -851,8 +880,8 @@ function MarketAnalysis({ data, asin }) {
           <div className="border-l border-gray-200 pl-8 flex gap-8">
             <div>
               <p className="text-xs text-gray-500">Buy Box</p>
-              <p className="text-2xl font-bold text-emerald-600 mt-0.5">
-                {data.buy_box != null ? fmtCurrency(data.buy_box) : '—'}
+              <p className="mt-0.5">
+                <BuyBoxBadge buyBox={data.buy_box} livePrice={data.aria_live_price} large />
               </p>
             </div>
             <div>
