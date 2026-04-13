@@ -1240,6 +1240,10 @@ async def _amazon_fetch_orders(access_token: str, params_first: list) -> list:
             )
             if resp.status_code == 403:
                 raise HTTPException(403, "Amazon Orders API: insufficient permissions. Enable 'Orders' role in Seller Central → SP-API app.")
+            if resp.status_code == 429:
+                # Rate limited — return whatever we have so far rather than crashing
+                print(f"[orders] 429 QuotaExceeded — returning {len(orders)} orders fetched so far", flush=True)
+                break
             if resp.status_code != 200:
                 raise HTTPException(502, f"Amazon Orders API {resp.status_code}: {resp.text[:400]}")
             body = resp.json().get("payload", {})
@@ -1422,14 +1426,12 @@ async def get_dashboard_amazon_sales(
                 total_balance = float(orig.get("Amount") or 0)
             payment_balance = round(total_balance, 2)
         else:
-            # Log the full Amazon response so we can diagnose the real error
             try:
                 err_body = fin_resp.json()
             except Exception:
                 err_body = fin_resp.text[:300]
-            log.warning("Finances API %s: %s", fin_resp.status_code, err_body)
+            print(f"[finances] {fin_resp.status_code}: {err_body}", flush=True)
             if fin_resp.status_code == 403:
-                # Extract Amazon's specific error code from the response body
                 err_codes = [e.get("code", "") for e in (err_body if isinstance(err_body, list) else err_body.get("errors", []))]
                 if "InvalidInput" in err_codes or "InvalidToken" in err_codes:
                     finances_error = "Finances role not enabled"
@@ -1596,10 +1598,10 @@ async def get_dashboard_amazon_orders(
         ("OrderStatuses",    "Shipped"),
         ("FulfillmentChannels", "MFN"),
     ]
-    open_raw, fbm_shipped_raw = await asyncio.gather(
-        _amazon_fetch_orders(access_token, open_params),
-        _amazon_fetch_orders(access_token, fbm_shipped_params),
-    )
+    # Run sequentially — Amazon Orders API has a low quota (burst 20, restore
+    # 0.0167 req/s). Parallel calls double quota consumption and trigger 429s.
+    open_raw      = await _amazon_fetch_orders(access_token, open_params)
+    fbm_shipped_raw = await _amazon_fetch_orders(access_token, fbm_shipped_params)
 
     def _fmt(o):
         total_obj = o.get("OrderTotal") or {}
