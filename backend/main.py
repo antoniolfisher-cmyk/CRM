@@ -1402,9 +1402,11 @@ async def get_dashboard_amazon_sales(
 
     try:
         finances_after = (now - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        _fin_base = _sp_base(cred.is_sandbox)
+        print(f"[finances] calling {_fin_base}/finances/v0/financialEventGroups is_sandbox={cred.is_sandbox}", flush=True)
         async with _httpx.AsyncClient(timeout=20) as client:
             fin_resp = await client.get(
-                f"{_AMAZON_SP_BASE}/finances/v0/financialEventGroups",
+                f"{_fin_base}/finances/v0/financialEventGroups",
                 params={"FinancialEventGroupStartedAfter": finances_after},
                 headers={"x-amz-access-token": access_token},
             )
@@ -4170,7 +4172,9 @@ async def test_finances_connection(
     # Step 2: call Finances API
     now = datetime.now(_tz.utc)
     finances_after = (now - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    sp_base = "https://sandbox.sellingpartnerapi-na.amazon.com" if cred.is_sandbox else "https://sellingpartnerapi-na.amazon.com"
+    sp_base = _sp_base(cred.is_sandbox)
+    sandbox_env = os.getenv("AMAZON_SP_SANDBOX", "(not set)")
+    module_base = _AMAZON_SP_BASE
     try:
         async with _httpx.AsyncClient(timeout=20) as client:
             fin_r = await client.get(
@@ -4186,6 +4190,10 @@ async def test_finances_connection(
             "connected_at":    connected_at,
             "token_preview":   tok_preview,
             "step":            "finances_api",
+            "is_sandbox":      cred.is_sandbox,
+            "sp_base_used":    sp_base,
+            "module_sp_base":  module_base,
+            "sandbox_env_var": sandbox_env,
             "finances_status": fin_r.status_code,
             "finances_body":   fin_body,
             "success":         fin_r.status_code == 200,
