@@ -1310,12 +1310,14 @@ async def debug_amazon_orders_raw(_ = Depends(require_auth)):
 @app.get("/api/dashboard/amazon-sales")
 async def get_dashboard_amazon_sales(
     period: str = "today",
+    tz_offset: int = 0,
     current: dict = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
     """
     Real-time Amazon sales + payments from SP-API.
     period: "today" | "week" | "month"
+    tz_offset: browser UTC offset in minutes (e.g. -240 for EDT, -300 for EST)
 
     Two separate API calls:
     1. Sales: orders CreatedAfter=period_start (any status except Canceled)
@@ -1331,12 +1333,18 @@ async def get_dashboard_amazon_sales(
     import httpx as _httpx
 
     now = datetime.now(timezone.utc)
+    # Shift 'now' to the user's local time so day/week/month boundaries are correct
+    # tz_offset is in minutes (matching JS Date.getTimezoneOffset() but negated)
+    tz_delta   = timedelta(minutes=tz_offset)   # e.g. -240 min for EDT → -4 h
+    local_now  = now + tz_delta                 # user's local "now"
     if period == "month":
-        period_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        local_start = local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     elif period == "week":
-        period_start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+        local_start = (local_now - timedelta(days=local_now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
     else:  # today
-        period_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        local_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # Convert back to UTC for the Amazon API call
+    period_start = local_start - tz_delta
 
     created_after     = period_start.strftime("%Y-%m-%dT%H:%M:%SZ")
     open_orders_since = (now - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%SZ")

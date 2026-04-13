@@ -31,7 +31,11 @@ export const api = {
   getDashboard: () => req('GET', '/dashboard'),
   getRepricerStats: () => req('GET', '/dashboard/repricer-stats'),
   getDashboardAmazonLive: () => req('GET', '/dashboard/amazon-live'),
-  getDashboardAmazonSales: (period = 'today') => req('GET', `/dashboard/amazon-sales?period=${period}`),
+  getDashboardAmazonSales: (period = 'today') => {
+    // JS getTimezoneOffset() returns minutes WEST (positive for US), we need minutes EAST
+    const tzOffset = -new Date().getTimezoneOffset()
+    return req('GET', `/dashboard/amazon-sales?period=${period}&tz_offset=${tzOffset}`)
+  },
   getDashboardAmazonOrders: () => req('GET', '/dashboard/amazon-orders'),
 
   // Tenant & Multi-tenancy
