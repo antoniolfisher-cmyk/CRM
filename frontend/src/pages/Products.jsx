@@ -370,6 +370,17 @@ export default function Products() {
                       >
                         {submittingId === p.id ? '...' : '→ Send to Admin'}
                       </button>
+                      {p.asin && (
+                        <a
+                          href={`https://www.google.com/search?q=${encodeURIComponent((p.asin || '') + ' ' + (p.product_name || ''))}`}
+                          target="_blank" rel="noreferrer"
+                          onClick={e => e.stopPropagation()}
+                          className="btn-ghost py-1 px-1.5 text-xs text-gray-400 hover:text-blue-600"
+                          title="Search Google for sourcing"
+                        >
+                          <GoogleIcon />
+                        </a>
+                      )}
                       <button className="btn-ghost py-1 px-2 text-xs" onClick={() => { setEditing(p); setShowForm(true) }}>Edit</button>
                       <button className="btn-ghost py-1 px-2 text-xs text-red-500 hover:bg-red-50" onClick={() => handleDelete(p.id)}>Del</button>
                     </div>
@@ -701,6 +712,15 @@ function ProductForm({ initial, onSave, onClose, keepaConfigured, amazonConfigur
           )}
           {keepaConfigured && !keepaFilled && !keepaLoading && (form.asin || '').length > 0 && (form.asin || '').length < 10 && (
             <p className="text-xs text-gray-400 mt-1">Enter all 10 characters to auto-fill product data</p>
+          )}
+          {(form.asin || '').length === 10 && (
+            <a
+              href={`https://www.google.com/search?q=${encodeURIComponent((form.asin || '') + ' ' + (form.product_name || ''))}`}
+              target="_blank" rel="noreferrer"
+              className="mt-1 inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-blue-600"
+            >
+              <GoogleIcon /> Search Google for this product
+            </a>
           )}
         </div>
         <Field label="VA Finder" k="va_finder" placeholder="Who found this?" />

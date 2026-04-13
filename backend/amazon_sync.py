@@ -477,6 +477,7 @@ async def run_sync(tenant_id: Optional[int] = None) -> dict:
         try:
             fbm_items = await _fetch_fbm_listings(tenant_id)
         except Exception as _e:
+            fbm_error = str(_e)
             log.warning("FBM fetch failed for tenant %s (non-fatal): %s", tenant_id, _e)
             fbm_error = str(_e)
             fbm_items = []
@@ -542,13 +543,15 @@ async def run_sync(tenant_id: Optional[int] = None) -> dict:
             "running":      False,
         }
         _sync_states[key] = result
-        log.info("Amazon sync tenant=%s — created=%d updated=%d skipped=%d", tenant_id, created, updated, skipped)
+        log.info("Amazon sync tenant=%s — created=%d updated=%d fba=%d fbm=%d fbm_error=%s",
+                 tenant_id, created, updated, len(fba_items), len(fbm_items), fbm_error)
         return result
 
     except Exception as e:
         _sync_states[key] = {
             **_default_state(),
             "last_sync_at": datetime.now(timezone.utc).isoformat(),
+            "fbm_error":    fbm_error,
             "error":        str(e),
             "running":      False,
         }
