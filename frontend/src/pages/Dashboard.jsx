@@ -804,15 +804,31 @@ function BuyShippingModal({ order, onClose }) {
   const [loading, setLoading]         = useState(true)
   const [working, setWorking]         = useState(false)
   const [error, setError]             = useState(null)
+  const [shipFromSource, setShipFromSource] = useState(null) // 'amazon' | 'saved' | null
 
   useEffect(() => {
     Promise.all([
       api.getShipFrom().catch(() => ({})),
       api.getOrderShipInfo(order.order_id).catch(e => ({ _error: e.message })),
     ]).then(([sf, info]) => {
-      if (sf && Object.keys(sf).length) setShipFrom(prev => ({ ...prev, ...sf }))
-      if (info && !info._error) setShipInfo(info)
-      else if (info?._error) setError(info._error)
+      if (info && !info._error) {
+        setShipInfo(info)
+        // Priority: Amazon's DefaultShipFromLocationAddress > our saved address
+        const amzFrom = info.ship_from_amazon
+        if (amzFrom && amzFrom.name) {
+          setShipFrom(prev => ({ ...prev, ...amzFrom }))
+          setShipFromSource('amazon')
+        } else if (sf && Object.keys(sf).length) {
+          setShipFrom(prev => ({ ...prev, ...sf }))
+          setShipFromSource('saved')
+        }
+      } else {
+        if (info?._error) setError(info._error)
+        if (sf && Object.keys(sf).length) {
+          setShipFrom(prev => ({ ...prev, ...sf }))
+          setShipFromSource('saved')
+        }
+      }
       setLoading(false)
     })
   }, [order.order_id])
@@ -1016,7 +1032,15 @@ ${label?.tracking_number ? `<div class="tracking"><strong>Tracking Number</stron
                     </div>
                   )}
                   <div>
-                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Ship From</p>
+                    <div className="flex items-center gap-2 mb-3">
+                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Ship From</p>
+                      {shipFromSource === 'amazon' && (
+                        <span className="text-xs bg-orange-50 text-orange-600 border border-orange-200 rounded px-1.5 py-0.5 font-medium">From Amazon account</span>
+                      )}
+                      {shipFromSource === 'saved' && (
+                        <span className="text-xs bg-gray-100 text-gray-500 rounded px-1.5 py-0.5">Saved address</span>
+                      )}
+                    </div>
                     <div className="grid grid-cols-2 gap-3">
                       {sfField('name', 'Name / Company', 'Your business name')}
                       {sfField('phone', 'Phone', '555-123-4567')}

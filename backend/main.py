@@ -5629,8 +5629,8 @@ async def get_order_ship_info(
     db: Session = Depends(get_db),
 ):
     """
-    Fetch shipping address, buyer name, and order items for a given order.
-    Combines GET /orders/v0/orders/{id} and GET /orders/v0/orders/{id}/orderItems.
+    Fetch shipping address (with PII via RDT), buyer name, order items,
+    and seller's DefaultShipFromLocationAddress for a given order.
     """
     import httpx as _hx
     tenant_id = current.get("tenant_id", 1)
@@ -5641,9 +5641,31 @@ async def get_order_ship_info(
     sp_base = _AMAZON_SP_BASE
 
     async with _hx.AsyncClient(timeout=20) as client:
+        # Request a Restricted Data Token so Amazon returns the real buyer name
+        # and unredacted shipping address (Name field).  Falls back silently if
+        # the SP-API app lacks the Buyer Info / Shipping Address roles.
+        rdt_r = await client.post(
+            f"{sp_base}/tokens/2021-03-01/restrictedDataToken",
+            json={
+                "restrictedResources": [
+                    {
+                        "method": "GET",
+                        "path": f"/orders/v0/orders/{order_id}",
+                        "dataElements": ["buyerInfo", "shippingAddress"],
+                    }
+                ]
+            },
+            headers={"x-amz-access-token": access_token, "Content-Type": "application/json"},
+        )
+        order_token = (
+            rdt_r.json().get("restrictedDataToken", access_token)
+            if rdt_r.status_code == 200
+            else access_token
+        )
+
         order_r, items_r = await asyncio.gather(
             client.get(f"{sp_base}/orders/v0/orders/{order_id}",
-                       headers={"x-amz-access-token": access_token}),
+                       headers={"x-amz-access-token": order_token}),
             client.get(f"{sp_base}/orders/v0/orders/{order_id}/orderItems",
                        headers={"x-amz-access-token": access_token}),
         )
@@ -5653,9 +5675,18 @@ async def get_order_ship_info(
     if items_r.status_code != 200:
         raise HTTPException(502, f"Amazon OrderItems API {items_r.status_code}: {items_r.text[:300]}")
 
-    order_payload = order_r.json().get("payload", {})
-    ship_addr     = order_payload.get("ShippingAddress", {})
-    buyer_info    = order_payload.get("BuyerInfo", {})
+    order_payload  = order_r.json().get("payload", {})
+    ship_addr      = order_payload.get("ShippingAddress", {})
+    buyer_info     = order_payload.get("BuyerInfo", {})
+    default_from   = order_payload.get("DefaultShipFromLocationAddress", {})
+
+    # Amazon sometimes puts the city name in Name when PII is redacted;
+    # detect and ignore it so we fall through to BuyerName or "Customer".
+    raw_name = ship_addr.get("Name", "") or ""
+    city     = ship_addr.get("City", "") or ""
+    if raw_name.strip().upper() == city.strip().upper():
+        raw_name = ""
+    buyer_name = raw_name or buyer_info.get("BuyerName") or ""
 
     raw_items = items_r.json().get("payload", {}).get("OrderItems", [])
     items = [
@@ -5669,17 +5700,27 @@ async def get_order_ship_info(
         for i in raw_items
     ]
 
+    def _addr(a):
+        return {
+            "name":     a.get("Name", ""),
+            "address1": a.get("AddressLine1", ""),
+            "address2": a.get("AddressLine2", ""),
+            "city":     a.get("City", ""),
+            "state":    a.get("StateOrProvinceCode", ""),
+            "zip":      a.get("PostalCode", ""),
+            "country":  a.get("CountryCode", "US"),
+            "phone":    a.get("Phone", ""),
+        }
+
     return {
-        "order_id":    order_id,
+        "order_id": order_id,
         "ship_to": {
-            "name":     ship_addr.get("Name") or buyer_info.get("BuyerName") or "Customer",
-            "address1": ship_addr.get("AddressLine1", ""),
-            "address2": ship_addr.get("AddressLine2", ""),
-            "city":     ship_addr.get("City", ""),
-            "state":    ship_addr.get("StateOrProvinceCode", ""),
-            "zip":      ship_addr.get("PostalCode", ""),
-            "country":  ship_addr.get("CountryCode", "US"),
+            **_addr(ship_addr),
+            "name": buyer_name or "Customer",
         },
+        # Seller's default ship-from address as stored in Amazon Seller Central.
+        # Pre-populates the Ship From form so merchants don't have to re-enter it.
+        "ship_from_amazon": _addr(default_from) if default_from else None,
         "items": items,
     }
 
