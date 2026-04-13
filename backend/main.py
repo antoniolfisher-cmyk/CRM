@@ -1436,30 +1436,39 @@ async def get_dashboard_amazon_sales(
 
         if fin_resp is not None and fin_resp.status_code == 200:
             groups = fin_resp.json().get("payload", {}).get("FinancialEventGroupList", [])
-            print(f"[finances] got {len(groups)} groups:", flush=True)
-            for g in groups:
-                print(f"  group id={g.get('FinancialEventGroupId')} status={g.get('ProcessingStatus')} "
-                      f"fund_status={g.get('FundTransferStatus')} "
-                      f"orig={g.get('OriginalTotal')} conv={g.get('ConvertedTotal')}", flush=True)
+
+            def _amt(obj: dict) -> float:
+                """Amazon uses CurrencyAmount (not Amount) in financialEventGroups."""
+                if not obj:
+                    return 0.0
+                return float(obj.get("CurrencyAmount") or obj.get("Amount") or 0)
+
+            # Primary: sum Open USD groups (current settlement period, not yet disbursed)
             total_balance = 0.0
             for g in groups:
-                fund_status = g.get("FundTransferStatus", "")
-                # Sum all groups Amazon hasn't yet paid out (Open + Closed-pending-transfer)
-                if fund_status not in ("Successful",):
+                if g.get("ProcessingStatus") == "Open":
                     orig = g.get("OriginalTotal") or g.get("ConvertedTotal") or {}
-                    amt  = float(orig.get("Amount") or 0)
-                    cur2 = orig.get("CurrencyCode", currency)
+                    cur2 = orig.get("CurrencyCode", "")
+                    if cur2 and cur2 != "USD":
+                        continue  # skip non-USD open groups
+                    amt = _amt(orig)
                     if cur2:
                         payment_currency = cur2
                     total_balance += amt
-            # If everything was already paid out (or no groups), fall back to Open groups only
-            if total_balance == 0.0:
-                for g in groups:
-                    if g.get("ProcessingStatus") == "Open":
+
+            # Secondary: also add any Closed groups NOT yet successfully disbursed
+            for g in groups:
+                if g.get("ProcessingStatus") == "Closed":
+                    fund_status = g.get("FundTransferStatus", "")
+                    if fund_status not in ("Succeeded", "Successful"):
                         orig = g.get("OriginalTotal") or g.get("ConvertedTotal") or {}
-                        total_balance += float(orig.get("Amount") or 0)
+                        cur2 = orig.get("CurrencyCode", "")
+                        if cur2 and cur2 != "USD":
+                            continue
+                        total_balance += _amt(orig)
+
             payment_balance = round(total_balance, 2)
-            print(f"[finances] final balance={payment_balance}", flush=True)
+            print(f"[finances] balance={payment_balance} (from {len(groups)} groups, Open USD groups)", flush=True)
             # Store in cache
             _finances_cache[tenant_id] = {
                 "balance":    payment_balance,
