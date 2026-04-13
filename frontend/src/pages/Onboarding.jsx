@@ -331,13 +331,23 @@ export default function Onboarding() {
                       {finTesting ? 'Testing…' : '🔍 Test Finances API connection'}
                     </button>
                     {finTest && (
-                      <div className={`rounded-lg p-3 text-xs font-mono break-all ${finTest.success ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-red-50 text-red-800 border border-red-200'}`}>
-                        <p className="font-semibold mb-1">{finTest.success ? '✓ Finances API working' : '✗ Finances API failed'}</p>
-                        {finTest.connected_at && <p>Token saved: {new Date(finTest.connected_at).toLocaleString()}</p>}
-                        {finTest.token_preview && <p>Token: {finTest.token_preview}</p>}
-                        {finTest.lwa_error && <p>LWA error: {finTest.lwa_error}</p>}
-                        {finTest.finances_status && <p>HTTP {finTest.finances_status}</p>}
-                        {finTest.finances_body && !finTest.success && <p>{JSON.stringify(finTest.finances_body)}</p>}
+                      <div className={`rounded-lg p-3 text-xs break-all ${finTest.success ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-red-50 text-red-800 border border-red-200'}`}>
+                        <p className="font-semibold mb-1">{finTest.success ? '✓ Finances API working' : '✗ Finances API — permission required'}</p>
+                        {finTest.success && finTest.connected_at && <p>Token saved: {new Date(finTest.connected_at).toLocaleString()}</p>}
+                        {finTest.finances_status === 403 && (
+                          <div className="space-y-1 mt-1">
+                            <p className="font-medium">Amazon denied access (HTTP 403).</p>
+                            <p>This means the SP-API app does not have the <strong>Financial Results Reporting</strong> role for this seller account. The dashboard will still work — sales, orders, and inventory will load normally. Only the Amazon Balance tile will show "unavailable."</p>
+                            <p className="mt-2 font-medium">To fix:</p>
+                            <ol className="list-decimal ml-4 space-y-0.5">
+                              <li>Go to <strong>Amazon Developer Central → your SP-API app → Roles</strong></li>
+                              <li>Enable <strong>Financial Results Reporting</strong></li>
+                              <li>Have the seller re-authorize via <strong>Refresh API Permissions</strong> above</li>
+                            </ol>
+                          </div>
+                        )}
+                        {finTest.finances_status && finTest.finances_status !== 403 && <p>HTTP {finTest.finances_status} — {JSON.stringify(finTest.finances_body)}</p>}
+                        {finTest.lwa_error && <p>Token exchange error: {finTest.lwa_error}</p>}
                         {finTest.error && <p>{finTest.error}</p>}
                       </div>
                     )}
