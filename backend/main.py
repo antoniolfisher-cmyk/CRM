@@ -288,32 +288,7 @@ try:
             _conn.commit()
     except Exception:
         pass
-    # ── Create repricer_logs table if it doesn't exist ────────────────────────
-    try:
-        if "repricer_logs" not in _inspector.get_table_names():
-            with engine.connect() as _conn:
-                _conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS repricer_logs (
-                        id             INTEGER PRIMARY KEY AUTOINCREMENT,
-                        tenant_id      INTEGER,
-                        product_id     INTEGER,
-                        asin           VARCHAR NOT NULL DEFAULT '',
-                        seller_sku     VARCHAR,
-                        product_name   VARCHAR,
-                        old_price      REAL,
-                        new_price      REAL NOT NULL,
-                        buy_box        REAL,
-                        reasoning      TEXT,
-                        pushed         BOOLEAN DEFAULT 0,
-                        amazon_status  INTEGER,
-                        created_at     DATETIME DEFAULT CURRENT_TIMESTAMP
-                    )
-                """))
-                _conn.execute(text("CREATE INDEX IF NOT EXISTS ix_repricer_logs_tenant ON repricer_logs (tenant_id)"))
-                _conn.execute(text("CREATE INDEX IF NOT EXISTS ix_repricer_logs_asin ON repricer_logs (asin)"))
-                _conn.commit()
-    except Exception:
-        pass
+    # repricer_logs is created by models.Base.metadata.create_all above (dialect-safe)
 except Exception:
     pass
 
@@ -682,8 +657,14 @@ async def aria_run_one(product_id: int, db: Session = Depends(get_db), current: 
 async def aria_run_all(force: bool = False, db: Session = Depends(get_db), current: dict = Depends(require_admin)):
     if not aria_repricer.aria_configured():
         raise HTTPException(503, "ANTHROPIC_API_KEY is not configured")
-    result = await aria_repricer.run_all_async(force=force, tenant_id=current.get("tenant_id"))
-    return result
+    try:
+        result = await aria_repricer.run_all_async(force=force, tenant_id=current.get("tenant_id"))
+        return result
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        print(f"[aria/run-all] UNHANDLED EXCEPTION: {e}\n{tb}", flush=True)
+        raise HTTPException(500, detail=f"Aria run failed: {str(e)}")
 
 
 @app.get("/api/repricer/logs")

@@ -235,31 +235,39 @@ async def run_all_async(force: bool = False, tenant_id=None) -> dict:
                 else:
                     amazon_result = await push_price_to_amazon(sku, new_px, cred)
 
-                # Log the change
-                entry = models.RepricerLog(
-                    tenant_id    = tenant_id,
-                    product_id   = p.id,
-                    asin         = p.asin or "",
-                    seller_sku   = sku,
-                    product_name = p.product_name,
-                    old_price    = p.aria_live_price,   # last price we actually pushed
-                    new_price    = new_px,
-                    buy_box      = p.buy_box,
-                    reasoning    = r["reasoning"],
-                    pushed       = amazon_result["ok"],
-                    amazon_status = amazon_result["status"] or None,
-                )
-                db.add(entry)
-
-                # Update product record
+                # Update product record (core fields — always safe)
                 p.aria_suggested_price = new_px
                 p.aria_suggested_at    = now
-                p.aria_reasoning       = r["reasoning"]
                 p.aria_last_buy_box    = p.buy_box
+
+                # New columns — set only if attribute exists on the mapped object
+                if hasattr(p, "aria_reasoning"):
+                    p.aria_reasoning = r["reasoning"]
                 if amazon_result["ok"]:
-                    p.aria_live_price     = new_px
-                    p.aria_live_pushed_at = now
+                    if hasattr(p, "aria_live_price"):
+                        p.aria_live_price     = new_px
+                    if hasattr(p, "aria_live_pushed_at"):
+                        p.aria_live_pushed_at = now
                     pushed += 1
+
+                # Try to log to repricer_logs — skip gracefully if table not ready
+                try:
+                    entry = models.RepricerLog(
+                        tenant_id     = tenant_id,
+                        product_id    = p.id,
+                        asin          = p.asin or "",
+                        seller_sku    = sku,
+                        product_name  = p.product_name,
+                        old_price     = getattr(p, "aria_live_price", None),
+                        new_price     = new_px,
+                        buy_box       = p.buy_box,
+                        reasoning     = r["reasoning"],
+                        pushed        = amazon_result["ok"],
+                        amazon_status = amazon_result["status"] or None,
+                    )
+                    db.add(entry)
+                except Exception as log_err:
+                    log.warning("Aria: could not create RepricerLog entry: %s", log_err)
 
                 repriced += 1
                 log.info(
@@ -270,7 +278,12 @@ async def run_all_async(force: bool = False, tenant_id=None) -> dict:
                 errors += 1
                 log.warning("Aria failed for product %d (%s): %s", p.id, p.product_name, e)
 
-        db.commit()
+        try:
+            db.commit()
+        except Exception as commit_err:
+            log.error("Aria: db.commit() failed — %s", commit_err)
+            db.rollback()
+
         log.info(
             "Aria run complete — repriced=%d pushed=%d no_sku=%d skipped=%d errors=%d",
             repriced, pushed, no_sku, skipped, errors
