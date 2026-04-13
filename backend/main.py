@@ -719,6 +719,114 @@ def list_repricer_logs(
     ]
 
 
+@app.get("/api/repricer/aria/diagnose")
+async def aria_diagnose(db: Session = Depends(get_db), current: dict = Depends(require_admin)):
+    """
+    Diagnose why Aria isn't pushing prices to Amazon.
+    Returns SKU coverage, credential status, and a real token-exchange test.
+    """
+    import httpx as _hx
+    tid = current.get("tenant_id")
+
+    # 1. SKU coverage
+    total_q = db.query(models.Product).filter(
+        models.Product.buy_box > 0,
+        models.Product.buy_cost > 0,
+    )
+    if tid:
+        total_q = total_q.filter(models.Product.tenant_id == tid)
+    all_products = total_q.all()
+
+    with_sku    = [p for p in all_products if p.seller_sku or p.order_number]
+    without_sku = [p for p in all_products if not (p.seller_sku or p.order_number)]
+
+    sample_skus = [
+        {"id": p.id, "name": p.product_name, "seller_sku": p.seller_sku, "order_number": p.order_number}
+        for p in with_sku[:5]
+    ]
+
+    # 2. Credential status
+    cred = db.query(models.AmazonCredential).filter_by(tenant_id=tid).first() if tid else None
+    lwa_id = (cred.lwa_client_id if cred else None) or os.getenv("AMAZON_LWA_CLIENT_ID", "")
+    cred_status = {
+        "cred_found":          cred is not None,
+        "has_refresh_token":   bool(cred and cred.sp_refresh_token),
+        "has_seller_id":       bool(cred and cred.seller_id),
+        "seller_id":           cred.seller_id if cred else None,
+        "has_lwa_client_id":   bool(lwa_id),
+        "marketplace_id":      (cred.marketplace_id if cred else None) or "ATVPDKIKX0DER",
+    }
+
+    # 3. Token exchange test
+    token_test = {"ok": False, "error": None}
+    if cred and cred.sp_refresh_token and lwa_id:
+        try:
+            lwa_secret = (cred.lwa_client_secret if cred else None) or os.getenv("AMAZON_LWA_CLIENT_SECRET", "")
+            async with _hx.AsyncClient(timeout=15) as client:
+                r = await client.post("https://api.amazon.com/auth/o2/token", data={
+                    "grant_type":    "refresh_token",
+                    "refresh_token": cred.sp_refresh_token,
+                    "client_id":     lwa_id,
+                    "client_secret": lwa_secret,
+                })
+            if r.status_code == 200:
+                token_test = {"ok": True, "error": None}
+            else:
+                token_test = {"ok": False, "error": f"HTTP {r.status_code}: {r.text[:300]}"}
+        except Exception as e:
+            token_test = {"ok": False, "error": str(e)}
+    else:
+        token_test["error"] = "Missing credentials — can't test token"
+
+    # 4. Test PATCH on first product with a SKU (dry run — use current buy_box price so nothing changes)
+    patch_test = None
+    if token_test["ok"] and with_sku and cred and cred.seller_id:
+        sample = with_sku[0]
+        sku = sample.seller_sku or sample.order_number
+        try:
+            async with _hx.AsyncClient(timeout=15) as client:
+                tr = await client.post("https://api.amazon.com/auth/o2/token", data={
+                    "grant_type":    "refresh_token",
+                    "refresh_token": cred.sp_refresh_token,
+                    "client_id":     lwa_id,
+                    "client_secret": (cred.lwa_client_secret or os.getenv("AMAZON_LWA_CLIENT_SECRET", "")),
+                })
+            token = tr.json()["access_token"]
+            mkt = cred.marketplace_id or "ATVPDKIKX0DER"
+            sp_base = os.getenv("AMAZON_SP_BASE", "https://sellingpartnerapi-na.amazon.com")
+            body = {
+                "productType": "PRODUCT",
+                "patches": [{"op": "replace", "path": "/attributes/purchasable_offer",
+                    "value": [{"marketplace_id": mkt, "currency": "USD",
+                        "our_price": [{"schedule": [{"value_with_tax": sample.buy_box or 1.0}]}]}]}],
+            }
+            async with _hx.AsyncClient(timeout=15) as client:
+                pr = await client.patch(
+                    f"{sp_base}/listings/2021-08-01/items/{cred.seller_id}/{sku}",
+                    headers={"x-amz-access-token": token, "Content-Type": "application/json"},
+                    params={"marketplaceIds": mkt},
+                    json=body,
+                )
+            patch_test = {
+                "sku":    sku,
+                "status": pr.status_code,
+                "ok":     pr.status_code in (200, 202),
+                "body":   pr.text[:500],
+            }
+        except Exception as e:
+            patch_test = {"error": str(e)}
+
+    return {
+        "products_total":      len(all_products),
+        "products_with_sku":   len(with_sku),
+        "products_without_sku": len(without_sku),
+        "sample_skus":         sample_skus,
+        "credentials":         cred_status,
+        "token_exchange_test": token_test,
+        "patch_test":          patch_test,
+    }
+
+
 # ─── Repricer Strategies ──────────────────────────────────────────────────────
 
 @app.get("/api/repricer/strategies", response_model=List[schemas.RepricerStrategyOut])
