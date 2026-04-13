@@ -4336,6 +4336,8 @@ async def upload_fbm_listings(
 # ═══════════════════════════════════════════════════════════════════════════════
 # UNGATING SYSTEM
 # ═══════════════════════════════════════════════════════════════════════════════
+
+_DEFAULT_TEMPLATES = [
     {
         "number": 1, "name": "Initial Application", "category": "general",
         "subject": "Request to Sell {PRODUCT_NAME} (ASIN: {ASIN})",
@@ -5456,15 +5458,9 @@ def timeclock_export(
 
 
 @app.get("/api/health")
-def health(db: Session = Depends(get_db)):
-    tenants = db.query(models.Tenant).all()
-    users   = db.query(models.User).all()
-    return {
-        "status": "ok",
-        "tenants": len(tenants),
-        "users": len(users),
-        "tenant_list": [{"id": t.id, "name": t.name} for t in tenants],
-    }
+def health():
+    """Lightweight healthcheck — just verifies the process is alive."""
+    return {"status": "ok"}
 
 
 # ─── Serve React SPA (must be last) ───────────────────────────────────────────
