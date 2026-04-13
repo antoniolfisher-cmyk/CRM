@@ -289,6 +289,7 @@ class RepricerStrategyBase(BaseModel):
     min_price: Optional[float] = None
     max_price: Optional[float] = None
     profit_floor: Optional[float] = None
+    min_roi: Optional[float] = None          # minimum ROI % e.g. 5.0 = 5%
     is_active: bool = True
     is_default: bool = False
     notes: Optional[str] = None

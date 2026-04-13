@@ -134,13 +134,22 @@ def price_rule_based(product: models.Product, strategy) -> dict:
     buy_box    = product.buy_box    or 0
     breakeven  = buy_cost + amazon_fee
 
-    min_price    = strategy.min_price    or round(breakeven * 1.05, 2)
-    max_price    = strategy.max_price    or round(buy_box * 1.15, 2)
+    min_roi      = strategy.min_roi      or 0
     profit_floor = strategy.profit_floor or 0
+
+    if strategy.min_price:
+        min_price = strategy.min_price
+    elif min_roi > 0:
+        min_price = round(buy_cost * (1 + min_roi / 100) + amazon_fee, 2)
+    else:
+        min_price = round(breakeven * 1.05, 2)
+
     if profit_floor > 0:
         floor_min = round(breakeven + profit_floor, 2)
         if floor_min > min_price:
             min_price = floor_min
+
+    max_price    = strategy.max_price    or round(buy_box * 1.15, 2)
 
     compete_action = strategy.compete_action or "beat_pct"
     compete_value  = strategy.compete_value  or 1.0
@@ -193,15 +202,27 @@ async def price_product(product: models.Product, strategy) -> dict:
     buy_box    = product.buy_box    or 0
     breakeven  = buy_cost + amazon_fee
 
-    min_price    = (strategy.min_price    if strategy else None) or round(breakeven * 1.05, 2)
-    max_price    = (strategy.max_price    if strategy else None) or round(buy_box * 1.15, 2)
+    min_roi      = (strategy.min_roi      if strategy else None)
     profit_floor = (strategy.profit_floor if strategy else None) or 0
 
-    # Enforce profit floor as a hard minimum — if breakeven + floor > min_price, raise it
+    # --- Minimum price calculation (matches Aura / Maven logic) ---
+    # Priority: explicit min_price > ROI-based > 5% markup fallback
+    if strategy and strategy.min_price:
+        min_price = strategy.min_price
+    elif min_roi and min_roi > 0:
+        # ROI = (price - cost - fees) / cost  →  price = cost*(1 + roi/100) + fees
+        min_price = round(buy_cost * (1 + min_roi / 100) + amazon_fee, 2)
+    else:
+        min_price = round(breakeven * 1.05, 2)   # 5% above breakeven as safe default
+
+    # Profit floor is a hard override on top of ROI floor (whichever is higher)
     if profit_floor > 0:
         floor_min = round(breakeven + profit_floor, 2)
         if floor_min > min_price:
             min_price = floor_min
+
+    # --- Maximum price ---
+    max_price = (strategy.max_price if strategy else None) or round(buy_box * 1.15, 2)
 
     prompt = f"""You are Aria, an expert Amazon FBA repricing AI. Recommend the optimal listing price for this product to balance winning the Buy Box with healthy profit margins.
 

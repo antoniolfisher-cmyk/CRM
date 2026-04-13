@@ -122,14 +122,19 @@ try:
                 for _col, _ddl in [
                     ("target",         "VARCHAR"),
                     ("compete_action", "VARCHAR DEFAULT 'beat_pct'"),
-                    ("compete_value",  "REAL"),
+                    ("compete_value",  "DOUBLE PRECISION"),
                     ("winning_action", "VARCHAR DEFAULT 'raise_pct'"),
-                    ("winning_value",  "REAL"),
-                    ("profit_floor",   "REAL"),
+                    ("winning_value",  "DOUBLE PRECISION"),
+                    ("profit_floor",   "DOUBLE PRECISION"),
+                    ("min_roi",        "DOUBLE PRECISION"),
                 ]:
                     if _col not in _cols:
-                        _conn.execute(text(f"ALTER TABLE repricer_strategies ADD COLUMN {_col} {_ddl}"))
-                _conn.commit()
+                        try:
+                            with engine.connect() as _conn:
+                                _conn.execute(text(f"ALTER TABLE repricer_strategies ADD COLUMN {_col} {_ddl}"))
+                                _conn.commit()
+                        except Exception:
+                            pass
     except Exception:
         pass
     # ── Multi-tenant migration: add tenant_id to all tables ─────────────────

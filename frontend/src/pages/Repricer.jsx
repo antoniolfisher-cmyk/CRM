@@ -161,6 +161,7 @@ function StrategyForm({ initial, strategyType, onSave, onClose }) {
     min_price: initial?.min_price ?? '',
     max_price: initial?.max_price ?? '',
     profit_floor: initial?.profit_floor ?? '',
+    min_roi: initial?.min_roi ?? '',
     is_active: initial?.is_active ?? true,
     is_default: initial?.is_default ?? false,
     notes: initial?.notes || '',
@@ -190,6 +191,7 @@ function StrategyForm({ initial, strategyType, onSave, onClose }) {
       min_price: nn(form.min_price),
       max_price: nn(form.max_price),
       profit_floor: nn(form.profit_floor),
+      min_roi: nn(form.min_roi),
       is_active: form.is_active,
       is_default: form.is_default,
       notes: form.notes || null,
@@ -283,24 +285,106 @@ function StrategyForm({ initial, strategyType, onSave, onClose }) {
         </>
       )}
 
-      <div>
-        <SectionHead>Price limits</SectionHead>
-        <div className="grid grid-cols-3 gap-3">
-          <div>
-            <label className="label">Min Price ($)</label>
-            <input className="input" type="number" step="0.01" min="0" value={form.min_price} onChange={set('min_price')} placeholder="No floor" />
+      {isAI ? (
+        <div className="space-y-4">
+          <SectionHead>Minimum price protection</SectionHead>
+
+          {/* ROI floor */}
+          <div className="rounded-lg border border-gray-200 p-4 space-y-3">
+            <div>
+              <label className="label">Minimum ROI (%)</label>
+              <div className="flex items-center gap-2">
+                <input
+                  className="input w-32"
+                  type="number" step="0.1" min="0" max="100"
+                  value={form.min_roi}
+                  onChange={set('min_roi')}
+                  placeholder="e.g. 5"
+                />
+                <span className="text-sm text-gray-500">% return on cost</span>
+              </div>
+              <p className="text-xs text-gray-400 mt-1">
+                Aria sets the minimum price so that <strong>(price − cost − fees) / cost ≥ ROI%</strong>.
+                Includes all marketplace fees. Leave blank to use a 5% markup above break-even.
+              </p>
+            </div>
+
+            {/* Profit floor */}
+            <div>
+              <label className="label">Profit floor ($) <span className="text-gray-400 font-normal">optional override</span></label>
+              <div className="flex items-center gap-2">
+                <input
+                  className="input w-32"
+                  type="number" step="0.01" min="0"
+                  value={form.profit_floor}
+                  onChange={set('profit_floor')}
+                  placeholder="e.g. 3.00"
+                />
+                <span className="text-sm text-gray-500">minimum $ profit per unit</span>
+              </div>
+              <p className="text-xs text-gray-400 mt-1">
+                Hard floor on profit in dollars — useful for low-priced items. Overrides the ROI floor if higher.
+              </p>
+            </div>
+
+            {/* Fixed min override */}
+            <div>
+              <label className="label">Fixed minimum price ($) <span className="text-gray-400 font-normal">optional hard floor</span></label>
+              <input
+                className="input w-40"
+                type="number" step="0.01" min="0"
+                value={form.min_price}
+                onChange={set('min_price')}
+                placeholder="e.g. 29.99"
+              />
+              <p className="text-xs text-gray-400 mt-1">Overrides ROI and profit floor if set. Aria will never go below this.</p>
+            </div>
           </div>
-          <div>
-            <label className="label">Max Price ($)</label>
-            <input className="input" type="number" step="0.01" min="0" value={form.max_price} onChange={set('max_price')} placeholder="No ceiling" />
-          </div>
-          <div>
-            <label className="label">Profit Floor ($)</label>
-            <input className="input" type="number" step="0.01" min="0" value={form.profit_floor} onChange={set('profit_floor')} placeholder="No minimum" />
+
+          <SectionHead>Maximum price</SectionHead>
+          <div className="rounded-lg border border-gray-200 p-4 space-y-2">
+            <p className="text-sm text-gray-600">
+              By default, Aria evaluates each listing's competitive landscape and determines the optimal maximum price automatically.
+            </p>
+            <div>
+              <label className="label">Fixed maximum price ($) <span className="text-gray-400 font-normal">optional override</span></label>
+              <input
+                className="input w-40"
+                type="number" step="0.01" min="0"
+                value={form.max_price}
+                onChange={set('max_price')}
+                placeholder="Auto (Buy Box × 1.15)"
+              />
+            </div>
           </div>
         </div>
-        <p className="text-xs text-gray-400 mt-2">Profit floor = minimum profit per unit required before any reprice action is taken</p>
-      </div>
+      ) : (
+        <div>
+          <SectionHead>Price limits</SectionHead>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="label">Min Price ($)</label>
+              <input className="input" type="number" step="0.01" min="0" value={form.min_price} onChange={set('min_price')} placeholder="No floor" />
+            </div>
+            <div>
+              <label className="label">Max Price ($)</label>
+              <input className="input" type="number" step="0.01" min="0" value={form.max_price} onChange={set('max_price')} placeholder="No ceiling" />
+            </div>
+            <div>
+              <label className="label">Profit Floor ($)</label>
+              <input className="input" type="number" step="0.01" min="0" value={form.profit_floor} onChange={set('profit_floor')} placeholder="No minimum" />
+            </div>
+          </div>
+          <div className="mt-3">
+            <label className="label">Min ROI (%)</label>
+            <div className="flex items-center gap-2">
+              <input className="input w-32" type="number" step="0.1" min="0" max="100" value={form.min_roi} onChange={set('min_roi')} placeholder="e.g. 5" />
+              <span className="text-xs text-gray-400">% return on cost — sets min price dynamically per product</span>
+            </div>
+          </div>
+          <p className="text-xs text-gray-400 mt-2">Profit floor = minimum profit per unit required before any reprice action is taken</p>
+        </div>
+      )}
 
       <div>
         <label className="label">Notes <span className="text-gray-400 font-normal">(optional)</span></label>
@@ -584,6 +668,7 @@ export default function Repricer() {
                           {s.winning_value != null && s.winning_action === 'raise_amt' && ` $${s.winning_value.toFixed(2)}`}
                         </span>
                       )}
+                      {s.min_roi != null && <span>Min ROI {s.min_roi}%</span>}
                       {s.min_price != null && <span>Min ${s.min_price.toFixed(2)}</span>}
                       {s.max_price != null && <span>Max ${s.max_price.toFixed(2)}</span>}
                       {s.profit_floor != null && <span>Profit floor ${s.profit_floor.toFixed(2)}</span>}
