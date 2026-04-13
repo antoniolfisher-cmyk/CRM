@@ -354,7 +354,6 @@ function FollowUpForm({ initial, accounts, onSave, onClose }) {
     follow_up_type: 'call',
     status: 'pending',
     priority: 'medium',
-    due_date: new Date(Date.now() + 86400000).toISOString().slice(0, 16),
     account_id: '',
     contact_id: '',
     notes: '',
