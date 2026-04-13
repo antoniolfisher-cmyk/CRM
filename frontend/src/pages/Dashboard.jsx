@@ -224,6 +224,8 @@ function AmazonSalesPanel() {
 
   useEffect(() => { fetchData(period) }, [period, fetchData])
 
+  const [modal, setModal] = useState(null) // 'sales' | 'open' | 'balance'
+
   const selectPeriod = (p) => { setPeriod(p); setOpen(false) }
   const fmt$ = (n) => `$${(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   const periodLabel = PERIODS.find(p => p.key === period)?.label ?? 'Today'
@@ -309,13 +311,13 @@ function AmazonSalesPanel() {
       {!loading && data && !error && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           {/* Sales tile */}
-          <div className="card p-5 border-l-4 border-orange-400">
+          <button onClick={() => setModal('sales')} className="card p-5 border-l-4 border-orange-400 text-left hover:shadow-md hover:border-orange-500 transition-all group">
             <div className="flex items-start justify-between mb-3">
               <div>
                 <p className="text-xs font-semibold text-orange-600 uppercase tracking-wider">Sales — {periodLabel}</p>
                 <p className="text-4xl font-bold text-gray-900 mt-1">{fmt$(data.revenue)}</p>
               </div>
-              <div className="w-10 h-10 bg-orange-50 text-orange-600 rounded-lg flex items-center justify-center shrink-0">
+              <div className="w-10 h-10 bg-orange-50 text-orange-600 rounded-lg flex items-center justify-center shrink-0 group-hover:bg-orange-100 transition-colors">
                 <SalesChartIcon />
               </div>
             </div>
@@ -329,56 +331,132 @@ function AmazonSalesPanel() {
                 <p className="text-lg font-bold text-gray-800">{data.units_sold.toLocaleString()}</p>
               </div>
             </div>
-          </div>
+          </button>
 
           {/* Open Orders tile */}
-          <div className="card p-5 border-l-4 border-blue-400">
+          <button onClick={() => setModal('open')} className="card p-5 border-l-4 border-blue-400 text-left hover:shadow-md hover:border-blue-500 transition-all group">
             <div className="flex items-start justify-between mb-3">
               <div>
                 <p className="text-xs font-semibold text-blue-600 uppercase tracking-wider">Open Orders</p>
                 <p className="text-4xl font-bold text-gray-900 mt-1">{data.open_order_count.toLocaleString()}</p>
               </div>
-              <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-lg flex items-center justify-center shrink-0">
+              <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-lg flex items-center justify-center shrink-0 group-hover:bg-blue-100 transition-colors">
                 <OpenOrdersIcon />
               </div>
             </div>
             <div className="pt-3 border-t border-gray-100">
               <p className="text-xs text-gray-400 mb-1">Awaiting fulfilment</p>
               <div className="flex items-center gap-2">
-                <div
-                  className="h-2 rounded-full bg-blue-400"
-                  style={{ width: data.total_orders > 0 ? `${Math.round((data.open_order_count / data.total_orders) * 100)}%` : '0%', minWidth: data.open_order_count > 0 ? 8 : 0, maxWidth: '100%', transition: 'width 0.4s' }}
-                />
-                <span className="text-xs text-gray-500">
-                  {data.total_orders > 0 ? `${Math.round((data.open_order_count / data.total_orders) * 100)}%` : '—'} of period orders
-                </span>
+                <div className="h-2 rounded-full bg-blue-400" style={{ width: data.total_orders > 0 ? `${Math.round((data.open_order_count / data.total_orders) * 100)}%` : '0%', minWidth: data.open_order_count > 0 ? 8 : 0, maxWidth: '100%', transition: 'width 0.4s' }} />
+                <span className="text-xs text-gray-500">{data.total_orders > 0 ? `${Math.round((data.open_order_count / data.total_orders) * 100)}%` : '—'} of period orders</span>
               </div>
             </div>
-          </div>
+          </button>
 
-          {/* Payments tile */}
-          <div className="card p-5 border-l-4 border-green-400">
+          {/* Amazon Balance tile */}
+          <button onClick={() => setModal('balance')} className="card p-5 border-l-4 border-green-400 text-left hover:shadow-md hover:border-green-500 transition-all group">
             <div className="flex items-start justify-between mb-3">
               <div>
-                <p className="text-xs font-semibold text-green-600 uppercase tracking-wider">
-                  {data.payment_balance !== null ? 'Amazon Balance' : 'Period Revenue'}
-                </p>
-                <p className="text-4xl font-bold text-gray-900 mt-1">
-                  {fmt$(data.payment_balance !== null ? data.payment_balance : data.revenue)}
-                </p>
+                <p className="text-xs font-semibold text-green-600 uppercase tracking-wider">Amazon Balance</p>
+                <p className="text-4xl font-bold text-gray-900 mt-1">{fmt$(data.payment_balance ?? data.revenue)}</p>
               </div>
-              <div className="w-10 h-10 bg-green-50 text-green-600 rounded-lg flex items-center justify-center shrink-0">
+              <div className="w-10 h-10 bg-green-50 text-green-600 rounded-lg flex items-center justify-center shrink-0 group-hover:bg-green-100 transition-colors">
                 <PaymentIcon />
               </div>
             </div>
             <div className="pt-3 border-t border-gray-100">
-              {data.payment_balance !== null ? (
-                <div className="flex items-center gap-1.5">
-                  <span className="w-2 h-2 bg-green-400 rounded-full inline-block"></span>
-                  <p className="text-xs text-gray-500">Total balance held by Amazon</p>
+              <div className="flex items-center gap-1.5">
+                <span className="w-2 h-2 bg-green-400 rounded-full inline-block"></span>
+                <p className="text-xs text-gray-500">{data.payment_balance !== null ? 'Balance held by Amazon' : `${periodLabel} revenue from orders`}</p>
+              </div>
+            </div>
+          </button>
+        </div>
+      )}
+
+      {/* Drill-down modal */}
+      {modal && data && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={() => setModal(null)}>
+          <div className="absolute inset-0 bg-black/40" />
+          <div className="relative bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-lg max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            {/* Modal header */}
+            <div className="flex items-center justify-between p-5 border-b border-gray-100 shrink-0">
+              <div>
+                {modal === 'sales' && <h3 className="font-semibold text-gray-900">Sales — {periodLabel}</h3>}
+                {modal === 'open' && <h3 className="font-semibold text-gray-900">Open Orders</h3>}
+                {modal === 'balance' && <h3 className="font-semibold text-gray-900">Amazon Balance</h3>}
+                <p className="text-xs text-gray-400 mt-0.5">Live from Amazon · as of {new Date(data.fetched_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+              </div>
+              <button onClick={() => setModal(null)} className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors text-lg font-light">✕</button>
+            </div>
+
+            {/* Modal body */}
+            <div className="overflow-y-auto flex-1">
+              {modal === 'sales' && (
+                <div>
+                  <div className="grid grid-cols-3 divide-x divide-gray-100 border-b border-gray-100">
+                    <div className="p-4 text-center"><p className="text-xs text-gray-400">Revenue</p><p className="text-xl font-bold text-gray-900 mt-0.5">{fmt$(data.revenue)}</p></div>
+                    <div className="p-4 text-center"><p className="text-xs text-gray-400">Orders</p><p className="text-xl font-bold text-gray-900 mt-0.5">{data.total_orders}</p></div>
+                    <div className="p-4 text-center"><p className="text-xs text-gray-400">Units</p><p className="text-xl font-bold text-gray-900 mt-0.5">{data.units_sold}</p></div>
+                  </div>
+                  {(data.orders || []).length === 0 ? (
+                    <p className="text-sm text-gray-400 text-center py-8">No orders in this period</p>
+                  ) : (
+                    <table className="w-full text-sm">
+                      <thead><tr className="border-b border-gray-100"><th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">Order ID</th><th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">Status</th><th className="text-right px-4 py-2.5 text-xs font-medium text-gray-500">Amount</th><th className="text-right px-4 py-2.5 text-xs font-medium text-gray-500">Units</th></tr></thead>
+                      <tbody className="divide-y divide-gray-50">
+                        {(data.orders || []).map(o => (
+                          <tr key={o.id} className="hover:bg-gray-50">
+                            <td className="px-4 py-2.5 font-mono text-xs text-blue-600">{o.id}</td>
+                            <td className="px-4 py-2.5"><span className={`text-xs px-1.5 py-0.5 rounded font-medium ${o.status === 'Shipped' ? 'bg-green-50 text-green-700' : o.status === 'Unshipped' ? 'bg-yellow-50 text-yellow-700' : 'bg-gray-100 text-gray-600'}`}>{o.status}</span></td>
+                            <td className="px-4 py-2.5 text-right font-semibold text-gray-900">{fmt$(o.amount)}</td>
+                            <td className="px-4 py-2.5 text-right text-gray-600">{o.units}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
                 </div>
-              ) : (
-                <p className="text-xs text-gray-400">From orders · Finances API pending Amazon approval</p>
+              )}
+
+              {modal === 'open' && (
+                <div>
+                  <div className="p-4 border-b border-gray-100 bg-blue-50">
+                    <p className="text-sm text-blue-700 font-medium">{data.open_order_count} order{data.open_order_count !== 1 ? 's' : ''} awaiting fulfilment</p>
+                  </div>
+                  {(data.open_orders || []).length === 0 ? (
+                    <p className="text-sm text-gray-400 text-center py-8">No open orders right now</p>
+                  ) : (
+                    <table className="w-full text-sm">
+                      <thead><tr className="border-b border-gray-100"><th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">Order ID</th><th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">Status</th><th className="text-right px-4 py-2.5 text-xs font-medium text-gray-500">Amount</th><th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">Ship To</th></tr></thead>
+                      <tbody className="divide-y divide-gray-50">
+                        {(data.open_orders || []).map(o => (
+                          <tr key={o.id} className="hover:bg-gray-50">
+                            <td className="px-4 py-2.5 font-mono text-xs text-blue-600">{o.id}</td>
+                            <td className="px-4 py-2.5"><span className={`text-xs px-1.5 py-0.5 rounded font-medium ${o.status === 'Pending' ? 'bg-orange-50 text-orange-700' : 'bg-yellow-50 text-yellow-700'}`}>{o.status}</span></td>
+                            <td className="px-4 py-2.5 text-right font-semibold text-gray-900">{fmt$(o.amount)}</td>
+                            <td className="px-4 py-2.5 text-xs text-gray-500">{o.ship_city || '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+
+              {modal === 'balance' && (
+                <div className="p-5 space-y-4">
+                  <div className="bg-green-50 border border-green-200 rounded-xl p-4">
+                    <p className="text-xs text-green-600 font-semibold uppercase tracking-wider mb-1">Current Balance</p>
+                    <p className="text-3xl font-bold text-green-900">{fmt$(data.payment_balance ?? data.revenue)}</p>
+                    <p className="text-xs text-green-600 mt-1">{data.payment_balance !== null ? 'Funds held by Amazon pending next disbursement' : `${periodLabel} revenue — balance unavailable`}</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="bg-gray-50 rounded-xl p-3"><p className="text-xs text-gray-400">Period Revenue</p><p className="text-lg font-bold text-gray-900 mt-0.5">{fmt$(data.revenue)}</p></div>
+                    <div className="bg-gray-50 rounded-xl p-3"><p className="text-xs text-gray-400">Orders</p><p className="text-lg font-bold text-gray-900 mt-0.5">{data.total_orders}</p></div>
+                  </div>
+                  <p className="text-xs text-gray-400 text-center">Amazon typically disburses funds every 14 days</p>
+                </div>
               )}
             </div>
           </div>

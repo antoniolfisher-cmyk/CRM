@@ -1461,6 +1461,19 @@ async def get_dashboard_amazon_sales(
             print(f"[finances] final error {fin_resp.status_code}: {err_body}", flush=True)
             finances_error = f"Finances API {fin_resp.status_code}: {err_body}"
 
+    def _fmt_order(o: dict) -> dict:
+        total = o.get("OrderTotal") or {}
+        return {
+            "id":        o.get("AmazonOrderId", ""),
+            "status":    o.get("OrderStatus", ""),
+            "channel":   o.get("FulfillmentChannel", ""),
+            "amount":    float(total.get("Amount") or 0),
+            "currency":  total.get("CurrencyCode", "USD"),
+            "units":     int(o.get("NumberOfItemsShipped") or 0) + int(o.get("NumberOfItemsUnshipped") or 0),
+            "created":   o.get("PurchaseDate", ""),
+            "ship_city": (o.get("ShippingAddress") or {}).get("City", ""),
+        }
+
     return {
         "period":           period,
         "period_start":     period_start.isoformat(),
@@ -1474,6 +1487,8 @@ async def get_dashboard_amazon_sales(
         "payment_currency": payment_currency,
         "finances_error":   finances_error,
         "total_orders":     len(sales_orders),
+        "orders":           [_fmt_order(o) for o in sorted(sales_orders, key=lambda x: x.get("PurchaseDate",""), reverse=True)[:50]],
+        "open_orders":      [_fmt_order(o) for o in open_orders[:50]],
     }
 
 
