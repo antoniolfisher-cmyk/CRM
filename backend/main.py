@@ -1575,6 +1575,9 @@ async def get_dashboard_amazon_orders(
         _amazon_fetch_orders(access_token, fbm_open_params),
         _amazon_fetch_orders(access_token, fbm_shipped_params),
     )
+    print(f"[orders] tenant={tenant_id} fba_raw={len(fba_raw)} fbm_raw={len(fbm_raw)} fbm_shipped_raw={len(fbm_shipped_raw)}", flush=True)
+    for o in fbm_raw:
+        print(f"[orders]   FBM open: {o.get('AmazonOrderId')} status={o.get('OrderStatus')} channel={o.get('FulfillmentChannel')} created={o.get('PurchaseDate')}", flush=True)
 
     def _fmt(o):
         total_obj = o.get("OrderTotal") or {}
@@ -1601,6 +1604,59 @@ async def get_dashboard_amazon_orders(
         "fbm_shipped":       fbm_shipped,
         "fbm_shipped_count": len(fbm_shipped),
         "fetched_at":        now.isoformat(),
+    }
+
+
+@app.get("/api/debug/amazon-orders-tenant")
+async def debug_amazon_orders_tenant(
+    current: dict = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """
+    Debug: returns raw Amazon order lists for the current tenant's credentials.
+    Useful for diagnosing FBM order visibility issues.
+    """
+    tenant_id = current.get("tenant_id", 1)
+    cred = _get_tenant_amazon_creds(tenant_id, db)
+    if not cred or not cred.sp_refresh_token:
+        raise HTTPException(503, "Amazon SP-API credentials not configured for this tenant")
+
+    from datetime import timezone as _tz3
+    now    = datetime.now(_tz3.utc)
+    since  = (now - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    mkt_id = cred.marketplace_id or _AMAZON_MKT_ID
+    access_token = await _get_tenant_access_token(cred)
+
+    fbm_open_params = [
+        ("MarketplaceIds",  mkt_id),
+        ("CreatedAfter",    since),
+        ("OrderStatuses",   "Pending"),
+        ("OrderStatuses",   "Unshipped"),
+        ("OrderStatuses",   "PartiallyShipped"),
+        ("FulfillmentChannels", "MFN"),
+    ]
+    fba_open_params = [
+        ("MarketplaceIds",  mkt_id),
+        ("CreatedAfter",    since),
+        ("OrderStatuses",   "Pending"),
+        ("OrderStatuses",   "Unshipped"),
+        ("OrderStatuses",   "PartiallyShipped"),
+        ("FulfillmentChannels", "AFN"),
+    ]
+    fba_raw, fbm_raw = await asyncio.gather(
+        _amazon_fetch_orders(access_token, fba_open_params),
+        _amazon_fetch_orders(access_token, fbm_open_params),
+    )
+    return {
+        "tenant_id":    tenant_id,
+        "since":        since,
+        "marketplace":  mkt_id,
+        "fba_count":    len(fba_raw),
+        "fbm_count":    len(fbm_raw),
+        "fba_orders":   [{"id": o.get("AmazonOrderId"), "status": o.get("OrderStatus"),
+                          "channel": o.get("FulfillmentChannel"), "created": o.get("PurchaseDate")} for o in fba_raw],
+        "fbm_orders":   [{"id": o.get("AmazonOrderId"), "status": o.get("OrderStatus"),
+                          "channel": o.get("FulfillmentChannel"), "created": o.get("PurchaseDate")} for o in fbm_raw],
     }
 
 
