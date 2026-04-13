@@ -265,17 +265,22 @@ try:
     except Exception:
         pass
     # ── Add seller_sku + aria live-push columns to products ──────────────────
+    # Each column in its own connection+commit so one failure doesn't block others.
+    # Use TIMESTAMP WITH TIME ZONE (PostgreSQL) not DATETIME (SQLite-only).
     try:
         _p2_cols = [c["name"] for c in _inspector.get_columns("products")]
-        with engine.connect() as _conn:
-            for _col, _ddl in [
-                ("seller_sku",         "VARCHAR"),
-                ("aria_live_price",    "FLOAT"),
-                ("aria_live_pushed_at","DATETIME"),
-            ]:
-                if _col not in _p2_cols:
-                    _conn.execute(text(f"ALTER TABLE products ADD COLUMN {_col} {_ddl}"))
-            _conn.commit()
+        for _col, _ddl in [
+            ("seller_sku",          "VARCHAR"),
+            ("aria_live_price",     "DOUBLE PRECISION"),
+            ("aria_live_pushed_at", "TIMESTAMP WITH TIME ZONE"),
+        ]:
+            if _col not in _p2_cols:
+                try:
+                    with engine.connect() as _conn:
+                        _conn.execute(text(f"ALTER TABLE products ADD COLUMN {_col} {_ddl}"))
+                        _conn.commit()
+                except Exception as _col_err:
+                    print(f"[migration] products.{_col}: {_col_err}", flush=True)
     except Exception:
         pass
     # ── Backfill seller_sku from order_number for legacy products ─────────────
