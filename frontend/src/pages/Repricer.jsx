@@ -517,13 +517,20 @@ export default function Repricer() {
           </div>
           <div className="flex gap-2 items-center flex-wrap">
             {ariaResult && (
-              <span className="text-xs text-gray-500">
-                Last run: {ariaResult.repriced} repriced
-                {' · '}{ariaResult.pushed ?? 0} pushed to Amazon
-                {ariaResult.no_sku > 0 && <> · <span className="text-amber-600">{ariaResult.no_sku} missing SKU</span></>}
-                {ariaResult.skipped > 0 && <> · {ariaResult.skipped} skipped</>}
-                {ariaResult.errors > 0 && <> · <span className="text-red-500">{ariaResult.errors} errors</span></>}
-              </span>
+              <div className="text-xs text-gray-500">
+                <span>
+                  Last run: {ariaResult.repriced} repriced
+                  {' · '}{ariaResult.pushed ?? 0} pushed to Amazon
+                  {ariaResult.no_sku > 0 && <> · <span className="text-amber-600">{ariaResult.no_sku} missing SKU</span></>}
+                  {ariaResult.skipped > 0 && <> · {ariaResult.skipped} skipped</>}
+                  {ariaResult.errors > 0 && <> · <span className="text-red-500">{ariaResult.errors} error{ariaResult.errors !== 1 ? 's' : ''}</span></>}
+                </span>
+                {ariaResult.error_details?.length > 0 && (
+                  <ul className="mt-1 text-red-500 space-y-0.5">
+                    {ariaResult.error_details.map((d, i) => <li key={i}>⚠ {d}</li>)}
+                  </ul>
+                )}
+              </div>
             )}
             <button
               className="btn-primary flex items-center gap-2"

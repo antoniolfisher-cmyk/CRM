@@ -153,13 +153,21 @@ Respond with ONLY valid JSON (no markdown):
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     msg = client.messages.create(
         model=_MODEL,
-        max_tokens=100,
+        max_tokens=200,
         messages=[{"role": "user", "content": prompt}],
     )
     raw = msg.content[0].text.strip()
     if raw.startswith("```"):
         raw = raw.split("```")[1].lstrip("json").strip()
-    data = json.loads(raw)
+    # Strip any trailing text after the JSON object
+    brace = raw.rfind("}")
+    if brace != -1:
+        raw = raw[: brace + 1]
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        log.warning("Aria JSON parse failed for %s — raw=%r  err=%s", product.product_name, raw[:200], e)
+        raise
     price = max(float(data["price"]), min_price)
     if max_price:
         price = min(price, max_price)
@@ -205,6 +213,7 @@ async def run_all_async(force: bool = False, tenant_id=None) -> dict:
             log.warning("Aria: no Amazon credentials found for tenant_id=%s — prices will NOT be pushed", tenant_id)
 
         repriced = skipped = errors = pushed = no_sku = 0
+        error_details = []
         now = datetime.utcnow()
 
         for p in candidates:
@@ -276,6 +285,8 @@ async def run_all_async(force: bool = False, tenant_id=None) -> dict:
                 )
             except Exception as e:
                 errors += 1
+                msg = f"{p.product_name}: {e}"
+                error_details.append(msg)
                 log.warning("Aria failed for product %d (%s): %s", p.id, p.product_name, e)
 
         try:
@@ -289,11 +300,12 @@ async def run_all_async(force: bool = False, tenant_id=None) -> dict:
             repriced, pushed, no_sku, skipped, errors
         )
         return {
-            "repriced": repriced,
-            "pushed":   pushed,
-            "no_sku":   no_sku,
-            "skipped":  skipped,
-            "errors":   errors,
+            "repriced":      repriced,
+            "pushed":        pushed,
+            "no_sku":        no_sku,
+            "skipped":       skipped,
+            "errors":        errors,
+            "error_details": error_details,
         }
     finally:
         db.close()
