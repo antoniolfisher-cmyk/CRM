@@ -600,6 +600,11 @@ export default function Repricer() {
                   {ariaStatus.configured ? 'Ready' : 'Not Configured'}
                 </span>
               </div>
+              {ariaStatus.configured && ariaStatus.next_run && (
+                <p className="text-xs text-violet-600 mt-0.5 font-medium">
+                  ⏱ Runs every {ariaStatus.interval_hours}h · Next: {new Date(ariaStatus.next_run).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                </p>
+              )}
               {ariaStatus.configured ? (
                 <p className="text-xs text-gray-500 mt-0.5">
                   {ariaStatus.eligible > 0

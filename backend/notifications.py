@@ -469,16 +469,16 @@ def start_scheduler():
         replace_existing=True,
     )
 
-    # Aria AI Repricer — every 6 hours, smart-triggered (skips unchanged buy boxes)
+    # Aria AI Repricer — every 1 hour, smart-triggered (skips unchanged buy boxes)
     try:
         from aria_repricer import scheduled_reprice as aria_reprice
         _scheduler.add_job(
             aria_reprice,
-            IntervalTrigger(hours=6),
+            IntervalTrigger(hours=1),
             id="aria_reprice",
             replace_existing=True,
         )
-        log.info("Aria repricer scheduled every 6 hours")
+        log.info("Aria repricer scheduled every 1 hour")
     except Exception as _e:
         log.warning("Aria repricer scheduler not loaded: %s", _e)
 
@@ -503,3 +503,17 @@ def stop_scheduler():
     global _scheduler
     if _scheduler:
         _scheduler.shutdown(wait=False)
+
+
+def get_aria_schedule_info() -> dict:
+    """Return next-run time and interval for the Aria repricer job."""
+    if not _scheduler:
+        return {"interval_hours": 1, "next_run": None}
+    job = _scheduler.get_job("aria_reprice")
+    if not job:
+        return {"interval_hours": 1, "next_run": None}
+    next_run = job.next_run_time
+    return {
+        "interval_hours": 1,
+        "next_run": next_run.isoformat() if next_run else None,
+    }

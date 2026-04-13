@@ -17,7 +17,7 @@ from auth import (
     LoginRequest, RegisterRequest, create_token, require_auth, require_admin,
     require_superadmin, hash_password, verify_password, ensure_bootstrap_admin, get_tenant_id,
 )
-from notifications import start_scheduler, stop_scheduler, send_daily_digests, send_email, build_digest_html, _smtp_configured
+from notifications import start_scheduler, stop_scheduler, send_daily_digests, send_email, build_digest_html, _smtp_configured, get_aria_schedule_info
 import aria_repricer
 import stripe_billing
 
@@ -699,12 +699,16 @@ def aria_status(db: Session = Depends(get_db), current: dict = Depends(require_a
         models.Product.seller_sku == None,
     ).count()
 
+    schedule = get_aria_schedule_info()
+
     return {
-        "configured":    aria_repricer.aria_configured(),
-        "eligible":      eligible,
-        "need_buy_box":  need_buy_box,
-        "need_cost":     need_cost,
-        "no_sku":        no_sku,
+        "configured":     aria_repricer.aria_configured(),
+        "eligible":       eligible,
+        "need_buy_box":   need_buy_box,
+        "need_cost":      need_cost,
+        "no_sku":         no_sku,
+        "interval_hours": schedule["interval_hours"],
+        "next_run":       schedule["next_run"],
     }
 
 

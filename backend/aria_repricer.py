@@ -476,12 +476,42 @@ async def run_all_async(force: bool = False, tenant_id=None) -> dict:
 def scheduled_reprice():
     """
     Sync entry point for APScheduler (runs in a background thread).
-    Creates a fresh event loop so asyncio.run() works cleanly.
+    Iterates every active tenant so credentials are loaded per-tenant
+    and prices are pushed to Amazon correctly.
     """
     if not aria_configured():
         return
     log.info("Aria scheduled reprice starting…")
     try:
-        asyncio.run(run_all_async())
+        asyncio.run(_reprice_all_tenants())
     except Exception as e:
         log.error("Aria scheduled reprice failed: %s", e)
+
+
+async def _reprice_all_tenants():
+    """Run Aria for every tenant that has products + Amazon credentials."""
+    db = SessionLocal()
+    try:
+        tenants = db.query(models.Tenant).all()
+        tenant_ids = [t.id for t in tenants]
+    finally:
+        db.close()
+
+    if not tenant_ids:
+        # Single-tenant / no tenant table — run without filter
+        await run_all_async(tenant_id=None)
+        return
+
+    total = {"repriced": 0, "pushed": 0, "skipped": 0, "errors": 0}
+    for tid in tenant_ids:
+        try:
+            r = await run_all_async(tenant_id=tid)
+            for k in total:
+                total[k] += r.get(k, 0)
+        except Exception as e:
+            log.error("Aria: tenant %d failed: %s", tid, e)
+
+    log.info(
+        "Aria scheduled run complete (all tenants) — repriced=%d pushed=%d skipped=%d errors=%d",
+        total["repriced"], total["pushed"], total["skipped"], total["errors"],
+    )
