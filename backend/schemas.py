@@ -11,6 +11,7 @@ class UserCreate(BaseModel):
     is_active: bool = True
     email: Optional[str] = None
     notify_email: bool = True
+    dashboard_sections: Optional[str] = None   # comma-separated; None = all visible
 
 
 class UserUpdate(BaseModel):
@@ -20,6 +21,7 @@ class UserUpdate(BaseModel):
     is_active: Optional[bool] = None
     email: Optional[str] = None
     notify_email: Optional[bool] = None
+    dashboard_sections: Optional[str] = None
 
 
 class UserOut(BaseModel):
@@ -29,6 +31,7 @@ class UserOut(BaseModel):
     is_active: bool
     email: Optional[str] = None
     notify_email: bool = True
+    dashboard_sections: Optional[str] = None
     created_at: Optional[datetime] = None
 
     class Config:

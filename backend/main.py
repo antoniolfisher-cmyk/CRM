@@ -228,6 +228,16 @@ try:
                 _conn.commit()
     except Exception:
         pass
+    # ── Add dashboard_sections to users ─────────────────────────────────────
+    try:
+        if "users" in _inspector.get_table_names():
+            _u_cols = [c["name"] for c in _inspector.get_columns("users")]
+            if "dashboard_sections" not in _u_cols:
+                with engine.connect() as _conn:
+                    _conn.execute(text("ALTER TABLE users ADD COLUMN dashboard_sections TEXT"))
+                    _conn.commit()
+    except Exception:
+        pass
     # ── Apply STORE_NAME env var to "Default" tenant on startup ─────────────
     try:
         _store_env = os.getenv("STORE_NAME", "").strip()
@@ -410,8 +420,9 @@ def me(payload: dict = Depends(require_auth), db: Session = Depends(get_db)):
         "tenant_slug":   tenant.slug if tenant else "default",
         "plan":          tenant.plan if tenant else "starter",
         "stripe_status": tenant.stripe_status if tenant else None,
-        "email":         db_user.email if db_user else None,
-        "notify_email":  db_user.notify_email if db_user else True,
+        "email":               db_user.email if db_user else None,
+        "notify_email":        db_user.notify_email if db_user else True,
+        "dashboard_sections":  db_user.dashboard_sections if db_user else None,
     }
 
 
@@ -1544,22 +1555,20 @@ async def get_dashboard_amazon_orders(
 
     access_token = await _get_tenant_access_token(cred)
 
-    # Single open-orders query — no FulfillmentChannels filter so Amazon returns
-    # all open orders including brand-new ones where FulfillmentChannel may be null.
-    # We classify FBA vs FBM on the Python side.
+    # Broad query: no OrderStatuses filter so Amazon returns ALL order statuses
+    # (including orders that may have unusual/transitional statuses).
+    # We classify FBA vs FBM and open vs closed entirely on the Python side.
+    open_since = (now - timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ")
     open_params = [
-        ("MarketplaceIds",  mkt_id),
-        ("LastUpdatedAfter", since),
-        ("OrderStatuses",   "Pending"),
-        ("OrderStatuses",   "Unshipped"),
-        ("OrderStatuses",   "PartiallyShipped"),
+        ("MarketplaceIds",   mkt_id),
+        ("LastUpdatedAfter", open_since),
     ]
     # FBM orders shipped recently (last 7 days)
     fbm_shipped_since = (now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
     fbm_shipped_params = [
-        ("MarketplaceIds",  mkt_id),
+        ("MarketplaceIds",   mkt_id),
         ("LastUpdatedAfter", fbm_shipped_since),
-        ("OrderStatuses",   "Shipped"),
+        ("OrderStatuses",    "Shipped"),
         ("FulfillmentChannels", "MFN"),
     ]
     open_raw, fbm_shipped_raw = await asyncio.gather(
@@ -1579,12 +1588,18 @@ async def get_dashboard_amazon_orders(
             "currency":    total_obj.get("CurrencyCode") or "USD",
         }
 
-    # AFN = FBA. MFN or missing FulfillmentChannel = FBM (Amazon omits the field
-    # on brand-new orders that haven't been confirmed yet).
-    fba = sorted([_fmt(o) for o in open_raw if o.get("FulfillmentChannel") == "AFN"],
-                 key=lambda x: x["date"], reverse=True)
-    fbm = sorted([_fmt(o) for o in open_raw if o.get("FulfillmentChannel") != "AFN"],
-                 key=lambda x: x["date"], reverse=True)
+    # Statuses that mean an order is closed/done — exclude these from the open tiles.
+    _CLOSED = {"Shipped", "Canceled", "Unfulfillable", "InvoiceUnconfirmed"}
+    fba = sorted(
+        [_fmt(o) for o in open_raw
+         if o.get("FulfillmentChannel") == "AFN" and o.get("OrderStatus") not in _CLOSED],
+        key=lambda x: x["date"], reverse=True,
+    )
+    fbm = sorted(
+        [_fmt(o) for o in open_raw
+         if o.get("FulfillmentChannel") != "AFN" and o.get("OrderStatus") not in _CLOSED],
+        key=lambda x: x["date"], reverse=True,
+    )
     fbm_shipped = sorted([_fmt(o) for o in fbm_shipped_raw],
                          key=lambda x: x["date"], reverse=True)
 

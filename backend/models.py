@@ -60,11 +60,12 @@ class User(Base):
     tenant_id     = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
     username      = Column(String, nullable=False, index=True)
     password_hash = Column(String, nullable=False)
-    role          = Column(String, default="user")   # "admin" or "user"
-    is_active     = Column(Boolean, default=True)
-    email         = Column(String, nullable=True)
-    notify_email  = Column(Boolean, default=True)
-    created_at    = Column(DateTime(timezone=True), server_default=func.now())
+    role               = Column(String, default="user")   # "admin" or "user"
+    is_active          = Column(Boolean, default=True)
+    email              = Column(String, nullable=True)
+    notify_email       = Column(Boolean, default=True)
+    dashboard_sections = Column(Text, nullable=True)   # comma-separated section keys; NULL = all visible
+    created_at         = Column(DateTime(timezone=True), server_default=func.now())
 
     tenant = relationship("Tenant", back_populates="users")
 

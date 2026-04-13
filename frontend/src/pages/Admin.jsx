@@ -524,16 +524,37 @@ export default function Admin() {
 
 // ─── User Form ────────────────────────────────────────────────────────────────
 
+const DASHBOARD_SECTIONS = [
+  { key: 'amazon_sales',     label: 'Amazon Sales',           desc: 'Daily / weekly / monthly revenue & order counts' },
+  { key: 'amazon_orders',    label: 'Amazon Open Orders',     desc: 'Live FBA and FBM open order tiles' },
+  { key: 'amazon_inventory', label: 'Amazon FBA Inventory',   desc: 'Live inventory levels from Amazon' },
+  { key: 'repricer',         label: 'Repricer Performance',   desc: 'Price update stats and Buy Box %' },
+]
+
+function parseSections(str) {
+  if (!str) return DASHBOARD_SECTIONS.map(s => s.key)   // null = all checked
+  return str.split(',').map(s => s.trim()).filter(Boolean)
+}
+
 function UserForm({ initial, onSave, onClose, isSelf }) {
+  const initSections = parseSections(initial?.dashboard_sections ?? null)
   const [form, setForm] = useState({
     username: initial?.username || '', password: '', role: initial?.role || 'user',
     is_active: initial?.is_active ?? true, email: initial?.email || '', notify_email: initial?.notify_email ?? true,
+    dashboard_sections: initial?.dashboard_sections ?? null,
   })
+  const [selectedSections, setSelectedSections] = useState(initSections)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
   const set = (k) => (e) =>
     setForm((f) => ({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }))
+
+  const toggleSection = (key) => {
+    setSelectedSections(prev =>
+      prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
+    )
+  }
 
   const submit = async (e) => {
     e.preventDefault(); setError('')
@@ -541,6 +562,14 @@ function UserForm({ initial, onSave, onClose, isSelf }) {
     setSaving(true)
     const payload = { ...form }
     if (!payload.password) delete payload.password
+    // For user role: save selected sections; all selected = null (no restriction)
+    if (form.role === 'user') {
+      const allKeys = DASHBOARD_SECTIONS.map(s => s.key)
+      const allSelected = allKeys.every(k => selectedSections.includes(k))
+      payload.dashboard_sections = allSelected ? null : selectedSections.join(',')
+    } else {
+      payload.dashboard_sections = null  // admins always see everything
+    }
     try { await onSave(payload) } catch (err) { setError(err.message) } finally { setSaving(false) }
   }
 
@@ -567,6 +596,38 @@ function UserForm({ initial, onSave, onClose, isSelf }) {
           <option value="admin">admin — full access including user management</option>
         </select>
       </div>
+
+      {/* Dashboard section permissions — only relevant for non-admin users */}
+      {form.role === 'user' && (
+        <div className="border border-gray-200 rounded-xl p-4 space-y-2">
+          <div className="flex items-center justify-between mb-1">
+            <label className="label mb-0">Dashboard Sections</label>
+            <button
+              type="button"
+              className="text-xs text-blue-600 hover:underline"
+              onClick={() => setSelectedSections(DASHBOARD_SECTIONS.map(s => s.key))}
+            >
+              Select all
+            </button>
+          </div>
+          <p className="text-xs text-gray-400 mb-2">Choose which sections this user can see on their dashboard</p>
+          {DASHBOARD_SECTIONS.map(s => (
+            <label key={s.key} className="flex items-start gap-2.5 cursor-pointer group">
+              <input
+                type="checkbox"
+                className="rounded mt-0.5"
+                checked={selectedSections.includes(s.key)}
+                onChange={() => toggleSection(s.key)}
+              />
+              <span>
+                <span className="text-sm text-gray-800 font-medium group-hover:text-blue-600">{s.label}</span>
+                <span className="block text-xs text-gray-400">{s.desc}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      )}
+
       <div className="space-y-2">
         {initial && (
           <div className="flex items-center gap-2">

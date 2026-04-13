@@ -20,6 +20,14 @@ export default function Dashboard() {
       .then(t => setTenantInfo(t))
   }, [])
 
+  // Section visibility: admins and users with no restriction see everything.
+  // Users with dashboard_sections set only see the listed sections.
+  const canSee = (section) => {
+    if (!user || user.role === 'admin') return true
+    if (!user.dashboard_sections) return true
+    return user.dashboard_sections.split(',').map(s => s.trim()).includes(section)
+  }
+
   if (loading) return <LoadingSkeleton />
 
   return (
@@ -82,16 +90,16 @@ export default function Dashboard() {
       </div>
 
       {/* Amazon Sales Panel */}
-      <AmazonSalesPanel />
+      {canSee('amazon_sales') && <AmazonSalesPanel />}
 
       {/* Amazon FBA + FBM Open Orders */}
-      <AmazonOrdersPanel />
+      {canSee('amazon_orders') && <AmazonOrdersPanel />}
 
       {/* Amazon Live FBA Section */}
-      <AmazonLivePanel />
+      {canSee('amazon_inventory') && <AmazonLivePanel />}
 
       {/* Repricer Performance */}
-      {repricerStats && (
+      {canSee('repricer') && repricerStats && (
         <div className="space-y-3">
           <h2 className="text-base font-semibold text-gray-700">Performance</h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

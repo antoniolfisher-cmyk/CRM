@@ -18,16 +18,17 @@ export function AuthProvider({ children }) {
     if (!token) { setChecking(false); return }
     fetchMe(token)
       .then((data) => setUser({
-        username:      data.username,
-        role:          data.role,
-        is_superadmin: data.is_superadmin || false,
-        tenant_id:     data.tenant_id,
-        tenant_name:   data.tenant_name,
-        tenant_slug:   data.tenant_slug,
-        plan:          data.plan,
-        stripe_status: data.stripe_status,
-        email:         data.email || '',
-        notify_email:  data.notify_email !== false,
+        username:           data.username,
+        role:               data.role,
+        is_superadmin:      data.is_superadmin || false,
+        tenant_id:          data.tenant_id,
+        tenant_name:        data.tenant_name,
+        tenant_slug:        data.tenant_slug,
+        plan:               data.plan,
+        stripe_status:      data.stripe_status,
+        email:              data.email || '',
+        notify_email:       data.notify_email !== false,
+        dashboard_sections: data.dashboard_sections || null,
       }))
       .catch(() => { localStorage.removeItem(TOKEN_KEY); setToken(null) })
       .finally(() => setChecking(false))
@@ -48,16 +49,17 @@ export function AuthProvider({ children }) {
     setToken(data.access_token)
     const me = await fetchMe(data.access_token)
     setUser({
-      username:      me.username,
-      role:          me.role,
-      is_superadmin: me.is_superadmin || false,
-      tenant_id:     me.tenant_id,
-      tenant_name:   me.tenant_name,
-      tenant_slug:   me.tenant_slug,
-      plan:          me.plan,
-      stripe_status: me.stripe_status,
-      email:         me.email || '',
-      notify_email:  me.notify_email !== false,
+      username:           me.username,
+      role:               me.role,
+      is_superadmin:      me.is_superadmin || false,
+      tenant_id:          me.tenant_id,
+      tenant_name:        me.tenant_name,
+      tenant_slug:        me.tenant_slug,
+      plan:               me.plan,
+      stripe_status:      me.stripe_status,
+      email:              me.email || '',
+      notify_email:       me.notify_email !== false,
+      dashboard_sections: me.dashboard_sections || null,
     })
   }
 
