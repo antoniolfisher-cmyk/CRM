@@ -1570,13 +1570,10 @@ async def get_dashboard_amazon_orders(
         ("OrderStatuses",   "Shipped"),
         ("FulfillmentChannels", "MFN"),
     ]
-    # Strategy D: no channel filter, all open statuses — broadest net for debug
+    # No status filter, no channel filter — broadest possible net, last 7 days
     all_open_params = [
-        ("MarketplaceIds",  mkt_id),
-        ("CreatedAfter",    since),
-        ("OrderStatuses",   "Pending"),
-        ("OrderStatuses",   "Unshipped"),
-        ("OrderStatuses",   "PartiallyShipped"),
+        ("MarketplaceIds",   mkt_id),
+        ("LastUpdatedAfter", (now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")),
     ]
     fba_raw, fbm_raw, fbm_shipped_raw, all_open_raw = await asyncio.gather(
         _amazon_fetch_orders(access_token, fba_open_params),
@@ -1586,7 +1583,7 @@ async def get_dashboard_amazon_orders(
     )
     print(f"[orders] tenant={tenant_id} fba_raw={len(fba_raw)} fbm_raw={len(fbm_raw)} fbm_shipped_raw={len(fbm_shipped_raw)} all_open={len(all_open_raw)}", flush=True)
     for o in all_open_raw:
-        print(f"[orders]   open: {o.get('AmazonOrderId')} status={o.get('OrderStatus')} channel={o.get('FulfillmentChannel')} created={o.get('PurchaseDate')}", flush=True)
+        print(f"[orders]   all: {o.get('AmazonOrderId')} status={o.get('OrderStatus')} channel={o.get('FulfillmentChannel')} created={o.get('PurchaseDate')}", flush=True)
 
     def _fmt(o):
         total_obj = o.get("OrderTotal") or {}
@@ -1614,13 +1611,12 @@ async def get_dashboard_amazon_orders(
         "fbm_shipped_count": len(fbm_shipped),
         "fetched_at":        now.isoformat(),
         "_debug": {
-            "tenant_id":       tenant_id,
-            "since":           since,
-            "fba_raw_count":   len(fba_raw),
-            "fbm_raw_count":   len(fbm_raw),
-            "all_open_count":  len(all_open_raw),
-            "all_open_orders": [{"id": o.get("AmazonOrderId"), "status": o.get("OrderStatus"),
-                                 "ch": o.get("FulfillmentChannel")} for o in all_open_raw],
+            "tenant_id":            tenant_id,
+            "fba_raw_count":        len(fba_raw),
+            "fbm_raw_count":        len(fbm_raw),
+            "any_status_7d_count":  len(all_open_raw),
+            "any_status_7d_orders": [{"id": o.get("AmazonOrderId"), "status": o.get("OrderStatus"),
+                                      "ch": o.get("FulfillmentChannel")} for o in all_open_raw],
         },
     }
 
