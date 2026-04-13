@@ -1,4 +1,5 @@
 import os
+import asyncio
 import urllib.parse
 from fastapi import FastAPI, Depends, HTTPException, Request, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -1320,6 +1321,21 @@ async def get_dashboard_amazon_sales(
     ]
     sales_orders = await _amazon_fetch_orders(access_token, sales_params)
 
+    # ── 1b. FBM shipped in period: catches FBM orders fulfilled today that were created before period ──
+    fbm_shipped_params = [
+        ("MarketplaceIds", mkt_id),
+        ("LastUpdatedAfter", created_after),
+        ("OrderStatuses", "Shipped"),
+        ("FulfillmentChannels", "MFN"),
+    ]
+    fbm_shipped_orders = await _amazon_fetch_orders(access_token, fbm_shipped_params)
+    existing_ids = {o.get("AmazonOrderId") for o in sales_orders}
+    for o in fbm_shipped_orders:
+        oid = o.get("AmazonOrderId")
+        if oid and oid not in existing_ids:
+            sales_orders.append(o)
+            existing_ids.add(oid)
+
     # ── 2. Open Orders: separate call, no creation-date restriction ─────────
     open_params = [
         ("MarketplaceIds", mkt_id),
@@ -1535,7 +1551,18 @@ async def get_dashboard_amazon_orders(
         ("OrderStatuses",   "Unshipped"),
         ("OrderStatuses",   "PartiallyShipped"),
     ]
-    all_orders = await _amazon_fetch_orders(access_token, params)
+    # Also fetch FBM orders shipped recently (last 7 days) so seller can see fulfilled FBM activity
+    fbm_shipped_since = (now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    fbm_shipped_params = [
+        ("MarketplaceIds",  mkt_id),
+        ("LastUpdatedAfter", fbm_shipped_since),
+        ("OrderStatuses",   "Shipped"),
+        ("FulfillmentChannels", "MFN"),
+    ]
+    all_orders, fbm_shipped_raw = await asyncio.gather(
+        _amazon_fetch_orders(access_token, params),
+        _amazon_fetch_orders(access_token, fbm_shipped_params),
+    )
 
     def _fmt(o):
         total_obj = o.get("OrderTotal") or {}
@@ -1553,13 +1580,17 @@ async def get_dashboard_amazon_orders(
                  key=lambda x: x["date"], reverse=True)
     fbm = sorted([_fmt(o) for o in all_orders if o.get("FulfillmentChannel") == "MFN"],
                  key=lambda x: x["date"], reverse=True)
+    fbm_shipped = sorted([_fmt(o) for o in fbm_shipped_raw],
+                         key=lambda x: x["date"], reverse=True)
 
     return {
-        "fba_orders":  fba,
-        "fbm_orders":  fbm,
-        "fba_count":   len(fba),
-        "fbm_count":   len(fbm),
-        "fetched_at":  now.isoformat(),
+        "fba_orders":        fba,
+        "fbm_orders":        fbm,
+        "fba_count":         len(fba),
+        "fbm_count":         len(fbm),
+        "fbm_shipped":       fbm_shipped,
+        "fbm_shipped_count": len(fbm_shipped),
+        "fetched_at":        now.isoformat(),
     }
 
 

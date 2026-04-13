@@ -603,10 +603,13 @@ function AmazonOrdersPanel() {
   const statusColor = (s) => {
     if (s === 'Unshipped')        return 'text-red-600 bg-red-50'
     if (s === 'PartiallyShipped') return 'text-amber-600 bg-amber-50'
+    if (s === 'Shipped')          return 'text-green-600 bg-green-50'
     return 'text-gray-600 bg-gray-100'
   }
 
-  const orders = modal === 'fba' ? (data?.fba_orders || []) : (data?.fbm_orders || [])
+  const orders = modal === 'fba'
+    ? (data?.fba_orders || [])
+    : [...(data?.fbm_orders || []), ...(data?.fbm_shipped || [])]
 
   return (
     <>
@@ -677,6 +680,9 @@ function AmazonOrdersPanel() {
                   <p className="text-sm text-gray-500">FBM Orders</p>
                   <p className="text-3xl font-bold text-gray-900 mt-1">{data.fbm_count}</p>
                   <p className="text-xs text-gray-400 mt-1">open • fulfilled by merchant</p>
+                  {data.fbm_shipped_count > 0 && (
+                    <p className="text-xs text-violet-500 mt-1">{data.fbm_shipped_count} shipped recently</p>
+                  )}
                 </div>
                 <div className="w-10 h-10 rounded-lg bg-violet-50 flex items-center justify-center">
                   <BoxIcon className="w-5 h-5 text-violet-600" />
@@ -695,10 +701,11 @@ function AmazonOrdersPanel() {
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
               <div>
                 <h3 className="text-base font-semibold text-gray-900">
-                  {modal === 'fba' ? 'FBA' : 'FBM'} Open Orders
+                  {modal === 'fba' ? 'FBA Open Orders' : 'FBM Orders'}
                 </h3>
                 <p className="text-xs text-gray-400 mt-0.5">
                   {orders.length} order{orders.length !== 1 ? 's' : ''} • live from Amazon
+                  {modal === 'fbm' && data?.fbm_shipped_count > 0 && ` (${data.fbm_count} open · ${data.fbm_shipped_count} shipped recently)`}
                 </p>
               </div>
               <button onClick={() => setModal(null)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600">✕</button>
