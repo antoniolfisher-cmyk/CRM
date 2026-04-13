@@ -1544,12 +1544,23 @@ async def get_dashboard_amazon_orders(
 
     access_token = await _get_tenant_access_token(cred)
 
-    params = [
+    # Use separate explicit FulfillmentChannels queries so brand-new orders
+    # (where Amazon may omit the FulfillmentChannel field) are captured correctly.
+    fba_open_params = [
         ("MarketplaceIds",  mkt_id),
-        ("LastUpdatedAfter", since),
+        ("CreatedAfter",    since),
         ("OrderStatuses",   "Pending"),
         ("OrderStatuses",   "Unshipped"),
         ("OrderStatuses",   "PartiallyShipped"),
+        ("FulfillmentChannels", "AFN"),
+    ]
+    fbm_open_params = [
+        ("MarketplaceIds",  mkt_id),
+        ("CreatedAfter",    since),
+        ("OrderStatuses",   "Pending"),
+        ("OrderStatuses",   "Unshipped"),
+        ("OrderStatuses",   "PartiallyShipped"),
+        ("FulfillmentChannels", "MFN"),
     ]
     # Also fetch FBM orders shipped recently (last 7 days) so seller can see fulfilled FBM activity
     fbm_shipped_since = (now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1559,8 +1570,9 @@ async def get_dashboard_amazon_orders(
         ("OrderStatuses",   "Shipped"),
         ("FulfillmentChannels", "MFN"),
     ]
-    all_orders, fbm_shipped_raw = await asyncio.gather(
-        _amazon_fetch_orders(access_token, params),
+    fba_raw, fbm_raw, fbm_shipped_raw = await asyncio.gather(
+        _amazon_fetch_orders(access_token, fba_open_params),
+        _amazon_fetch_orders(access_token, fbm_open_params),
         _amazon_fetch_orders(access_token, fbm_shipped_params),
     )
 
@@ -1576,10 +1588,8 @@ async def get_dashboard_amazon_orders(
             "currency":    total_obj.get("CurrencyCode") or "USD",
         }
 
-    fba = sorted([_fmt(o) for o in all_orders if o.get("FulfillmentChannel") == "AFN"],
-                 key=lambda x: x["date"], reverse=True)
-    fbm = sorted([_fmt(o) for o in all_orders if o.get("FulfillmentChannel") == "MFN"],
-                 key=lambda x: x["date"], reverse=True)
+    fba = sorted([_fmt(o) for o in fba_raw], key=lambda x: x["date"], reverse=True)
+    fbm = sorted([_fmt(o) for o in fbm_raw], key=lambda x: x["date"], reverse=True)
     fbm_shipped = sorted([_fmt(o) for o in fbm_shipped_raw],
                          key=lambda x: x["date"], reverse=True)
 
