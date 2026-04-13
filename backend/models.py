@@ -392,8 +392,6 @@ class UngateRequest(Base):
     updated_at           = Column(DateTime(timezone=True), onupdate=func.now())
 
     product = relationship("Product", back_populates="ungate_requests")
-    invoice = relationship("UngateInvoice", back_populates="request", uselist=False,
-                           cascade="all, delete-orphan")
 
 
 class UngateInvoice(Base):
@@ -408,7 +406,7 @@ class UngateInvoice(Base):
     size_bytes = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    request = relationship("UngateRequest", back_populates="invoice")
+    request = relationship("UngateRequest")
 
 
 # ─── Billing / Subscription Tracking ────────────────────────────────────────
