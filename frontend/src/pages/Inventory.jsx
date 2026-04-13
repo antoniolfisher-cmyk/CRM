@@ -3,6 +3,42 @@ import { api } from '../api'
 import { useAuth } from '../context/AuthContext'
 import { fmtCurrency } from '../utils'
 
+/**
+ * Aura-style Buy Box indicator.
+ * Green ✓ = we're winning (aria_live_price is set and ≤ buy_box price)
+ * Red ✗   = we're not winning (buy_box known but our live price is higher or unset)
+ * Gray    = no buy_box data yet
+ */
+function BuyBoxBadge({ buyBox, livePrice }) {
+  if (!buyBox) return <span className="text-gray-300 text-xs">—</span>
+
+  const winning = livePrice > 0 && livePrice <= buyBox
+
+  if (livePrice > 0) {
+    return winning
+      ? (
+        <span className="inline-flex items-center gap-1 font-semibold text-green-600">
+          <svg className="w-3.5 h-3.5" viewBox="0 0 14 14" fill="none">
+            <circle cx="7" cy="7" r="6.5" stroke="currentColor" strokeWidth="1.5"/>
+            <path d="M4 7l2 2 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          {fmtCurrency(buyBox)}
+        </span>
+      ) : (
+        <span className="inline-flex items-center gap-1 font-semibold text-red-500">
+          <svg className="w-3.5 h-3.5" viewBox="0 0 14 14" fill="none">
+            <circle cx="7" cy="7" r="6.5" stroke="currentColor" strokeWidth="1.5"/>
+            <path d="M4.5 4.5l5 5M9.5 4.5l-5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+          </svg>
+          {fmtCurrency(buyBox)}
+        </span>
+      )
+  }
+
+  // buy_box known but no live price pushed yet — show neutral
+  return <span className="font-medium text-gray-600">{fmtCurrency(buyBox)}</span>
+}
+
 function getStage(p) {
   if (p.date_sent_to_amazon) return 'amazon'
   if (p.arrived_at_prep) return 'prep'
@@ -193,7 +229,7 @@ function ProductDrawer({ product, strategies, keepaConfigured, onClose, onSave, 
         {/* Live market data bar */}
         <div className="flex flex-wrap items-center gap-x-5 gap-y-1 px-6 py-3 bg-blue-50 border-b border-blue-100 text-sm">
           <span className="text-gray-500">BSR: <strong className="text-gray-800">{product.keepa_bsr ? `#${fmtBsr(product.keepa_bsr)}` : '—'}</strong></span>
-          <span className="text-gray-500">Buy Box: <strong className="text-green-700">{product.buy_box ? fmtCurrency(product.buy_box) : '—'}</strong></span>
+          <span className="text-gray-500">Buy Box: <BuyBoxBadge buyBox={product.buy_box} livePrice={product.aria_live_price} /></span>
           <span className="text-gray-500">Sellers: <strong className="text-gray-800">{product.num_sellers || '—'}</strong></span>
           <span className="text-gray-500">ROI: <strong className={Number(product.roi) >= 0 ? 'text-green-600' : 'text-red-600'}>{product.roi ? `${(Number(product.roi) * 100).toFixed(1)}%` : '—'}</strong></span>
           <span className="text-gray-500">Profit/unit: <strong className={Number(product.profit) >= 0 ? 'text-green-600' : 'text-red-600'}>{product.profit ? fmtCurrency(product.profit) : '—'}</strong></span>
@@ -809,7 +845,7 @@ export default function Inventory() {
                       {p.keepa_bsr ? <span className="font-mono text-xs text-gray-700">#{fmtBsr(p.keepa_bsr)}</span> : <span className="text-gray-300 text-xs">—</span>}
                     </td>
                     <td className="px-4 py-3 bg-blue-50/30">
-                      {p.buy_box ? <span className="font-medium text-green-700">{fmtCurrency(p.buy_box)}</span> : <span className="text-gray-300 text-xs">—</span>}
+                      <BuyBoxBadge buyBox={p.buy_box} livePrice={p.aria_live_price} />
                     </td>
                     <td className="px-4 py-3 bg-blue-50/30">
                       {p.num_sellers > 0 ? <span className="text-gray-700">{p.num_sellers}</span> : <span className="text-gray-300 text-xs">—</span>}
