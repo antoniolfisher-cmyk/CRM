@@ -47,6 +47,7 @@ class AmazonCredential(Base):
 
     connected_at     = Column(DateTime(timezone=True), nullable=True)
     connected_by     = Column(String, nullable=True)   # username who connected
+    ship_from_json   = Column(Text, nullable=True)     # JSON: seller ship-from address for MFN labels
 
     tenant = relationship("Tenant", back_populates="amazon_credential")
 

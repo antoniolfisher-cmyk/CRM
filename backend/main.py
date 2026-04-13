@@ -228,6 +228,16 @@ try:
                 _conn.commit()
     except Exception:
         pass
+    # ── Add ship_from_json to amazon_credentials ─────────────────────────────
+    try:
+        if "amazon_credentials" in _inspector.get_table_names():
+            _ac2_cols = [c["name"] for c in _inspector.get_columns("amazon_credentials")]
+            if "ship_from_json" not in _ac2_cols:
+                with engine.connect() as _conn:
+                    _conn.execute(text("ALTER TABLE amazon_credentials ADD COLUMN ship_from_json TEXT"))
+                    _conn.commit()
+    except Exception:
+        pass
     # ── Add dashboard_sections and page_permissions to users ─────────────────
     try:
         if "users" in _inspector.get_table_names():
@@ -5574,6 +5584,251 @@ async function recover(){
 </script>
 </body>
 </html>""")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FBM Shipping Label — Amazon Merchant Fulfillment API
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/amazon/ship-from")
+async def get_ship_from(current: dict = Depends(require_auth), db: Session = Depends(get_db)):
+    """Return the saved ship-from address for the current tenant."""
+    tenant_id = current.get("tenant_id", 1)
+    cred = _get_tenant_amazon_creds(tenant_id, db)
+    if not cred:
+        return {}
+    import json as _json
+    if cred.ship_from_json:
+        try:
+            return _json.loads(cred.ship_from_json)
+        except Exception:
+            pass
+    return {}
+
+
+@app.put("/api/amazon/ship-from")
+async def save_ship_from(
+    body: dict = Body(...),
+    current: dict = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """Persist the seller's ship-from address for future label purchases."""
+    tenant_id = current.get("tenant_id", 1)
+    cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
+    if not cred:
+        raise HTTPException(404, "Amazon credentials not found")
+    import json as _json
+    cred.ship_from_json = _json.dumps(body)
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/amazon/orders/{order_id}/ship-info")
+async def get_order_ship_info(
+    order_id: str,
+    current: dict = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """
+    Fetch shipping address, buyer name, and order items for a given order.
+    Combines GET /orders/v0/orders/{id} and GET /orders/v0/orders/{id}/orderItems.
+    """
+    import httpx as _hx
+    tenant_id = current.get("tenant_id", 1)
+    cred = _get_tenant_amazon_creds(tenant_id, db)
+    if not cred or not cred.sp_refresh_token:
+        raise HTTPException(503, "Amazon SP-API credentials not configured")
+    access_token = await _get_tenant_access_token(cred)
+    sp_base = _AMAZON_SP_BASE
+
+    async with _hx.AsyncClient(timeout=20) as client:
+        order_r, items_r = await asyncio.gather(
+            client.get(f"{sp_base}/orders/v0/orders/{order_id}",
+                       headers={"x-amz-access-token": access_token}),
+            client.get(f"{sp_base}/orders/v0/orders/{order_id}/orderItems",
+                       headers={"x-amz-access-token": access_token}),
+        )
+
+    if order_r.status_code != 200:
+        raise HTTPException(502, f"Amazon Orders API {order_r.status_code}: {order_r.text[:300]}")
+    if items_r.status_code != 200:
+        raise HTTPException(502, f"Amazon OrderItems API {items_r.status_code}: {items_r.text[:300]}")
+
+    order_payload = order_r.json().get("payload", {})
+    ship_addr     = order_payload.get("ShippingAddress", {})
+    buyer_info    = order_payload.get("BuyerInfo", {})
+
+    raw_items = items_r.json().get("payload", {}).get("OrderItems", [])
+    items = [
+        {
+            "order_item_id": i.get("OrderItemId"),
+            "sku":           i.get("SellerSKU"),
+            "title":         i.get("Title"),
+            "quantity":      i.get("QuantityOrdered", 1),
+            "asin":          i.get("ASIN"),
+        }
+        for i in raw_items
+    ]
+
+    return {
+        "order_id":    order_id,
+        "ship_to": {
+            "name":     ship_addr.get("Name") or buyer_info.get("BuyerName") or "Customer",
+            "address1": ship_addr.get("AddressLine1", ""),
+            "address2": ship_addr.get("AddressLine2", ""),
+            "city":     ship_addr.get("City", ""),
+            "state":    ship_addr.get("StateOrProvinceCode", ""),
+            "zip":      ship_addr.get("PostalCode", ""),
+            "country":  ship_addr.get("CountryCode", "US"),
+        },
+        "items": items,
+    }
+
+
+def _build_shipment_request(order_id: str, items: list, ship_from: dict, pkg: dict) -> dict:
+    return {
+        "AmazonOrderId": order_id,
+        "ItemList": [{"OrderItemId": i["order_item_id"], "Quantity": i["quantity"]} for i in items],
+        "ShipFromAddress": {
+            "Name":                  ship_from.get("name", ""),
+            "AddressLine1":          ship_from.get("address1", ""),
+            "AddressLine2":          ship_from.get("address2", ""),
+            "City":                  ship_from.get("city", ""),
+            "StateOrProvinceCode":   ship_from.get("state", ""),
+            "PostalCode":            ship_from.get("zip", ""),
+            "CountryCode":           ship_from.get("country", "US"),
+            "Phone":                 ship_from.get("phone", ""),
+        },
+        "PackageDimensions": {
+            "Length": float(pkg.get("length", 12)),
+            "Width":  float(pkg.get("width",  9)),
+            "Height": float(pkg.get("height", 4)),
+            "Unit":   "inches",
+        },
+        "Weight": {
+            "Value": float(pkg.get("weight", 16)),
+            "Unit":  pkg.get("weight_unit", "oz"),
+        },
+        "ShippingServiceOptions": {
+            "DeliveryExperience": "DeliveryConfirmationWithoutSignature",
+            "CarrierWillPickUp":  False,
+        },
+    }
+
+
+@app.post("/api/amazon/fbm/rates")
+async def get_fbm_rates(
+    body: dict = Body(...),
+    current: dict = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """
+    Call Amazon Merchant Fulfillment API to get eligible shipping services.
+    Body: { order_id, items, ship_from, package: {length, width, height, weight, weight_unit} }
+    """
+    import httpx as _hx
+    tenant_id = current.get("tenant_id", 1)
+    cred = _get_tenant_amazon_creds(tenant_id, db)
+    if not cred or not cred.sp_refresh_token:
+        raise HTTPException(503, "Amazon SP-API credentials not configured")
+    access_token = await _get_tenant_access_token(cred)
+    sp_base = _AMAZON_SP_BASE
+
+    req_details = _build_shipment_request(
+        body["order_id"], body["items"], body["ship_from"], body.get("package", {})
+    )
+
+    async with _hx.AsyncClient(timeout=30) as client:
+        r = await client.post(
+            f"{sp_base}/mfn/v0/eligibleShippingServices",
+            json={"ShipmentRequestDetails": req_details},
+            headers={"x-amz-access-token": access_token, "Content-Type": "application/json"},
+        )
+
+    if r.status_code == 403:
+        raise HTTPException(403, "Amazon MFN API: insufficient permissions. Enable 'Merchant Fulfillment' role in Seller Central → SP-API app.")
+    if r.status_code != 200:
+        raise HTTPException(502, f"Amazon MFN API {r.status_code}: {r.text[:400]}")
+
+    payload  = r.json().get("payload", {})
+    services = payload.get("ShippingServiceList", [])
+
+    def _fmt_service(s):
+        rate = s.get("Rate", {})
+        return {
+            "service_id":       s.get("ShippingServiceId"),
+            "offer_id":         s.get("ShippingServiceOfferId"),
+            "name":             s.get("ShippingServiceName"),
+            "carrier":          s.get("CarrierName"),
+            "rate":             float(rate.get("Amount", 0)),
+            "currency":         rate.get("CurrencyCode", "USD"),
+            "earliest_date":    (s.get("EarliestEstimatedDeliveryDate") or "")[:10],
+            "latest_date":      (s.get("LatestEstimatedDeliveryDate") or "")[:10],
+            "ship_date":        (s.get("ShipDate") or "")[:10],
+        }
+
+    return {
+        "services":        [_fmt_service(s) for s in services],
+        "rejected_count":  len(payload.get("RejectedShippingServiceList", [])),
+    }
+
+
+@app.post("/api/amazon/fbm/label")
+async def purchase_fbm_label(
+    body: dict = Body(...),
+    current: dict = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """
+    Purchase a shipping label via Amazon MFN API.
+    Body: { order_id, items, ship_from, package, service_id, offer_id }
+    Returns: { shipment_id, label_b64, label_type, tracking_number, carrier }
+    Charges the Amazon seller account immediately.
+    """
+    import httpx as _hx
+    tenant_id = current.get("tenant_id", 1)
+    cred = _get_tenant_amazon_creds(tenant_id, db)
+    if not cred or not cred.sp_refresh_token:
+        raise HTTPException(503, "Amazon SP-API credentials not configured")
+    access_token = await _get_tenant_access_token(cred)
+    sp_base = _AMAZON_SP_BASE
+
+    req_details = _build_shipment_request(
+        body["order_id"], body["items"], body["ship_from"], body.get("package", {})
+    )
+
+    payload = {
+        "ShipmentRequestDetails": req_details,
+        "ShippingServiceId":      body["service_id"],
+        "LabelFormatOption":      {"IncludePackingSlipWithLabel": False},
+    }
+    if body.get("offer_id"):
+        payload["ShippingServiceOfferId"] = body["offer_id"]
+
+    async with _hx.AsyncClient(timeout=30) as client:
+        r = await client.post(
+            f"{sp_base}/mfn/v0/shipments",
+            json=payload,
+            headers={"x-amz-access-token": access_token, "Content-Type": "application/json"},
+        )
+
+    if r.status_code == 403:
+        raise HTTPException(403, "Amazon MFN API: insufficient permissions.")
+    if r.status_code not in (200, 201):
+        raise HTTPException(502, f"Amazon MFN API {r.status_code}: {r.text[:400]}")
+
+    data = r.json().get("payload", {})
+    label = data.get("Label", {})
+    fc    = label.get("FileContents", {})
+
+    return {
+        "shipment_id":      data.get("ShipmentId"),
+        "tracking_number":  data.get("TrackingId"),
+        "carrier":          data.get("ShippingService", {}).get("CarrierName"),
+        "label_b64":        fc.get("Contents", ""),
+        "label_type":       fc.get("FileType", "application/pdf"),
+        "status":           data.get("Status"),
+    }
+
 
 if os.path.isdir(STATIC_DIR):
     assets_dir = os.path.join(STATIC_DIR, "assets")

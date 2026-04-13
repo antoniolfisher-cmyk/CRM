@@ -60,6 +60,13 @@ export const api = {
   triggerInitialSync: () => req('POST', '/amazon/trigger-initial-sync', {}),
   getOnboardingSyncStatus: () => req('GET', '/onboarding/sync-status'),
 
+  // FBM Shipping Labels
+  getShipFrom:        ()       => req('GET', '/amazon/ship-from'),
+  saveShipFrom:       (data)   => req('PUT', '/amazon/ship-from', data),
+  getOrderShipInfo:   (id)     => req('GET', `/amazon/orders/${id}/ship-info`),
+  getFbmRates:        (data)   => req('POST', '/amazon/fbm/rates', data),
+  purchaseFbmLabel:   (data)   => req('POST', '/amazon/fbm/label', data),
+
   // Billing (Stripe) — tenant self-service
   getBillingPlans: () => req('GET', '/billing/plans'),
   createBillingCheckout: (plan) => req('POST', '/billing/checkout', { plan }),
