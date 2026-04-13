@@ -206,6 +206,20 @@ export default function Onboarding() {
               {syncing ? 'Importing your data…' : 'All set!'}
             </h1>
 
+            {/* Show OAuth callback errors so they aren't invisible */}
+            {error && (
+              <div className="mt-3 bg-red-50 border border-red-200 rounded-xl p-3 text-left">
+                <p className="text-xs font-semibold text-red-700 mb-1">⚠ Re-authorization error — token was NOT updated</p>
+                <p className="text-xs text-red-600 font-mono break-all">{error}</p>
+                {error === 'invalid_state' && (
+                  <p className="text-xs text-red-500 mt-1">The authorization session expired or the page was reloaded. Click "↻ Refresh API Permissions" again and authorize without refreshing the page.</p>
+                )}
+                {error === 'token_exchange_failed' && (
+                  <p className="text-xs text-red-500 mt-1">Amazon rejected the token exchange. Check that AMAZON_LWA_CLIENT_ID and AMAZON_LWA_CLIENT_SECRET are correct in Railway environment variables.</p>
+                )}
+              </div>
+            )}
+
             {/* Confirmed account */}
             {(urlSellerId || status?.seller_id || urlStoreName || status?.store_name) && (
               <div className="mt-4 mb-5 bg-green-50 border border-green-200 rounded-xl p-4 text-left">

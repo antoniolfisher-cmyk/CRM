@@ -3977,11 +3977,15 @@ async def amazon_oauth_callback(
         background_tasks = BackgroundTasks()
 
     try:
+        print(f"[oauth_callback] HIT — code={'yes' if spapi_oauth_code else 'MISSING'} state={state!r:.60} seller={selling_partner_id!r}", flush=True)
+
         if not spapi_oauth_code:
+            print("[oauth_callback] ERROR: no spapi_oauth_code", flush=True)
             return RedirectResponse("/onboarding/amazon?error=no_code")
 
         # ── Resolve tenant — verify signed state to prevent credential hijacking ─
         verified_tid = _verify_oauth_state(state) if state else None
+        print(f"[oauth_callback] state_verify → tenant_id={verified_tid}", flush=True)
         if verified_tid:
             # Normal path: signed state from admin-initiated OAuth
             tenant_id = verified_tid
@@ -3989,8 +3993,10 @@ async def amazon_oauth_callback(
             # Legacy fallback: unsigned numeric state (old installations)
             # Only allow for existing tenants, not arbitrary IDs
             tenant_id = int(state)
+            print(f"[oauth_callback] WARNING: unsigned state, tenant={tenant_id}", flush=True)
             log.warning("Amazon OAuth callback with unsigned state — tenant %s. Upgrade to signed OAuth URL.", tenant_id)
         else:
+            print(f"[oauth_callback] ERROR: invalid_state — raw state was {state!r:.80}", flush=True)
             log.error("Amazon OAuth callback with invalid state: %r", state)
             return RedirectResponse("/onboarding/amazon?error=invalid_state")
 
@@ -4017,13 +4023,16 @@ async def amazon_oauth_callback(
                     "client_secret":  lwa_client_secret,
                 },
             )
+        print(f"[oauth_callback] LWA token exchange → HTTP {r.status_code}", flush=True)
         if r.status_code != 200:
             log.error("Amazon token exchange failed: %s %s", r.status_code, r.text[:300])
+            print(f"[oauth_callback] LWA error body: {r.text[:300]}", flush=True)
             err = urllib.parse.quote(r.text[:120])
             return RedirectResponse(f"/onboarding/amazon?error=token_exchange_failed&detail={err}")
 
         tokens        = r.json()
         refresh_token = tokens.get("refresh_token", "")
+        print(f"[oauth_callback] refresh_token present={bool(refresh_token)} prefix={refresh_token[:8] if refresh_token else 'NONE'}", flush=True)
         if not refresh_token:
             return RedirectResponse("/onboarding/amazon?error=no_refresh_token")
 
@@ -4033,6 +4042,7 @@ async def amazon_oauth_callback(
             cred.sp_refresh_token = refresh_token
             cred.seller_id        = selling_partner_id or cred.seller_id
             cred.connected_at     = datetime.utcnow()
+            print(f"[oauth_callback] UPDATED existing cred for tenant {tenant_id}, connected_at=now", flush=True)
         else:
             cred = models.AmazonCredential(
                 tenant_id=tenant_id,
@@ -4042,8 +4052,10 @@ async def amazon_oauth_callback(
                 connected_at=datetime.utcnow(),
             )
             db.add(cred)
+            print(f"[oauth_callback] CREATED new cred for tenant {tenant_id}", flush=True)
         db.commit()
         db.refresh(cred)
+        print(f"[oauth_callback] DB commit OK — tenant {tenant_id} connected_at={cred.connected_at}", flush=True)
 
         # ── Fetch store name + update tenant branding ────────────────────────
         try:
