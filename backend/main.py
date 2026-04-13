@@ -1604,6 +1604,14 @@ async def get_dashboard_amazon_orders(
         "fbm_shipped":       fbm_shipped,
         "fbm_shipped_count": len(fbm_shipped),
         "fetched_at":        now.isoformat(),
+        "_debug": {
+            "tenant_id":      tenant_id,
+            "since":          since,
+            "fba_raw_count":  len(fba_raw),
+            "fbm_raw_count":  len(fbm_raw),
+            "fbm_raw_ids":    [o.get("AmazonOrderId") for o in fbm_raw],
+            "fbm_raw_statuses": [o.get("OrderStatus") for o in fbm_raw],
+        },
     }
 
 
