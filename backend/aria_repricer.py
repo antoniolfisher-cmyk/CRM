@@ -148,3 +148,4 @@ def scheduled_reprice():
         asyncio.run(run_all_async())
     except Exception as e:
         log.error("Aria scheduled reprice failed: %s", e)
+# repricer tenant isolation active
