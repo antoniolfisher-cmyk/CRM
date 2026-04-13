@@ -1611,12 +1611,15 @@ async def get_dashboard_amazon_orders(
         "fbm_shipped_count": len(fbm_shipped),
         "fetched_at":        now.isoformat(),
         "_debug": {
-            "tenant_id":            tenant_id,
-            "fba_raw_count":        len(fba_raw),
-            "fbm_raw_count":        len(fbm_raw),
-            "any_status_7d_count":  len(all_open_raw),
-            "any_status_7d_orders": [{"id": o.get("AmazonOrderId"), "status": o.get("OrderStatus"),
-                                      "ch": o.get("FulfillmentChannel")} for o in all_open_raw],
+            "tenant_id":           tenant_id,
+            "fba_raw_count":       len(fba_raw),
+            "fbm_raw_count":       len(fbm_raw),
+            "any_7d_count":        len(all_open_raw),
+            "any_7d_mfn_count":    sum(1 for o in all_open_raw if o.get("FulfillmentChannel") == "MFN"),
+            "any_7d_afn_count":    sum(1 for o in all_open_raw if o.get("FulfillmentChannel") == "AFN"),
+            "any_7d_null_ch":      sum(1 for o in all_open_raw if not o.get("FulfillmentChannel")),
+            "any_7d_mfn_statuses": list({o.get("OrderStatus") for o in all_open_raw if o.get("FulfillmentChannel") == "MFN"}),
+            "any_7d_null_statuses": list({o.get("OrderStatus") for o in all_open_raw if not o.get("FulfillmentChannel")}),
         },
     }
 

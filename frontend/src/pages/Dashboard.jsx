@@ -684,8 +684,10 @@ function AmazonOrdersPanel() {
                     <p className="text-xs text-violet-500 mt-1">{data.fbm_shipped_count} shipped recently</p>
                   )}
                   {data._debug && (
-                    <p className="text-xs text-orange-400 mt-1">
-                      dbg: fbm={data._debug.fbm_raw_count} any7d={data._debug.any_status_7d_count} t={data._debug.tenant_id}
+                    <p className="text-xs text-orange-400 mt-1 leading-tight">
+                      dbg: mfn={data._debug.any_7d_mfn_count} afn={data._debug.any_7d_afn_count} null={data._debug.any_7d_null_ch}<br/>
+                      mfnSt={JSON.stringify(data._debug.any_7d_mfn_statuses)}<br/>
+                      nullSt={JSON.stringify(data._debug.any_7d_null_statuses)}
                     </p>
                   )}
                 </div>
