@@ -387,13 +387,13 @@ class UngateRequest(Base):
     history              = Column(Text, default="[]")
     amazon_case_id       = Column(String, nullable=True)
     notes                = Column(Text, nullable=True)
+    invoice_filename     = Column(String, nullable=True)
     created_at           = Column(DateTime(timezone=True), server_default=func.now())
     updated_at           = Column(DateTime(timezone=True), onupdate=func.now())
 
-    product          = relationship("Product", back_populates="ungate_requests")
-    invoice_filename = Column(String, nullable=True)   # attached invoice filename (data stored in UngateInvoice)
-    invoice          = relationship("UngateInvoice", back_populates="request", uselist=False,
-                                    cascade="all, delete-orphan", lazy="noload")
+    product = relationship("Product", back_populates="ungate_requests")
+    invoice = relationship("UngateInvoice", back_populates="request", uselist=False,
+                           cascade="all, delete-orphan")
 
 
 class UngateInvoice(Base):
