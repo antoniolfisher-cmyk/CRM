@@ -4108,6 +4108,80 @@ def get_amazon_credentials(
     }
 
 
+@app.get("/api/amazon/test-finances")
+async def test_finances_connection(
+    current: dict = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Admin debug: test whether the stored refresh token has Finances scope.
+    Returns connected_at, token prefix, token exchange result, and raw Finances API response.
+    """
+    import httpx as _httpx
+    from datetime import timezone as _tz
+
+    tenant_id = current.get("tenant_id", 1)
+    cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
+    if not cred or not cred.sp_refresh_token:
+        return {"error": "No refresh token stored. Reconnect Amazon account."}
+
+    tok_raw = cred.sp_refresh_token
+    tok_preview = f"{tok_raw[:6]}…{tok_raw[-4:]}" if len(tok_raw) > 10 else "***"
+    connected_at = cred.connected_at.isoformat() if cred.connected_at else None
+
+    # Step 1: exchange refresh → access token
+    client_id     = cred.lwa_client_id     or os.getenv("AMAZON_LWA_CLIENT_ID", "")
+    client_secret = cred.lwa_client_secret or os.getenv("AMAZON_LWA_CLIENT_SECRET", "")
+    try:
+        async with _httpx.AsyncClient(timeout=15) as client:
+            lwa_r = await client.post(
+                _AMAZON_LWA_URL,
+                data={
+                    "grant_type":    "refresh_token",
+                    "refresh_token": tok_raw,
+                    "client_id":     client_id,
+                    "client_secret": client_secret,
+                },
+            )
+        if lwa_r.status_code != 200:
+            return {
+                "connected_at": connected_at,
+                "token_preview": tok_preview,
+                "step": "token_exchange",
+                "lwa_status": lwa_r.status_code,
+                "lwa_error": lwa_r.text[:300],
+            }
+        access_token = lwa_r.json()["access_token"]
+    except Exception as e:
+        return {"connected_at": connected_at, "token_preview": tok_preview, "step": "token_exchange", "error": str(e)}
+
+    # Step 2: call Finances API
+    now = datetime.now(_tz.utc)
+    finances_after = (now - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    sp_base = "https://sandbox.sellingpartnerapi-na.amazon.com" if cred.is_sandbox else "https://sellingpartnerapi-na.amazon.com"
+    try:
+        async with _httpx.AsyncClient(timeout=20) as client:
+            fin_r = await client.get(
+                f"{sp_base}/finances/v0/financialEventGroups",
+                params={"FinancialEventGroupStartedAfter": finances_after},
+                headers={"x-amz-access-token": access_token},
+            )
+        try:
+            fin_body = fin_r.json()
+        except Exception:
+            fin_body = fin_r.text[:300]
+        return {
+            "connected_at":    connected_at,
+            "token_preview":   tok_preview,
+            "step":            "finances_api",
+            "finances_status": fin_r.status_code,
+            "finances_body":   fin_body,
+            "success":         fin_r.status_code == 200,
+        }
+    except Exception as e:
+        return {"connected_at": connected_at, "token_preview": tok_preview, "step": "finances_api", "error": str(e)}
+
+
 @app.put("/api/amazon/credentials")
 def save_amazon_credentials(
     body: dict,

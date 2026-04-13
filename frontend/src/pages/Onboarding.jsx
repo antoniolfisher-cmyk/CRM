@@ -31,6 +31,11 @@ export default function Onboarding() {
 
   const [setupStoreName, setSetupStoreName] = useState('')
   const [savingStore, setSavingStore] = useState(false)
+  const [finTest, setFinTest]         = useState(null)
+  const [finTesting, setFinTesting]   = useState(false)
+  const [showTokenInput, setShowTokenInput] = useState(false)
+  const [manualToken, setManualToken] = useState('')
+  const [savingToken, setSavingToken] = useState(false)
 
   useEffect(() => {
     // Only admins can initiate Amazon OAuth; non-admins get 403, no URL needed
@@ -281,7 +286,7 @@ export default function Onboarding() {
                   Go to Dashboard →
                 </button>
                 {isAdmin && oauthUrl && (
-                  <div>
+                  <div className="space-y-2">
                     <a
                       href={oauthUrl}
                       className="w-full py-2.5 text-sm text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-xl border border-blue-200 transition-colors text-center block font-medium"
@@ -289,9 +294,82 @@ export default function Onboarding() {
                       ↻ Refresh API Permissions (re-authorize)
                     </a>
                     {status?.connected_at && (
-                      <p className="text-center text-xs text-gray-400 mt-1">
+                      <p className="text-center text-xs text-gray-400">
                         Token last saved: {new Date(status.connected_at).toLocaleString()}
                       </p>
+                    )}
+
+                    {/* Finances API test */}
+                    <button
+                      onClick={async () => {
+                        setFinTesting(true); setFinTest(null)
+                        try {
+                          const r = await fetch('/api/amazon/test-finances', {
+                            headers: { Authorization: `Bearer ${localStorage.getItem('crm_token')}` }
+                          })
+                          setFinTest(await r.json())
+                        } catch (e) { setFinTest({ error: e.message }) }
+                        setFinTesting(false)
+                      }}
+                      disabled={finTesting}
+                      className="w-full py-2 text-xs text-gray-500 hover:text-gray-700 hover:bg-gray-50 rounded-xl border border-gray-200 transition-colors disabled:opacity-50"
+                    >
+                      {finTesting ? 'Testing…' : '🔍 Test Finances API connection'}
+                    </button>
+                    {finTest && (
+                      <div className={`rounded-lg p-3 text-xs font-mono break-all ${finTest.success ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-red-50 text-red-800 border border-red-200'}`}>
+                        <p className="font-semibold mb-1">{finTest.success ? '✓ Finances API working' : '✗ Finances API failed'}</p>
+                        {finTest.connected_at && <p>Token saved: {new Date(finTest.connected_at).toLocaleString()}</p>}
+                        {finTest.token_preview && <p>Token: {finTest.token_preview}</p>}
+                        {finTest.lwa_error && <p>LWA error: {finTest.lwa_error}</p>}
+                        {finTest.finances_status && <p>HTTP {finTest.finances_status}</p>}
+                        {finTest.finances_body && !finTest.success && <p>{JSON.stringify(finTest.finances_body)}</p>}
+                        {finTest.error && <p>{finTest.error}</p>}
+                      </div>
+                    )}
+
+                    {/* Manual refresh token paste (last resort) */}
+                    {!showTokenInput ? (
+                      <button
+                        onClick={() => setShowTokenInput(true)}
+                        className="w-full py-2 text-xs text-gray-400 hover:text-gray-600 transition-colors"
+                      >
+                        Paste refresh token manually →
+                      </button>
+                    ) : (
+                      <div className="border border-gray-200 rounded-xl p-3 space-y-2">
+                        <p className="text-xs font-medium text-gray-700">Paste new SP-API Refresh Token</p>
+                        <p className="text-xs text-gray-400">From Amazon Developer Central → your app → "Generate Refresh Token" after adding the Finances role.</p>
+                        <input
+                          type="text"
+                          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-400"
+                          placeholder="Atzr|IwEB…"
+                          value={manualToken}
+                          onChange={e => setManualToken(e.target.value)}
+                        />
+                        <div className="flex gap-2">
+                          <button
+                            disabled={savingToken || !manualToken.trim()}
+                            onClick={async () => {
+                              setSavingToken(true)
+                              try {
+                                await api.saveAmazonCredentials({ sp_refresh_token: manualToken.trim() })
+                                const updated = await api.getAmazonCredentials()
+                                setStatus(updated)
+                                setManualToken('')
+                                setShowTokenInput(false)
+                                setFinTest(null)
+                                alert('Refresh token saved. Click "Test Finances API connection" to verify.')
+                              } catch (e) { alert(e.message) }
+                              setSavingToken(false)
+                            }}
+                            className="flex-1 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded-lg font-semibold disabled:opacity-50"
+                          >
+                            {savingToken ? 'Saving…' : 'Save token'}
+                          </button>
+                          <button onClick={() => { setShowTokenInput(false); setManualToken('') }} className="px-3 py-1.5 text-xs text-gray-500 hover:text-gray-700">Cancel</button>
+                        </div>
+                      </div>
                     )}
                   </div>
                 )}

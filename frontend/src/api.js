@@ -57,6 +57,7 @@ export const api = {
       return r.json()
     })
   },
+  testFinancesApi: () => req('GET', '/amazon/test-finances'),
   triggerInitialSync: () => req('POST', '/amazon/trigger-initial-sync', {}),
   getOnboardingSyncStatus: () => req('GET', '/onboarding/sync-status'),
 
