@@ -125,8 +125,9 @@ try:
                     ("compete_value",  "DOUBLE PRECISION"),
                     ("winning_action", "VARCHAR DEFAULT 'raise_pct'"),
                     ("winning_value",  "DOUBLE PRECISION"),
-                    ("profit_floor",   "DOUBLE PRECISION"),
-                    ("min_roi",        "DOUBLE PRECISION"),
+                    ("profit_floor",    "DOUBLE PRECISION"),
+                    ("min_roi",         "DOUBLE PRECISION"),
+                    ("aggressiveness",  "INTEGER"),
                 ]:
                     if _col not in _cols:
                         try:

@@ -162,6 +162,7 @@ function StrategyForm({ initial, strategyType, onSave, onClose }) {
     max_price: initial?.max_price ?? '',
     profit_floor: initial?.profit_floor ?? '',
     min_roi: initial?.min_roi ?? '',
+    aggressiveness: initial?.aggressiveness ?? 5,
     is_active: initial?.is_active ?? true,
     is_default: initial?.is_default ?? false,
     notes: initial?.notes || '',
@@ -192,6 +193,7 @@ function StrategyForm({ initial, strategyType, onSave, onClose }) {
       max_price: nn(form.max_price),
       profit_floor: nn(form.profit_floor),
       min_roi: nn(form.min_roi),
+      aggressiveness: isAI ? Number(form.aggressiveness) : null,
       is_active: form.is_active,
       is_default: form.is_default,
       notes: form.notes || null,
@@ -287,6 +289,28 @@ function StrategyForm({ initial, strategyType, onSave, onClose }) {
 
       {isAI ? (
         <div className="space-y-4">
+          <SectionHead>Aggressiveness</SectionHead>
+          <div className="rounded-lg border border-gray-200 p-4">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs text-gray-500">Max Profit</span>
+              <span className="text-sm font-semibold text-violet-700">{form.aggressiveness}/10</span>
+              <span className="text-xs text-gray-500">Win Buy Box</span>
+            </div>
+            <input
+              type="range" min="1" max="10" step="1"
+              value={form.aggressiveness}
+              onChange={set('aggressiveness')}
+              className="w-full accent-violet-600"
+            />
+            <p className="text-xs text-gray-400 mt-2">
+              {form.aggressiveness <= 3
+                ? 'Conservative — Aria maximises profit margin, only lowers price when competition forces it.'
+                : form.aggressiveness <= 6
+                  ? 'Balanced — Aria targets the Buy Box when the margin cost is small, raises when winning.'
+                  : 'Aggressive — Aria prices to win the Buy Box at any margin above your floor. Best for high-volume, fast-moving SKUs.'}
+            </p>
+          </div>
+
           <SectionHead>Minimum price protection</SectionHead>
 
           {/* ROI floor */}
@@ -668,6 +692,7 @@ export default function Repricer() {
                           {s.winning_value != null && s.winning_action === 'raise_amt' && ` $${s.winning_value.toFixed(2)}`}
                         </span>
                       )}
+                      {s.aggressiveness != null && <span>Aggressiveness {s.aggressiveness}/10</span>}
                       {s.min_roi != null && <span>Min ROI {s.min_roi}%</span>}
                       {s.min_price != null && <span>Min ${s.min_price.toFixed(2)}</span>}
                       {s.max_price != null && <span>Max ${s.max_price.toFixed(2)}</span>}

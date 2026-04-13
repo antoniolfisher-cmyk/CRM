@@ -224,29 +224,82 @@ async def price_product(product: models.Product, strategy) -> dict:
     # --- Maximum price ---
     max_price = (strategy.max_price if strategy else None) or round(buy_box * 1.15, 2)
 
-    prompt = f"""You are Aria, an expert Amazon FBA repricing AI. Recommend the optimal listing price for this product to balance winning the Buy Box with healthy profit margins.
+    # ── Competitive context ───────────────────────────────────────────────
+    num_sellers   = product.num_sellers or 0
+    live_price    = getattr(product, "aria_live_price", None) or 0
+    winning_box   = live_price > 0 and live_price <= buy_box
+
+    # 90-day price history from Keepa
+    price_90_high = getattr(product, "price_90_high", None) or buy_box
+    price_90_low  = getattr(product, "price_90_low",  None) or buy_box
+    bsr           = product.keepa_bsr
+    monthly_sales = product.estimated_sales
+
+    # Aggressiveness (1=max profit, 10=win Buy Box at any cost)
+    aggressiveness = (strategy.aggressiveness if strategy and hasattr(strategy, "aggressiveness") and strategy.aggressiveness else 5)
+
+    if aggressiveness <= 3:
+        goal = "Maximize profit margin. Only lower from max if competition forces it. Winning the Buy Box is secondary."
+    elif aggressiveness <= 6:
+        goal = "Balance Buy Box competitiveness with healthy profit. Prefer winning the Buy Box when the cost in margin is small."
+    else:
+        goal = "Win the Buy Box aggressively. Price as low as needed (down to Min Price) to beat competitors and capture sales volume."
+
+    # Competition signal
+    if num_sellers == 0 or num_sellers == 1:
+        competition = "No or single competitor — strong pricing power, push toward max."
+    elif num_sellers <= 3:
+        competition = f"Only {num_sellers} sellers — limited competition, you have room to price high."
+    elif num_sellers <= 8:
+        competition = f"{num_sellers} sellers — moderate competition, balance price and wins."
+    else:
+        competition = f"{num_sellers} sellers — crowded market, be more aggressive to stand out."
+
+    # Buy Box status
+    if winning_box:
+        box_status = f"YOU ARE CURRENTLY WINNING the Buy Box at ${live_price:.2f}. Protect it, but try to raise price toward the max."
+    elif live_price > 0:
+        box_status = f"You are NOT winning the Buy Box (your price ${live_price:.2f} vs. Buy Box ${buy_box:.2f}). Price to compete."
+    else:
+        box_status = "No prior price set — this is the first reprice."
+
+    prompt = f"""You are Aria, an expert Amazon FBA AI repricer. Your job is to choose the single best listing price for maximum business outcome.
 
 PRODUCT: {product.product_name}
 ASIN: {product.asin or 'N/A'}
 
+STRATEGY GOAL (aggressiveness {aggressiveness}/10):
+{goal}
+
+BUY BOX STATUS:
+{box_status}
+
 MARKET DATA:
-- Current Buy Box Price: ${buy_box:.2f}
-- Competing Sellers: {product.num_sellers or 'Unknown'}
-- Best Seller Rank: {'#' + f'{product.keepa_bsr:,}' if product.keepa_bsr else 'Unknown'}{f' in {product.keepa_category}' if product.keepa_category else ''}
-- Est. Monthly Sales: {int(product.estimated_sales) if product.estimated_sales else 'Unknown'} units/mo
+- Current Buy Box Price:  ${buy_box:.2f}
+- 90-Day Price Range:     ${price_90_low:.2f} – ${price_90_high:.2f}
+- Competition:            {competition}
+- Best Seller Rank:       {'#' + f'{bsr:,}' if bsr else 'Unknown'}{f' ({product.keepa_category})' if product.keepa_category else ''}
+- Est. Monthly Sales:     {int(monthly_sales) if monthly_sales else 'Unknown'} units/mo
 
 COST STRUCTURE:
-- Buy Cost: ${buy_cost:.2f}
+- Buy Cost:    ${buy_cost:.2f}
 - Amazon Fees: ${amazon_fee:.2f}
-- Break-even: ${breakeven:.2f}
+- Break-even:  ${breakeven:.2f}
+- Profit @ min: ${round(min_price - breakeven, 2):.2f}/unit
+- Profit @ max: ${round(max_price - breakeven, 2):.2f}/unit
 
-CONSTRAINTS:
-- Min Price: ${min_price:.2f}
-- Max Price: ${max_price:.2f}
-- Min Profit/unit: ${profit_floor:.2f}
+HARD CONSTRAINTS (you MUST stay within these):
+- Min Price: ${min_price:.2f}  ← never go below this
+- Max Price: ${max_price:.2f}  ← never go above this
 
-Respond with ONLY valid JSON (no markdown):
-{{"price": 29.99, "reasoning": "One concise sentence."}}"""
+PRICING INTELLIGENCE:
+- If the 90-day high is well above the current Buy Box, the market can support higher prices — consider pricing above the Buy Box when aggressiveness is low.
+- If BSR is strong (low number) and sales are high, demand is healthy — you have pricing power.
+- If many sellers compete, staying at or just below the Buy Box is critical.
+- Never sacrifice below the min price — it protects your ROI floor.
+
+Respond with ONLY valid JSON (no markdown, no explanation outside the JSON):
+{{"price": 29.99, "reasoning": "One concise sentence explaining the decision."}}"""
 
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     msg = client.messages.create(

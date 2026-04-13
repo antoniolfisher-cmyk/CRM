@@ -282,7 +282,8 @@ class RepricerStrategy(Base):
     min_price      = Column(Float, nullable=True)
     max_price      = Column(Float, nullable=True)
     profit_floor   = Column(Float, nullable=True)
-    min_roi        = Column(Float, nullable=True)   # minimum ROI % (e.g. 5 = 5%)
+    min_roi        = Column(Float, nullable=True)     # minimum ROI % (e.g. 5 = 5%)
+    aggressiveness = Column(Integer, nullable=True)   # 1=max profit … 10=win Buy Box
     is_active      = Column(Boolean, default=True)
     is_default     = Column(Boolean, default=False)
     notes          = Column(Text, nullable=True)
