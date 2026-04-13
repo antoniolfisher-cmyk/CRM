@@ -360,12 +360,12 @@ function AmazonSalesPanel() {
           <div className="card p-5 border-l-4 border-green-400">
             <div className="flex items-start justify-between mb-3">
               <div>
-                <p className="text-xs font-semibold text-green-600 uppercase tracking-wider">Payments</p>
-                {data.payment_balance !== null ? (
-                  <p className="text-4xl font-bold text-gray-900 mt-1">{fmt$(data.payment_balance)}</p>
-                ) : (
-                  <p className="text-sm font-semibold text-gray-400 mt-2">Unavailable</p>
-                )}
+                <p className="text-xs font-semibold text-green-600 uppercase tracking-wider">
+                  {data.payment_balance !== null ? 'Amazon Balance' : 'Period Revenue'}
+                </p>
+                <p className="text-4xl font-bold text-gray-900 mt-1">
+                  {fmt$(data.payment_balance !== null ? data.payment_balance : data.revenue)}
+                </p>
               </div>
               <div className="w-10 h-10 bg-green-50 text-green-600 rounded-lg flex items-center justify-center shrink-0">
                 <PaymentIcon />
@@ -377,10 +377,8 @@ function AmazonSalesPanel() {
                   <span className="w-2 h-2 bg-green-400 rounded-full inline-block"></span>
                   <p className="text-xs text-gray-500">Total balance held by Amazon</p>
                 </div>
-              ) : data.finances_error ? (
-                <p className="text-xs text-red-500 break-all">{data.finances_error}</p>
               ) : (
-                <p className="text-xs text-gray-400">No data</p>
+                <p className="text-xs text-gray-400">From orders · Finances API pending Amazon approval</p>
               )}
             </div>
           </div>
