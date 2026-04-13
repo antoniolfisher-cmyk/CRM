@@ -1544,25 +1544,17 @@ async def get_dashboard_amazon_orders(
 
     access_token = await _get_tenant_access_token(cred)
 
-    # Use separate explicit FulfillmentChannels queries so brand-new orders
-    # (where Amazon may omit the FulfillmentChannel field) are captured correctly.
-    fba_open_params = [
+    # Single open-orders query — no FulfillmentChannels filter so Amazon returns
+    # all open orders including brand-new ones where FulfillmentChannel may be null.
+    # We classify FBA vs FBM on the Python side.
+    open_params = [
         ("MarketplaceIds",  mkt_id),
-        ("CreatedAfter",    since),
+        ("LastUpdatedAfter", since),
         ("OrderStatuses",   "Pending"),
         ("OrderStatuses",   "Unshipped"),
         ("OrderStatuses",   "PartiallyShipped"),
-        ("FulfillmentChannels", "AFN"),
     ]
-    fbm_open_params = [
-        ("MarketplaceIds",  mkt_id),
-        ("CreatedAfter",    since),
-        ("OrderStatuses",   "Pending"),
-        ("OrderStatuses",   "Unshipped"),
-        ("OrderStatuses",   "PartiallyShipped"),
-        ("FulfillmentChannels", "MFN"),
-    ]
-    # Also fetch FBM orders shipped recently (last 7 days) so seller can see fulfilled FBM activity
+    # FBM orders shipped recently (last 7 days)
     fbm_shipped_since = (now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
     fbm_shipped_params = [
         ("MarketplaceIds",  mkt_id),
@@ -1570,20 +1562,10 @@ async def get_dashboard_amazon_orders(
         ("OrderStatuses",   "Shipped"),
         ("FulfillmentChannels", "MFN"),
     ]
-    # No status filter, no channel filter — broadest possible net, last 7 days
-    all_open_params = [
-        ("MarketplaceIds",   mkt_id),
-        ("LastUpdatedAfter", (now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")),
-    ]
-    fba_raw, fbm_raw, fbm_shipped_raw, all_open_raw = await asyncio.gather(
-        _amazon_fetch_orders(access_token, fba_open_params),
-        _amazon_fetch_orders(access_token, fbm_open_params),
+    open_raw, fbm_shipped_raw = await asyncio.gather(
+        _amazon_fetch_orders(access_token, open_params),
         _amazon_fetch_orders(access_token, fbm_shipped_params),
-        _amazon_fetch_orders(access_token, all_open_params),
     )
-    print(f"[orders] tenant={tenant_id} fba_raw={len(fba_raw)} fbm_raw={len(fbm_raw)} fbm_shipped_raw={len(fbm_shipped_raw)} all_open={len(all_open_raw)}", flush=True)
-    for o in all_open_raw:
-        print(f"[orders]   all: {o.get('AmazonOrderId')} status={o.get('OrderStatus')} channel={o.get('FulfillmentChannel')} created={o.get('PurchaseDate')}", flush=True)
 
     def _fmt(o):
         total_obj = o.get("OrderTotal") or {}
@@ -1597,8 +1579,12 @@ async def get_dashboard_amazon_orders(
             "currency":    total_obj.get("CurrencyCode") or "USD",
         }
 
-    fba = sorted([_fmt(o) for o in fba_raw], key=lambda x: x["date"], reverse=True)
-    fbm = sorted([_fmt(o) for o in fbm_raw], key=lambda x: x["date"], reverse=True)
+    # AFN = FBA. MFN or missing FulfillmentChannel = FBM (Amazon omits the field
+    # on brand-new orders that haven't been confirmed yet).
+    fba = sorted([_fmt(o) for o in open_raw if o.get("FulfillmentChannel") == "AFN"],
+                 key=lambda x: x["date"], reverse=True)
+    fbm = sorted([_fmt(o) for o in open_raw if o.get("FulfillmentChannel") != "AFN"],
+                 key=lambda x: x["date"], reverse=True)
     fbm_shipped = sorted([_fmt(o) for o in fbm_shipped_raw],
                          key=lambda x: x["date"], reverse=True)
 
@@ -1610,17 +1596,6 @@ async def get_dashboard_amazon_orders(
         "fbm_shipped":       fbm_shipped,
         "fbm_shipped_count": len(fbm_shipped),
         "fetched_at":        now.isoformat(),
-        "_debug": {
-            "tenant_id":           tenant_id,
-            "fba_raw_count":       len(fba_raw),
-            "fbm_raw_count":       len(fbm_raw),
-            "any_7d_count":        len(all_open_raw),
-            "any_7d_mfn_count":    sum(1 for o in all_open_raw if o.get("FulfillmentChannel") == "MFN"),
-            "any_7d_afn_count":    sum(1 for o in all_open_raw if o.get("FulfillmentChannel") == "AFN"),
-            "any_7d_null_ch":      sum(1 for o in all_open_raw if not o.get("FulfillmentChannel")),
-            "any_7d_mfn_statuses": list({o.get("OrderStatus") for o in all_open_raw if o.get("FulfillmentChannel") == "MFN"}),
-            "any_7d_null_statuses": list({o.get("OrderStatus") for o in all_open_raw if not o.get("FulfillmentChannel")}),
-        },
     }
 
 
