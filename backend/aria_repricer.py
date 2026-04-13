@@ -26,17 +26,16 @@ def aria_configured() -> bool:
     return bool(os.getenv("ANTHROPIC_API_KEY", "").strip())
 
 
-def _get_strategy(db):
-    """Return the active Aria strategy, or None."""
-    s = db.query(models.RepricerStrategy).filter(
-        models.RepricerStrategy.strategy_type == "aria",
+def _get_strategy(db, tenant_id=None):
+    """Return the active Aria strategy for the given tenant, or None."""
+    base = db.query(models.RepricerStrategy).filter(
         models.RepricerStrategy.is_active == True,
-    ).first()
+    )
+    if tenant_id is not None:
+        base = base.filter(models.RepricerStrategy.tenant_id == tenant_id)
+    s = base.filter(models.RepricerStrategy.strategy_type == "aria").first()
     if not s:
-        s = db.query(models.RepricerStrategy).filter(
-            models.RepricerStrategy.is_default == True,
-            models.RepricerStrategy.is_active == True,
-        ).first()
+        s = base.filter(models.RepricerStrategy.is_default == True).first()
     return s
 
 
@@ -91,21 +90,24 @@ Respond with ONLY valid JSON (no markdown):
     return {"price": round(price, 2), "reasoning": data.get("reasoning", "")}
 
 
-async def run_all_async(force: bool = False) -> dict:
+async def run_all_async(force: bool = False, tenant_id=None) -> dict:
     """
-    Reprice all eligible products.
+    Reprice all eligible products for a specific tenant.
     Smart trigger: skips products whose Buy Box price hasn't changed since
     the last Aria run (unless force=True).
     Returns summary dict.
     """
     db = SessionLocal()
     try:
-        strategy = _get_strategy(db)
+        strategy = _get_strategy(db, tenant_id=tenant_id)
 
-        candidates = db.query(models.Product).filter(
+        q = db.query(models.Product).filter(
             models.Product.buy_box > 0,
             models.Product.buy_cost > 0,
-        ).all()
+        )
+        if tenant_id is not None:
+            q = q.filter(models.Product.tenant_id == tenant_id)
+        candidates = q.all()
 
         repriced = skipped = errors = 0
 

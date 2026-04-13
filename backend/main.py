@@ -613,7 +613,8 @@ async def aria_run_one(product_id: int, db: Session = Depends(get_db), current: 
         raise HTTPException(404, "Product not found")
     if not product.buy_box:
         raise HTTPException(400, "Product needs a Buy Box price to reprice")
-    strategy = aria_repricer._get_strategy(db)
+    tid = current.get("tenant_id")
+    strategy = aria_repricer._get_strategy(db, tenant_id=tid)
     result = await aria_repricer.price_product(product, strategy)
     product.aria_suggested_price = result["price"]
     product.aria_suggested_at    = datetime.utcnow()
@@ -628,7 +629,7 @@ async def aria_run_one(product_id: int, db: Session = Depends(get_db), current: 
 async def aria_run_all(force: bool = False, db: Session = Depends(get_db), current: dict = Depends(require_admin)):
     if not aria_repricer.aria_configured():
         raise HTTPException(503, "ANTHROPIC_API_KEY is not configured")
-    result = await aria_repricer.run_all_async(force=force)
+    result = await aria_repricer.run_all_async(force=force, tenant_id=current.get("tenant_id"))
     return result
 
 
