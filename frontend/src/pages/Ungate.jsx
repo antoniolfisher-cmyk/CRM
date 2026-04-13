@@ -98,9 +98,12 @@ function RequestsTab() {
                         {STATUS_META[r.status]?.label}
                       </span>
                     </div>
-                    <div className="flex items-center gap-3 mt-2">
+                    <div className="flex items-center gap-3 mt-2 flex-wrap">
                       <span className="text-xs text-gray-400">Template {r.current_template_num}/10</span>
                       {r.category && <span className="text-xs text-gray-400">{r.category}</span>}
+                      {r.amazon_case_id && (
+                        <span className="text-xs font-mono font-medium text-orange-700 bg-orange-50 border border-orange-200 rounded px-1.5 py-0.5">Case #{r.amazon_case_id}</span>
+                      )}
                     </div>
                     <div className="mt-2 flex gap-1">
                       {Array.from({ length: 10 }, (_, i) => i + 1).map(n => (
@@ -158,6 +161,8 @@ function RequestDetail({ request: r, onUpdate, onDelete }) {
   const [applyLink, setApplyLink] = useState(null)
   const [invoiceFilename, setInvoiceFilename] = useState(r.invoice_filename || null)
   const [invoiceUploading, setInvoiceUploading] = useState(false)
+  const [editingCase, setEditingCase] = useState(false)
+  const [caseInput, setCaseInput]     = useState(r.amazon_case_id || '')
 
   // Fetch apply link from requirements when loaded
   useEffect(() => {
@@ -253,6 +258,15 @@ function RequestDetail({ request: r, onUpdate, onDelete }) {
     onDelete()
   }
 
+  const saveCaseId = async (e) => {
+    e.preventDefault()
+    try {
+      const updated = await api.updateUngateCase(r.id, caseInput.trim())
+      onUpdate(updated)
+      setEditingCase(false)
+    } catch (err) { alert(err.message) }
+  }
+
   const copy = () => {
     if (!rendered) return
     navigator.clipboard.writeText(rendered.body)
@@ -274,6 +288,30 @@ function RequestDetail({ request: r, onUpdate, onDelete }) {
               ASIN: <a href={`https://www.amazon.com/dp/${r.asin}`} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{r.asin} ↗</a>
               {r.category && <span className="ml-3 text-gray-400">{r.category}</span>}
             </p>
+            {/* Amazon Case ID */}
+            <div className="flex items-center gap-2 mt-1.5">
+              <span className="text-xs text-gray-400">Amazon Case #:</span>
+              {editingCase ? (
+                <form onSubmit={saveCaseId} className="flex items-center gap-1.5">
+                  <input
+                    autoFocus
+                    className="text-xs font-mono border border-blue-300 rounded px-2 py-0.5 w-40 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                    value={caseInput}
+                    onChange={e => setCaseInput(e.target.value)}
+                    placeholder="e.g. 12345678901"
+                  />
+                  <button type="submit" className="text-xs text-blue-600 hover:text-blue-800 font-medium">Save</button>
+                  <button type="button" onClick={() => setEditingCase(false)} className="text-xs text-gray-400 hover:text-gray-600">Cancel</button>
+                </form>
+              ) : r.amazon_case_id ? (
+                <span className="flex items-center gap-1.5">
+                  <span className="text-xs font-mono font-semibold text-orange-700 bg-orange-50 border border-orange-200 rounded px-2 py-0.5">{r.amazon_case_id}</span>
+                  <button onClick={() => { setCaseInput(r.amazon_case_id); setEditingCase(true) }} className="text-xs text-gray-400 hover:text-gray-600">Edit</button>
+                </span>
+              ) : (
+                <button onClick={() => { setCaseInput(''); setEditingCase(true) }} className="text-xs text-blue-500 hover:text-blue-700 underline-offset-2 underline">+ Add case number</button>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_META[r.status]?.color || ''}`}>
