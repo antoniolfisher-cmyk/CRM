@@ -13,7 +13,7 @@ import os
 import json
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import anthropic
 import httpx
@@ -367,9 +367,23 @@ async def run_all_async(force: bool = False, tenant_id=None) -> dict:
         error_details = []
         now = datetime.utcnow()
 
+        # Re-evaluate every 24h at minimum even if the Buy Box hasn't changed.
+        # Without this, Aria prices a product once and never touches it again until
+        # the Buy Box moves — defeating the purpose of hourly scheduling.
+        REPRICE_EVERY_H = 24
+        stale_cutoff = datetime.now(timezone.utc) - timedelta(hours=REPRICE_EVERY_H)
+
         for p in candidates:
-            # Smart trigger: skip if buy box unchanged since last run
-            if not force and p.aria_last_buy_box is not None and p.aria_last_buy_box == p.buy_box:
+            buy_box_unchanged = (p.aria_last_buy_box is not None and p.aria_last_buy_box == p.buy_box)
+
+            # Normalise aria_suggested_at to UTC-aware for comparison
+            suggested_at = p.aria_suggested_at
+            if suggested_at and suggested_at.tzinfo is None:
+                suggested_at = suggested_at.replace(tzinfo=timezone.utc)
+            repriced_recently = suggested_at is not None and suggested_at > stale_cutoff
+
+            # Skip only if nothing has changed AND we repriced within the window
+            if not force and buy_box_unchanged and repriced_recently:
                 skipped += 1
                 continue
 

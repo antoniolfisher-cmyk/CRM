@@ -1032,6 +1032,8 @@ def create_user(data: schemas.UserCreate, db: Session = Depends(get_db), current
         email=data.email,
         notify_email=data.notify_email,
         tenant_id=current.get("tenant_id"),  # inherit tenant from the creating admin
+        page_permissions=data.page_permissions,
+        dashboard_sections=data.dashboard_sections,
     )
     db.add(user)
     db.commit()
@@ -1077,6 +1079,12 @@ def update_user(
         user.email = data.email
     if data.notify_email is not None:
         user.notify_email = data.notify_email
+    # page_permissions: explicit value saves as-is; omitted (None via exclude_unset)
+    # means no change. An empty string clears permissions (gives all access).
+    if "page_permissions" in data.model_fields_set:
+        user.page_permissions = data.page_permissions
+    if "dashboard_sections" in data.model_fields_set:
+        user.dashboard_sections = data.dashboard_sections
     db.commit()
     db.refresh(user)
     return user
