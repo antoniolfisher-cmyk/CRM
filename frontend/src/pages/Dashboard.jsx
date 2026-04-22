@@ -89,12 +89,14 @@ function fmt$(n) {
 // ─── Amazon Sales Panel ───────────────────────────────────────────────────────
 
 function AmazonSalesPanel() {
-  const [period, setPeriod]   = useState('today')
-  const [data, setData]       = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError]     = useState(null)
-  const [open, setOpen]       = useState(false)
-  const [modal, setModal]     = useState(null)
+  const [period, setPeriod]       = useState('today')
+  const [data, setData]           = useState(null)
+  const [loading, setLoading]     = useState(true)
+  const [error, setError]         = useState(null)
+  const [open, setOpen]           = useState(false)
+  const [modal, setModal]         = useState(null)
+  const [monthData, setMonthData] = useState(null)
+  const [monthLoading, setMonthLoading] = useState(true)
 
   const fetchData = useCallback(async (p) => {
     setLoading(true); setError(null)
@@ -103,7 +105,19 @@ function AmazonSalesPanel() {
     finally { setLoading(false) }
   }, [])
 
+  const fetchMonthData = useCallback(async () => {
+    try { setMonthData(await api.getDashboardAmazonSales('month')) }
+    catch { /* silent — tile shows dashes */ }
+    finally { setMonthLoading(false) }
+  }, [])
+
   useEffect(() => { fetchData(period) }, [period, fetchData])
+
+  useEffect(() => {
+    fetchMonthData()
+    const id = setInterval(fetchMonthData, 5 * 60 * 1000)
+    return () => clearInterval(id)
+  }, [fetchMonthData])
 
   const selectPeriod = (p) => { setPeriod(p); setOpen(false) }
   const periodLabel  = PERIODS.find(p => p.key === period)?.label ?? 'Today'
@@ -199,25 +213,37 @@ function AmazonSalesPanel() {
             </div>
           </button>
 
-          {/* Open Orders tile */}
-          <button onClick={() => setModal('open')} className="card p-5 border-l-4 border-blue-400 text-left hover:shadow-md hover:border-blue-500 transition-all group">
+          {/* Product Sales This Month tile */}
+          <div className="card p-5 border-l-4 border-violet-400">
             <div className="flex items-start justify-between mb-3">
               <div>
-                <p className="text-xs font-semibold text-blue-600 uppercase tracking-wider">Open Orders</p>
-                <p className="text-4xl font-bold text-gray-900 mt-1">{data.open_order_count.toLocaleString()}</p>
+                <p className="text-xs font-semibold text-violet-600 uppercase tracking-wider">Product Sales This Month</p>
+                {monthLoading
+                  ? <div className="h-10 w-28 bg-gray-200 rounded animate-pulse mt-1" />
+                  : <p className="text-4xl font-bold text-gray-900 mt-1">
+                      {monthData ? fmt$(monthData.revenue) : <span className="text-2xl text-gray-400">—</span>}
+                    </p>
+                }
               </div>
-              <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-lg flex items-center justify-center shrink-0 group-hover:bg-blue-100 transition-colors">
-                <OpenOrdersIcon />
-              </div>
-            </div>
-            <div className="pt-3 border-t border-gray-100">
-              <p className="text-xs text-gray-400 mb-1">Awaiting fulfilment</p>
-              <div className="flex items-center gap-2">
-                <div className="h-2 rounded-full bg-blue-400" style={{ width: data.total_orders > 0 ? `${Math.round((data.open_order_count / data.total_orders) * 100)}%` : '0%', minWidth: data.open_order_count > 0 ? 8 : 0, maxWidth: '100%', transition: 'width 0.4s' }} />
-                <span className="text-xs text-gray-500">{data.total_orders > 0 ? `${Math.round((data.open_order_count / data.total_orders) * 100)}%` : '—'} of period orders</span>
+              <div className="w-10 h-10 bg-violet-50 text-violet-600 rounded-lg flex items-center justify-center shrink-0">
+                <SalesChartIcon />
               </div>
             </div>
-          </button>
+            <div className="grid grid-cols-2 gap-3 pt-3 border-t border-gray-100">
+              <div>
+                <p className="text-xs text-gray-400">Units sold</p>
+                <p className="text-lg font-bold text-gray-800">{monthData ? monthData.units_sold.toLocaleString() : '—'}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-400">Orders</p>
+                <p className="text-lg font-bold text-gray-800">{monthData ? monthData.total_orders.toLocaleString() : '—'}</p>
+              </div>
+            </div>
+            <div className="mt-2 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 bg-violet-400 rounded-full inline-block animate-pulse" />
+              <p className="text-xs text-gray-400">Live · updates every 5m</p>
+            </div>
+          </div>
 
           {/* Amazon Balance tile */}
           <button onClick={() => setModal('balance')} className="card p-5 border-l-4 border-green-400 text-left hover:shadow-md hover:border-green-500 transition-all group">
@@ -252,7 +278,6 @@ function AmazonSalesPanel() {
             <div className="flex items-center justify-between p-5 border-b border-gray-100 shrink-0">
               <div>
                 {modal === 'sales'   && <h3 className="font-semibold text-gray-900">Sales — {periodLabel}</h3>}
-                {modal === 'open'    && <h3 className="font-semibold text-gray-900">Open Orders</h3>}
                 {modal === 'balance' && <h3 className="font-semibold text-gray-900">Amazon Balance</h3>}
                 <p className="text-xs text-gray-400 mt-0.5">Live from Amazon · as of {new Date(data.fetched_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
               </div>
@@ -278,30 +303,6 @@ function AmazonSalesPanel() {
                             <td className="px-4 py-2.5"><span className={`text-xs px-1.5 py-0.5 rounded font-medium ${o.status === 'Shipped' ? 'bg-green-50 text-green-700' : o.status === 'Unshipped' ? 'bg-yellow-50 text-yellow-700' : 'bg-gray-100 text-gray-600'}`}>{o.status}</span></td>
                             <td className="px-4 py-2.5 text-right font-semibold text-gray-900">{fmt$(o.amount)}</td>
                             <td className="px-4 py-2.5 text-right text-gray-600">{o.units}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-              )}
-              {modal === 'open' && (
-                <div>
-                  <div className="p-4 border-b border-gray-100 bg-blue-50">
-                    <p className="text-sm text-blue-700 font-medium">{data.open_order_count} order{data.open_order_count !== 1 ? 's' : ''} awaiting fulfilment</p>
-                  </div>
-                  {(data.open_orders || []).length === 0 ? (
-                    <p className="text-sm text-gray-400 text-center py-8">No open orders right now</p>
-                  ) : (
-                    <table className="w-full text-sm">
-                      <thead><tr className="border-b border-gray-100"><th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">Order ID</th><th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">Status</th><th className="text-right px-4 py-2.5 text-xs font-medium text-gray-500">Amount</th><th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">Ship To</th></tr></thead>
-                      <tbody className="divide-y divide-gray-50">
-                        {(data.open_orders || []).map(o => (
-                          <tr key={o.id} className="hover:bg-gray-50">
-                            <td className="px-4 py-2.5 font-mono text-xs text-blue-600">{o.id}</td>
-                            <td className="px-4 py-2.5"><span className={`text-xs px-1.5 py-0.5 rounded font-medium ${o.status === 'Pending' ? 'bg-orange-50 text-orange-700' : 'bg-yellow-50 text-yellow-700'}`}>{o.status}</span></td>
-                            <td className="px-4 py-2.5 text-right font-semibold text-gray-900">{fmt$(o.amount)}</td>
-                            <td className="px-4 py-2.5 text-xs text-gray-500">{o.ship_city || '—'}</td>
                           </tr>
                         ))}
                       </tbody>
