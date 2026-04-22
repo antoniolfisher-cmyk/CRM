@@ -203,11 +203,13 @@ const PERIODS = [
 ]
 
 function AmazonSalesPanel() {
-  const [period, setPeriod] = useState('today')
-  const [data, setData]     = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError]   = useState(null)
-  const [open, setOpen]     = useState(false)   // period dropdown
+  const [period, setPeriod]       = useState('today')
+  const [data, setData]           = useState(null)
+  const [loading, setLoading]     = useState(true)
+  const [error, setError]         = useState(null)
+  const [open, setOpen]           = useState(false)
+  const [monthData, setMonthData] = useState(null)
+  const [monthLoading, setMonthLoading] = useState(true)
 
   const fetchData = useCallback(async (p) => {
     setLoading(true)
@@ -222,7 +224,19 @@ function AmazonSalesPanel() {
     }
   }, [])
 
+  const fetchMonthData = useCallback(async () => {
+    try { setMonthData(await api.getDashboardAmazonSales('month')) }
+    catch { /* silent — tile shows dashes */ }
+    finally { setMonthLoading(false) }
+  }, [])
+
   useEffect(() => { fetchData(period) }, [period, fetchData])
+
+  useEffect(() => {
+    fetchMonthData()
+    const id = setInterval(fetchMonthData, 5 * 60 * 1000)
+    return () => clearInterval(id)
+  }, [fetchMonthData])
 
   const selectPeriod = (p) => { setPeriod(p); setOpen(false) }
   const fmt$ = (n) => `$${(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -331,28 +345,35 @@ function AmazonSalesPanel() {
             </div>
           </div>
 
-          {/* Open Orders tile */}
-          <div className="card p-5 border-l-4 border-blue-400">
+          {/* Product Sales This Month tile */}
+          <div className="card p-5 border-l-4 border-violet-400">
             <div className="flex items-start justify-between mb-3">
               <div>
-                <p className="text-xs font-semibold text-blue-600 uppercase tracking-wider">Open Orders</p>
-                <p className="text-4xl font-bold text-gray-900 mt-1">{data.open_order_count.toLocaleString()}</p>
+                <p className="text-xs font-semibold text-violet-600 uppercase tracking-wider">Product Sales This Month</p>
+                {monthLoading
+                  ? <div className="h-10 w-28 bg-gray-200 rounded animate-pulse mt-1" />
+                  : <p className="text-4xl font-bold text-gray-900 mt-1">
+                      {monthData ? fmt$(monthData.revenue) : <span className="text-2xl text-gray-400">—</span>}
+                    </p>
+                }
               </div>
-              <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-lg flex items-center justify-center shrink-0">
-                <OpenOrdersIcon />
+              <div className="w-10 h-10 bg-violet-50 text-violet-600 rounded-lg flex items-center justify-center shrink-0">
+                <SalesChartIcon />
               </div>
             </div>
-            <div className="pt-3 border-t border-gray-100">
-              <p className="text-xs text-gray-400 mb-1">Awaiting fulfilment</p>
-              <div className="flex items-center gap-2">
-                <div
-                  className="h-2 rounded-full bg-blue-400"
-                  style={{ width: data.total_orders > 0 ? `${Math.round((data.open_order_count / data.total_orders) * 100)}%` : '0%', minWidth: data.open_order_count > 0 ? 8 : 0, maxWidth: '100%', transition: 'width 0.4s' }}
-                />
-                <span className="text-xs text-gray-500">
-                  {data.total_orders > 0 ? `${Math.round((data.open_order_count / data.total_orders) * 100)}%` : '—'} of period orders
-                </span>
+            <div className="grid grid-cols-2 gap-3 pt-3 border-t border-gray-100">
+              <div>
+                <p className="text-xs text-gray-400">Units sold</p>
+                <p className="text-lg font-bold text-gray-800">{monthData ? monthData.units_sold.toLocaleString() : '—'}</p>
               </div>
+              <div>
+                <p className="text-xs text-gray-400">Orders</p>
+                <p className="text-lg font-bold text-gray-800">{monthData ? monthData.total_orders.toLocaleString() : '—'}</p>
+              </div>
+            </div>
+            <div className="mt-2 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 bg-violet-400 rounded-full inline-block animate-pulse" />
+              <p className="text-xs text-gray-400">Live · updates every 5m</p>
             </div>
           </div>
 
