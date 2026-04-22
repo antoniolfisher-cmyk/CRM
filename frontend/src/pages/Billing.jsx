@@ -3,8 +3,6 @@ import { api } from '../api'
 import { useAuth } from '../context/AuthContext'
 
 const PLAN_COLORS = {
-  starter:    { bg: 'bg-gray-100',   text: 'text-gray-600',   border: 'border-gray-300'   },
-  pro:        { bg: 'bg-orange-100', text: 'text-orange-700', border: 'border-orange-400' },
   enterprise: { bg: 'bg-purple-100', text: 'text-purple-700', border: 'border-purple-400' },
 }
 
@@ -41,7 +39,7 @@ export default function Billing() {
 
   if (loading) return <div className="p-6 text-gray-400">Loading…</div>
 
-  const colors = PLAN_COLORS[tenant?.plan] || PLAN_COLORS.starter
+  const colors = PLAN_COLORS[tenant?.plan] || PLAN_COLORS.enterprise
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -75,8 +73,7 @@ export default function Billing() {
             )}
           </div>
           <div className={`px-4 py-2 rounded-xl text-sm font-bold ${colors.bg} ${colors.text}`}>
-            {tenant?.plan === 'starter' ? 'Free' :
-             tenant?.plan === 'pro'     ? '$49/mo' : '$199/mo'}
+            $175/mo
           </div>
         </div>
 
@@ -90,9 +87,7 @@ export default function Billing() {
             <p className="text-xs text-gray-400">Users</p>
             <p className="text-sm font-semibold text-gray-800">
               {tenant?.users_count}{' '}
-              <span className="text-gray-400 font-normal">
-                / {tenant?.plan === 'starter' ? '1' : tenant?.plan === 'pro' ? '5' : '∞'}
-              </span>
+              <span className="text-gray-400 font-normal">/ ∞</span>
             </p>
           </div>
           <div>
@@ -116,40 +111,42 @@ export default function Billing() {
         )}
       </div>
 
-      {/* Plan comparison */}
+      {/* Plan comparison — Enterprise only */}
       {tenant?.billing_enabled && (
         <div>
           <h2 className="text-base font-semibold text-gray-700 mb-3">
-            {tenant?.plan === 'starter' ? 'Upgrade your plan' : 'Change plan'}
+            {tenant?.plan === 'enterprise' ? 'Your plan' : 'Upgrade your plan'}
           </h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {Object.entries(tenant?.plans || {}).map(([key, plan]) => {
-              const isCurrent = tenant?.plan === key
-              const c = PLAN_COLORS[key] || PLAN_COLORS.starter
+          <div className="grid grid-cols-1 md:grid-cols-1 gap-4 max-w-sm">
+            {(() => {
+              const plan = (tenant?.plans || {})['enterprise']
+              if (!plan) return null
+              const isCurrent = tenant?.plan === 'enterprise'
+              const c = PLAN_COLORS.enterprise
               return (
-                <div key={key} className={`card p-5 border-2 ${isCurrent ? c.border : 'border-transparent'}`}>
+                <div className={`card p-5 border-2 ${isCurrent ? c.border : 'border-transparent'}`}>
                   <div className="flex items-center justify-between mb-3">
-                    <h3 className="font-bold text-gray-900">{plan.name}</h3>
-                    <span className="text-sm font-bold text-gray-600">{plan.price_label}</span>
+                    <h3 className="font-bold text-gray-900">Enterprise</h3>
+                    <span className="text-sm font-bold text-gray-600">$175/mo</span>
                   </div>
                   <ul className="space-y-1.5 mb-4">
-                    {plan.features.map(f => (
+                    {(plan.features || []).map(f => (
                       <li key={f} className="text-xs text-gray-600 flex items-start gap-1.5">
                         <span className="text-green-500 mt-0.5">✓</span>
                         {f}
                       </li>
                     ))}
                   </ul>
-                  {isCurrent ? (
+                  {isCurrent && tenant?.stripe_status === 'active' ? (
                     <div className={`w-full py-2 text-center text-xs font-semibold rounded-lg ${c.bg} ${c.text}`}>
                       Current Plan
                     </div>
                   ) : plan.stripe_price_id ? (
                     <button
-                      onClick={() => tenant?.stripe_customer_id ? goToPortal() : goToCheckout(key)}
+                      onClick={() => tenant?.stripe_customer_id ? goToPortal() : goToCheckout('enterprise')}
                       className="w-full py-2 bg-orange-500 hover:bg-orange-600 text-white text-xs font-semibold rounded-lg transition-colors"
                     >
-                      {key === 'starter' ? 'Downgrade' : 'Upgrade'} to {plan.name}
+                      Upgrade to Enterprise
                     </button>
                   ) : (
                     <div className="w-full py-2 text-center text-xs text-gray-400 bg-gray-50 rounded-lg">
@@ -158,7 +155,7 @@ export default function Billing() {
                   )}
                 </div>
               )
-            })}
+            })()}
           </div>
         </div>
       )}

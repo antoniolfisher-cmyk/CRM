@@ -17,7 +17,7 @@ const nav = [
 ]
 
 export default function Layout({ children }) {
-  const { user, logout, isAdmin, isSuperAdmin } = useAuth()
+  const { user, logout, isAdmin, isSuperAdmin, trialDaysLeft, subscriptionExpired } = useAuth()
 
   // Admins and users with no restriction see all nav items
   const allowedPages = (isAdmin || !user?.page_permissions)
@@ -170,6 +170,19 @@ export default function Layout({ children }) {
 
       {/* Main */}
       <div className="flex-1 flex flex-col min-w-0">
+        {/* Trial countdown banner */}
+        {!isSuperAdmin && subscriptionExpired && (
+          <div className="bg-red-600 text-white text-sm px-4 py-2 flex items-center justify-between">
+            <span>Trial ended — please upgrade to continue using SellerPulse.</span>
+            <a href="/billing" className="underline font-semibold ml-4 hover:text-red-100">Upgrade now →</a>
+          </div>
+        )}
+        {!isSuperAdmin && !subscriptionExpired && user?.stripe_status === 'trialing' && trialDaysLeft !== null && (
+          <div className="bg-amber-400 text-amber-900 text-sm px-4 py-2 flex items-center justify-between">
+            <span>⏱ {trialDaysLeft} day{trialDaysLeft !== 1 ? 's' : ''} left in your free trial — Upgrade to Enterprise ($175/mo) to keep access</span>
+            <a href="/billing" className="underline font-semibold ml-4 hover:text-amber-700">Upgrade →</a>
+          </div>
+        )}
         <main className="flex-1 p-6 overflow-auto">{children}</main>
       </div>
     </div>

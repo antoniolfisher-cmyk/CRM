@@ -36,7 +36,7 @@ export default function App() {
 }
 
 function PrivateRoute() {
-  const { isAuthenticated, isAdmin, isSuperAdmin, user, checking } = useAuth()
+  const { isAuthenticated, isAdmin, isSuperAdmin, user, checking, subscriptionExpired } = useAuth()
   const location = useLocation()
 
   if (checking) {
@@ -49,6 +49,11 @@ function PrivateRoute() {
 
   if (!isAuthenticated) {
     return <Navigate to="/login" state={{ from: location.pathname }} replace />
+  }
+
+  // Paywall gate: redirect to /billing when subscription expired (non-superadmin)
+  if (subscriptionExpired && !isSuperAdmin && location.pathname !== '/billing') {
+    return <Navigate to="/billing" replace />
   }
 
   // Check page-level permission for non-admins

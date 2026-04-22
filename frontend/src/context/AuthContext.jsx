@@ -83,10 +83,27 @@ export function AuthProvider({ children }) {
   const isAdmin      = user?.role === 'admin'
   const isSuperAdmin = user?.is_superadmin === true
 
+  // Computed trial/subscription state
+  const trialDaysLeft = (
+    user?.stripe_status === 'trialing' && user?.trial_ends_at
+      ? Math.max(0, Math.ceil((new Date(user.trial_ends_at) - Date.now()) / 86400000))
+      : null
+  )
+
+  const subscriptionExpired = (() => {
+    if (!user) return false
+    if (isSuperAdmin) return false
+    if (user.stripe_status === 'trialing' && user.trial_ends_at) {
+      return new Date(user.trial_ends_at) < new Date()
+    }
+    return ['canceled', 'past_due', 'expired'].includes(user.stripe_status)
+  })()
+
   return (
     <AuthContext.Provider value={{
       token, user, checking, login, loginWithToken, logout,
       isAdmin, isSuperAdmin, isAuthenticated: !!token && !!user,
+      trialDaysLeft, subscriptionExpired,
     }}>
       {children}
     </AuthContext.Provider>
