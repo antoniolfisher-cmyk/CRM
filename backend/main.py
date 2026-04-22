@@ -2104,12 +2104,8 @@ def get_repricer_stats(db: Session = Depends(get_db), _ = Depends(require_auth))
     # Weekly buy box % (4 weeks — uses current snapshot for all weeks since we don't store history)
     buy_box_by_week = [{"week_start": w["week_start"], "pct": buy_box_pct} for w in weekly_updates]
 
-    # Active inventory units — total quantity currently at Amazon (FBA approved products)
-    units_sold = int(db.query(func.sum(models.Product.quantity)).filter(
-        models.Product.status == "approved",
-        models.Product.quantity.isnot(None),
-        models.Product.quantity > 0,
-    ).scalar() or 0)
+    # Total price updates pushed (used as a proxy metric in the stats response)
+    units_sold = total_price_updates
 
     return {
         "weekly_updates": weekly_updates,

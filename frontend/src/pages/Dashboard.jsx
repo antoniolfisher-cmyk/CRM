@@ -5,9 +5,14 @@ import { useAuth } from '../context/AuthContext'
 export default function Dashboard() {
   const { user } = useAuth()
   const [repricerStats, setRepricerStats] = useState(null)
+  const [monthlyUnitsSold, setMonthlyUnitsSold] = useState(null)
 
   useEffect(() => {
     api.getRepricerStats().then(r => setRepricerStats(r)).catch(() => {})
+    // Pull real units-sold-this-month from Amazon Orders API
+    api.getDashboardAmazonSales('month')
+      .then(r => setMonthlyUnitsSold(r?.units_sold ?? null))
+      .catch(() => {})
   }, [])
 
   const canSee = (section) => {
@@ -49,14 +54,16 @@ export default function Dashboard() {
               maxY={100}
             />
             <RepricerStatCard
-              label="Units in Stock"
-              value={repricerStats.units_sold.toLocaleString()}
+              label="Units Sold This Month"
+              value={monthlyUnitsSold !== null ? monthlyUnitsSold.toLocaleString() : '—'}
               data={repricerStats.weekly_updates.map((w, i) =>
-                Math.round((repricerStats.units_sold / 4) * (0.7 + i * 0.15))
+                monthlyUnitsSold !== null
+                  ? Math.round((monthlyUnitsSold / 4) * (0.7 + i * 0.15))
+                  : 0
               )}
               labels={repricerStats.weekly_updates.map(w => w.week_start)}
               color="#8b5cf6"
-              yLabel="Units in Stock"
+              yLabel="Units Sold"
             />
           </div>
         </div>
