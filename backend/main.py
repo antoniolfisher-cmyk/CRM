@@ -2104,9 +2104,11 @@ def get_repricer_stats(db: Session = Depends(get_db), _ = Depends(require_auth))
     # Weekly buy box % (4 weeks — uses current snapshot for all weeks since we don't store history)
     buy_box_by_week = [{"week_start": w["week_start"], "pct": buy_box_pct} for w in weekly_updates]
 
-    # Units sold — sum of Keepa estimated_sales for approved products
-    units_sold = int(db.query(func.sum(models.Product.estimated_sales)).filter(
-        models.Product.status == "approved"
+    # Active inventory units — total quantity currently at Amazon (FBA approved products)
+    units_sold = int(db.query(func.sum(models.Product.quantity)).filter(
+        models.Product.status == "approved",
+        models.Product.quantity.isnot(None),
+        models.Product.quantity > 0,
     ).scalar() or 0)
 
     return {

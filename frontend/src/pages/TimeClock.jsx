@@ -35,7 +35,8 @@ export default function TimeClock() {
     if (timerRef.current) clearInterval(timerRef.current)
     if (status?.clocked_in && status.clock_in) {
       const tick = () => {
-        const diff = Date.now() - new Date(status.clock_in + 'Z').getTime()
+        const hasZone = status.clock_in.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(status.clock_in)
+        const diff = Date.now() - new Date(hasZone ? status.clock_in : status.clock_in + 'Z').getTime()
         const h = Math.floor(diff / 3600000)
         const m = Math.floor((diff % 3600000) / 60000)
         const s = Math.floor((diff % 60000) / 1000)
@@ -72,15 +73,22 @@ export default function TimeClock() {
     finally { setWorking(false) }
   }
 
+  const parseIso = (iso) => {
+    if (!iso) return null
+    // If already has timezone info (Z or ±HH:MM) don't modify; otherwise assume UTC
+    const hasZone = iso.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(iso)
+    return new Date(hasZone ? iso : iso + 'Z')
+  }
+
   const fmtTime = (iso) => {
-    if (!iso) return '—'
-    const d = new Date(iso + (iso.endsWith('Z') ? '' : 'Z'))
+    const d = parseIso(iso)
+    if (!d || isNaN(d)) return '—'
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   }
 
   const fmtDate = (iso) => {
-    if (!iso) return '—'
-    const d = new Date(iso + (iso.endsWith('Z') ? '' : 'Z'))
+    const d = parseIso(iso)
+    if (!d || isNaN(d)) return '—'
     return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
   }
 

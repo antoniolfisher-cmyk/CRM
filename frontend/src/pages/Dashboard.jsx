@@ -49,14 +49,14 @@ export default function Dashboard() {
               maxY={100}
             />
             <RepricerStatCard
-              label="Units sold"
+              label="Units in Stock"
               value={repricerStats.units_sold.toLocaleString()}
               data={repricerStats.weekly_updates.map((w, i) =>
                 Math.round((repricerStats.units_sold / 4) * (0.7 + i * 0.15))
               )}
               labels={repricerStats.weekly_updates.map(w => w.week_start)}
               color="#8b5cf6"
-              yLabel="Units sold"
+              yLabel="Units in Stock"
             />
           </div>
         </div>
