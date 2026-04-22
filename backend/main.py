@@ -5,11 +5,13 @@ from fastapi import FastAPI, Depends, HTTPException, Request, BackgroundTasks, U
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse as StarletteJSONResponse
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, or_
 from typing import List, Optional
 from pydantic import BaseModel
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import models
 import schemas
 from database import engine, get_db
@@ -350,6 +352,85 @@ app.add_middleware(
 )
 
 
+class SubscriptionEnforcementMiddleware(BaseHTTPMiddleware):
+    """Block API requests for tenants with expired/canceled subscriptions."""
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+
+        # Only enforce on /api/ routes, but skip auth/billing/health
+        if not path.startswith("/api/"):
+            return await call_next(request)
+        if (
+            path.startswith("/api/auth/")
+            or path.startswith("/api/billing/")
+            or path.startswith("/api/health")
+        ):
+            return await call_next(request)
+
+        # Skip if Stripe not configured (self-hosted / unlimited access)
+        if not stripe_billing.billing_enabled():
+            return await call_next(request)
+
+        # Decode JWT — skip enforcement if no/invalid token (auth layer will reject)
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return await call_next(request)
+        token = auth_header[7:]
+        try:
+            from jose import jwt as _jwt, JWTError as _JWTError
+            from auth import SECRET_KEY as _SK, ALGORITHM as _ALG
+            payload = _jwt.decode(token, _SK, algorithms=[_ALG])
+        except Exception:
+            return await call_next(request)
+
+        # Skip superadmin
+        _superadmin = os.getenv("SUPERADMIN_USERNAME", os.getenv("CRM_USERNAME", "admin"))
+        if payload.get("sub") == _superadmin:
+            return await call_next(request)
+
+        # Look up tenant subscription status
+        tenant_id = payload.get("tenant_id")
+        if not tenant_id:
+            return await call_next(request)
+
+        from database import SessionLocal as _SL
+        _db = _SL()
+        try:
+            tenant = _db.query(models.Tenant).filter_by(id=tenant_id).first()
+        finally:
+            _db.close()
+
+        if tenant is None:
+            return await call_next(request)
+
+        stripe_status = tenant.stripe_status
+
+        # Legacy/self-hosted tenants with no stripe_status — always allow
+        if stripe_status is None:
+            return await call_next(request)
+
+        # Trialing but trial expired
+        if stripe_status == "trialing" and tenant.trial_ends_at:
+            if datetime.now(timezone.utc) > tenant.trial_ends_at:
+                return StarletteJSONResponse(
+                    status_code=402,
+                    content={"detail": "Your free trial has ended. Please upgrade to continue."},
+                )
+
+        # Canceled / past_due / expired
+        if stripe_status in ("canceled", "past_due", "expired"):
+            return StarletteJSONResponse(
+                status_code=402,
+                content={"detail": "Your subscription is inactive. Please update your billing to continue."},
+            )
+
+        return await call_next(request)
+
+
+app.add_middleware(SubscriptionEnforcementMiddleware)
+
+
 @app.on_event("startup")
 def startup():
     start_scheduler()
@@ -444,7 +525,9 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
     tenant = models.Tenant(
         name=data.company_name,
         slug=slug,
-        plan="starter",
+        plan="enterprise",
+        stripe_status="trialing",
+        trial_ends_at=datetime.now(timezone.utc) + timedelta(days=14),
         is_active=True,
     )
     db.add(tenant)
@@ -497,6 +580,7 @@ def me(payload: dict = Depends(require_auth), db: Session = Depends(get_db)):
         "tenant_slug":   tenant.slug if tenant else "default",
         "plan":          tenant.plan if tenant else "starter",
         "stripe_status": tenant.stripe_status if tenant else None,
+        "trial_ends_at": tenant.trial_ends_at.isoformat() if tenant and tenant.trial_ends_at else None,
         "email":               db_user.email if db_user else None,
         "notify_email":        db_user.notify_email if db_user else True,
         "dashboard_sections":  db_user.dashboard_sections if db_user else None,
@@ -674,28 +758,33 @@ def aria_status(db: Session = Depends(get_db), current: dict = Depends(require_a
 
     # Products eligible for Aria (have both buy_box and buy_cost)
     eligible = base_q.filter(
+        models.Product.status == "approved",
         models.Product.buy_box > 0,
         models.Product.buy_cost > 0,
     ).count()
 
     # Products with buy_cost but no buy_box yet (need Keepa sync)
     need_buy_box = base_q.filter(
+        models.Product.status == "approved",
         models.Product.buy_cost > 0,
         models.Product.buy_box == None,
     ).count()
     need_buy_box += base_q.filter(
+        models.Product.status == "approved",
         models.Product.buy_cost > 0,
         models.Product.buy_box == 0,
     ).count()
 
     # Products with buy_box but missing buy_cost (need cost data to run)
     need_cost = base_q.filter(
+        models.Product.status == "approved",
         models.Product.buy_box > 0,
         models.Product.buy_cost == None,
     ).count()
 
     # Eligible products missing seller_sku (will reprice but NOT push to Amazon)
     no_sku = base_q.filter(
+        models.Product.status == "approved",
         models.Product.buy_box > 0,
         models.Product.buy_cost > 0,
         models.Product.seller_sku == None,
@@ -2072,7 +2161,8 @@ async def debug_amazon_orders_tenant(
 
 
 @app.get("/api/dashboard/repricer-stats")
-def get_repricer_stats(db: Session = Depends(get_db), _ = Depends(require_auth)):
+def get_repricer_stats(db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+    tid = current.get("tenant_id")
     now = datetime.utcnow()
 
     # Last 4 weeks of price update counts (based on aria_suggested_at)
@@ -2080,24 +2170,33 @@ def get_repricer_stats(db: Session = Depends(get_db), _ = Depends(require_auth))
     for i in range(3, -1, -1):
         week_start = now - timedelta(weeks=i + 1)
         week_end   = now - timedelta(weeks=i)
-        count = db.query(func.count(models.Product.id)).filter(
+        _wq = db.query(func.count(models.Product.id)).filter(
             models.Product.aria_suggested_at >= week_start,
             models.Product.aria_suggested_at <  week_end,
-        ).scalar() or 0
+        )
+        if tid:
+            _wq = _wq.filter(models.Product.tenant_id == tid)
+        count = _wq.scalar() or 0
         weekly_updates.append({"week_start": week_start.strftime("%b %-d"), "count": count})
 
     # All-time total price updates
-    total_price_updates = db.query(func.count(models.Product.id)).filter(
+    _tpu_q = db.query(func.count(models.Product.id)).filter(
         models.Product.aria_suggested_price.isnot(None)
-    ).scalar() or 0
+    )
+    if tid:
+        _tpu_q = _tpu_q.filter(models.Product.tenant_id == tid)
+    total_price_updates = _tpu_q.scalar() or 0
 
     # Buy box % — approved products where aria price <= buy_box (we're competitive)
-    priced = db.query(models.Product).filter(
+    _priced_q = db.query(models.Product).filter(
         models.Product.status == "approved",
         models.Product.aria_suggested_price.isnot(None),
         models.Product.buy_box.isnot(None),
         models.Product.buy_box > 0,
-    ).all()
+    )
+    if tid:
+        _priced_q = _priced_q.filter(models.Product.tenant_id == tid)
+    priced = _priced_q.all()
     competitive = sum(1 for p in priced if p.aria_suggested_price <= p.buy_box)
     buy_box_pct = round(competitive / len(priced) * 100, 1) if priced else 0.0
 

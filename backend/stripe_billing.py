@@ -30,53 +30,26 @@ STRIPE_WEBHOOK_SECRET  = property(_wh)
 
 # ── Plans ─────────────────────────────────────────────────────────────────────
 PLANS = {
-    "starter": {
-        "name":        "Starter",
-        "price":       0,
-        "price_label": "Free",
-        "stripe_price_id": os.getenv("STRIPE_PRICE_STARTER", ""),
+    "enterprise": {
+        "name":        "Enterprise",
+        "price":       17500,   # cents = $175/mo
+        "price_label": "$175/mo",
+        "stripe_price_id": os.getenv("STRIPE_PRICE_ENTERPRISE", ""),
         "features": [
-            "1 user",
-            "Up to 100 ASINs",
-            "CRM (accounts, contacts, follow-ups)",
-            "Basic orders tracking",
-        ],
-        "limits": {"users": 1, "products": 100},
-    },
-    "pro": {
-        "name":        "Pro",
-        "price":       4900,   # cents
-        "price_label": "$49/mo",
-        "stripe_price_id": os.getenv("STRIPE_PRICE_PRO", ""),
-        "features": [
-            "5 users",
+            "Unlimited users",
             "Unlimited ASINs",
             "Full Amazon SP-API integration",
             "Live Sales & Inventory dashboard",
             "AI Repricer (Aria)",
             "Ungate workflow",
             "Keepa data",
-        ],
-        "limits": {"users": 5, "products": -1},
-    },
-    "enterprise": {
-        "name":        "Enterprise",
-        "price":       19900,  # cents
-        "price_label": "$199/mo",
-        "stripe_price_id": os.getenv("STRIPE_PRICE_ENTERPRISE", ""),
-        "features": [
-            "Unlimited users",
-            "Unlimited ASINs",
-            "Everything in Pro",
-            "White-label branding",
             "Priority support",
-            "Dedicated onboarding",
         ],
         "limits": {"users": -1, "products": -1},
     },
 }
 
-PLAN_PRICES_CENTS = {"starter": 0, "pro": 4900, "enterprise": 19900}
+PLAN_PRICES_CENTS = {"enterprise": 17500}
 
 
 def billing_enabled() -> bool:

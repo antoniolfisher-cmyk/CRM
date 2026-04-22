@@ -348,6 +348,7 @@ async def run_all_async(force: bool = False, tenant_id=None) -> dict:
         q = db.query(models.Product).filter(
             models.Product.buy_box > 0,
             models.Product.buy_cost > 0,
+            models.Product.status == "approved",
         )
         if tenant_id is not None:
             q = q.filter(models.Product.tenant_id == tenant_id)
