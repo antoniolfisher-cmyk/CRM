@@ -34,7 +34,7 @@ PLANS = {
         "name":        "Enterprise",
         "price":       17500,   # cents = $175/mo
         "price_label": "$175/mo",
-        "stripe_price_id": os.getenv("STRIPE_PRICE_ENTERPRISE", ""),
+        "stripe_price_id": os.getenv("STRIPE_ENTERPRISE_PRICE_ID", "") or os.getenv("STRIPE_PRICE_ENTERPRISE", ""),
         "features": [
             "Unlimited users",
             "Unlimited ASINs",
