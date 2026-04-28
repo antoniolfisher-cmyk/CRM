@@ -371,7 +371,7 @@ async def run_all_async(force: bool = False, tenant_id=None) -> dict:
         # Re-evaluate every 24h at minimum even if the Buy Box hasn't changed.
         # Without this, Aria prices a product once and never touches it again until
         # the Buy Box moves — defeating the purpose of hourly scheduling.
-        REPRICE_EVERY_H = 24
+        REPRICE_EVERY_H = 4
         stale_cutoff = datetime.now(timezone.utc) - timedelta(hours=REPRICE_EVERY_H)
 
         for p in candidates:

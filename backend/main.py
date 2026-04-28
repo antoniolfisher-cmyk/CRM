@@ -2165,26 +2165,24 @@ def get_repricer_stats(db: Session = Depends(get_db), current: dict = Depends(re
     tid = current.get("tenant_id")
     now = datetime.utcnow()
 
-    # Last 4 weeks of price update counts (based on aria_suggested_at)
+    # Last 4 weeks of price update counts from repricer_logs
     weekly_updates = []
     for i in range(3, -1, -1):
         week_start = now - timedelta(weeks=i + 1)
         week_end   = now - timedelta(weeks=i)
-        _wq = db.query(func.count(models.Product.id)).filter(
-            models.Product.aria_suggested_at >= week_start,
-            models.Product.aria_suggested_at <  week_end,
+        _wq = db.query(func.count(models.RepricerLog.id)).filter(
+            models.RepricerLog.created_at >= week_start,
+            models.RepricerLog.created_at <  week_end,
         )
         if tid:
-            _wq = _wq.filter(models.Product.tenant_id == tid)
+            _wq = _wq.filter(models.RepricerLog.tenant_id == tid)
         count = _wq.scalar() or 0
         weekly_updates.append({"week_start": week_start.strftime("%b %-d"), "count": count})
 
-    # All-time total price updates
-    _tpu_q = db.query(func.count(models.Product.id)).filter(
-        models.Product.aria_suggested_price.isnot(None)
-    )
+    # All-time total price updates from repricer_logs
+    _tpu_q = db.query(func.count(models.RepricerLog.id))
     if tid:
-        _tpu_q = _tpu_q.filter(models.Product.tenant_id == tid)
+        _tpu_q = _tpu_q.filter(models.RepricerLog.tenant_id == tid)
     total_price_updates = _tpu_q.scalar() or 0
 
     # Buy box % — approved products where aria price <= buy_box (we're competitive)
