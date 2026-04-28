@@ -24,6 +24,7 @@ if _sentry_dsn:
         integrations=[FastApiIntegration(), SqlalchemyIntegration()],
         traces_sample_rate=0.1,
         environment=os.getenv("RAILWAY_ENVIRONMENT", "production"),
+        send_default_pii=True,
     )
 
 limiter = Limiter(key_func=get_remote_address)
