@@ -67,6 +67,10 @@ export const api = {
 
 
 
+  // Auth — password reset (no token required)
+  forgotPassword: (email) => req('POST', '/auth/forgot-password', { email }),
+  resetPassword: (token, new_password) => req('POST', '/auth/reset-password', { token, new_password }),
+
   // Billing (Stripe) — tenant self-service
   getBillingPlans: () => req('GET', '/billing/plans'),
   createBillingCheckout: (plan) => req('POST', '/billing/checkout', { plan }),

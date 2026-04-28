@@ -453,6 +453,56 @@ def send_daily_digests():
 
 _scheduler = None
 
+def send_trial_reminders():
+    """Email tenants whose trial ends in exactly 3 days or tomorrow."""
+    from datetime import timezone as _tz
+    db = SessionLocal()
+    try:
+        now = datetime.now(_tz.utc)
+        for days_left in (3, 1):
+            window_start = now + timedelta(days=days_left) - timedelta(hours=12)
+            window_end   = now + timedelta(days=days_left) + timedelta(hours=12)
+            tenants = db.query(models.Tenant).filter(
+                models.Tenant.stripe_status == "trialing",
+                models.Tenant.trial_ends_at >= window_start,
+                models.Tenant.trial_ends_at <= window_end,
+            ).all()
+            for t in tenants:
+                admin = db.query(models.User).filter(
+                    models.User.tenant_id == t.id,
+                    models.User.role == "admin",
+                    models.User.email.isnot(None),
+                ).first()
+                if not admin or not admin.email:
+                    continue
+                label = f"{days_left} day{'s' if days_left != 1 else ''}"
+                app_url = os.getenv("APP_URL", "https://app.sellerpulse.io").rstrip("/")
+                html = f"""
+                <div style="font-family:sans-serif;max-width:520px;margin:0 auto">
+                  <h2 style="color:#ea580c">Your SellerPulse trial ends in {label}</h2>
+                  <p>Hey {admin.username},</p>
+                  <p>Your free trial of SellerPulse expires in <strong>{label}</strong>.
+                  After that, access will be paused until you subscribe.</p>
+                  <a href="{app_url}/billing"
+                     style="display:inline-block;background:#ea580c;color:white;
+                            padding:12px 28px;border-radius:8px;text-decoration:none;
+                            font-weight:600;margin:16px 0">
+                    Upgrade to Enterprise — $175/mo
+                  </a>
+                  <p style="color:#666;font-size:13px">
+                    Questions? Just reply to this email.
+                  </p>
+                  <p style="color:#999;font-size:11px">SellerPulse · Amazon Seller CRM</p>
+                </div>"""
+                try:
+                    send_email(admin.email, f"Your SellerPulse trial ends in {label}", html)
+                    log.info("Trial reminder sent to %s (%s left)", admin.email, label)
+                except Exception as e:
+                    log.warning("Trial reminder email failed for %s: %s", admin.email, e)
+    finally:
+        db.close()
+
+
 def start_scheduler():
     global _scheduler
     _scheduler = BackgroundScheduler(timezone="UTC")
@@ -494,6 +544,14 @@ def start_scheduler():
         log.info("Amazon inventory sync scheduled every 1 hour")
     except Exception as _e:
         log.warning("Amazon inventory sync scheduler not loaded: %s", _e)
+
+    # Trial expiry reminder — daily at 9 AM UTC
+    _scheduler.add_job(
+        send_trial_reminders,
+        CronTrigger(hour=9, minute=0),
+        id="trial_reminders",
+        replace_existing=True,
+    )
 
     _scheduler.start()
     log.info("Notification scheduler started — digests at %02d:00 UTC", NOTIFY_HOUR)

@@ -89,6 +89,9 @@ export default function Login() {
           New to SellerPulse?{' '}
           <Link to="/register" className="text-orange-400 font-medium hover:underline">Create a workspace</Link>
         </p>
+        <p className="text-center text-slate-500 text-sm mt-2">
+          <Link to="/forgot-password" className="text-slate-400 hover:text-orange-400 hover:underline">Forgot your password?</Link>
+        </p>
         <p className="text-center text-slate-600 text-xs mt-3">
           SellerPulse · Amazon Seller CRM
         </p>

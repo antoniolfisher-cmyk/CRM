@@ -596,6 +596,90 @@ class ProfileUpdate(BaseModel):
     new_password: Optional[str] = None
 
 
+# ── Password reset ─────────────────────────────────────────────────────────────
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+@app.post("/api/auth/forgot-password", status_code=200)
+def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    import secrets
+    from datetime import timezone as _tz
+    from notifications import send_email, _smtp_configured
+
+    user = db.query(models.User).filter(
+        func.lower(models.User.email) == data.email.lower().strip()
+    ).first()
+    # Always return 200 to avoid email enumeration
+    if not user or not user.email:
+        return {"ok": True}
+
+    # Expire old tokens for this user
+    db.query(models.PasswordResetToken).filter(
+        models.PasswordResetToken.user_id == user.id,
+        models.PasswordResetToken.used == False,
+    ).update({"used": True})
+    db.commit()
+
+    token = secrets.token_urlsafe(32)
+    expires = datetime.now(_tz.utc) + timedelta(hours=2)
+    db.add(models.PasswordResetToken(user_id=user.id, token=token, expires_at=expires))
+    db.commit()
+
+    app_url = os.getenv("APP_URL", "http://localhost:5173").rstrip("/")
+    reset_url = f"{app_url}/reset-password?token={token}"
+
+    if _smtp_configured():
+        html = f"""
+        <div style="font-family:sans-serif;max-width:480px;margin:0 auto">
+          <h2 style="color:#ea580c">SellerPulse — Reset Your Password</h2>
+          <p>Click the button below to reset your password. This link expires in 2 hours.</p>
+          <a href="{reset_url}" style="display:inline-block;background:#ea580c;color:white;
+             padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;margin:16px 0">
+            Reset Password
+          </a>
+          <p style="color:#666;font-size:12px">If you didn't request this, ignore this email.</p>
+          <p style="color:#999;font-size:11px">Link: {reset_url}</p>
+        </div>"""
+        try:
+            send_email(user.email, "Reset your SellerPulse password", html)
+        except Exception as e:
+            log.warning("Password reset email failed: %s", e)
+
+    return {"ok": True}
+
+
+@app.post("/api/auth/reset-password", status_code=200)
+def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
+    from datetime import timezone as _tz
+    from auth import hash_password
+
+    row = db.query(models.PasswordResetToken).filter(
+        models.PasswordResetToken.token == data.token,
+        models.PasswordResetToken.used == False,
+    ).first()
+
+    if not row:
+        raise HTTPException(400, "Invalid or expired reset link")
+    if datetime.now(_tz.utc) > row.expires_at:
+        raise HTTPException(400, "Reset link has expired — please request a new one")
+    if len(data.new_password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+
+    user = db.query(models.User).filter_by(id=row.user_id).first()
+    if not user:
+        raise HTTPException(400, "User not found")
+
+    user.password_hash = hash_password(data.new_password)
+    row.used = True
+    db.commit()
+    return {"ok": True}
+
+
 @app.put("/api/auth/profile")
 def update_profile(
     data: ProfileUpdate,
