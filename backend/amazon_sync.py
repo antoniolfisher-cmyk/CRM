@@ -808,7 +808,8 @@ async def initial_data_pull(tenant_id: int) -> dict:
 def scheduled_sync_all():
     """
     Called by APScheduler hourly.
-    Syncs every tenant that has Amazon credentials configured.
+    Syncs every tenant that has Amazon credentials — runs up to 5 tenants
+    concurrently with a semaphore to stay within Amazon rate limits.
     """
     db = SessionLocal()
     try:
@@ -822,7 +823,6 @@ def scheduled_sync_all():
         db.close()
 
     if not tenant_ids:
-        # Legacy env-var mode
         if configured():
             log.info("Amazon scheduled sync (env-var mode) starting…")
             try:
@@ -831,14 +831,24 @@ def scheduled_sync_all():
                 log.error("Amazon scheduled sync error: %s", e)
         return
 
-    for tid in tenant_ids:
-        log.info("Amazon scheduled sync starting for tenant %s", tid)
-        try:
-            asyncio.run(run_sync(tid))
-        except Exception as e:
-            log.error("Amazon scheduled sync error tenant=%s: %s", tid, e)
+    log.info("Amazon scheduled sync starting for %d tenant(s)", len(tenant_ids))
+
+    async def _sync_all():
+        sem = asyncio.Semaphore(5)   # max 5 concurrent tenant syncs
+
+        async def _sync_one(tid):
+            async with sem:
+                try:
+                    await run_sync(tid)
+                    log.info("Amazon sync complete tenant=%s", tid)
+                except Exception as e:
+                    log.error("Amazon sync error tenant=%s: %s", tid, e)
+
+        await asyncio.gather(*[_sync_one(tid) for tid in tenant_ids])
+
+    asyncio.run(_sync_all())
 
 
-# Keep old name for backward compatibility with notifications.py / main.py scheduler setup
+# Keep old name for backward compatibility
 def scheduled_sync():
     scheduled_sync_all()

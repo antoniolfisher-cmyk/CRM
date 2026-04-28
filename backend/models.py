@@ -65,6 +65,7 @@ class User(Base):
     is_active          = Column(Boolean, default=True)
     email              = Column(String, nullable=True)
     notify_email       = Column(Boolean, default=True)
+    email_verified     = Column(Boolean, default=False)
     dashboard_sections = Column(Text, nullable=True)   # comma-separated dashboard widget keys; NULL = all
     page_permissions   = Column(Text, nullable=True)   # comma-separated page keys; NULL = all pages
     created_at         = Column(DateTime(timezone=True), server_default=func.now())
@@ -459,6 +460,19 @@ class BillingInvoice(Base):
     created_at        = Column(DateTime(timezone=True), server_default=func.now())
 
     tenant = relationship("Tenant", backref="invoices")
+
+
+class EmailVerificationToken(Base):
+    __tablename__ = "email_verification_tokens"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    user_id    = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    token      = Column(String, unique=True, nullable=False, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used       = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User")
 
 
 class PasswordResetToken(Base):

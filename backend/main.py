@@ -1,12 +1,32 @@
 import os
 import asyncio
+import logging
 import urllib.parse
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
 from fastapi import FastAPI, Depends, HTTPException, Request, BackgroundTasks, UploadFile, File, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse as StarletteJSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+log = logging.getLogger(__name__)
+
+_sentry_dsn = os.getenv("SENTRY_DSN", "")
+if _sentry_dsn:
+    sentry_sdk.init(
+        dsn=_sentry_dsn,
+        integrations=[FastApiIntegration(), SqlalchemyIntegration()],
+        traces_sample_rate=0.1,
+        environment=os.getenv("RAILWAY_ENVIRONMENT", "production"),
+    )
+
+limiter = Limiter(key_func=get_remote_address)
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, or_
 from typing import List, Optional
@@ -27,6 +47,17 @@ try:
     models.Base.metadata.create_all(bind=engine)
 except Exception as _create_all_err:
     print(f"[startup] create_all warning: {_create_all_err}", flush=True)
+
+# Run any pending Alembic migrations automatically on startup
+try:
+    from alembic.config import Config as _AlembicConfig
+    from alembic import command as _alembic_cmd
+    _alembic_cfg = _AlembicConfig(os.path.join(os.path.dirname(__file__), "alembic.ini"))
+    _alembic_cfg.set_main_option("script_location", os.path.join(os.path.dirname(__file__), "alembic"))
+    _alembic_cmd.upgrade(_alembic_cfg, "head")
+    print("[startup] Alembic migrations up to date", flush=True)
+except Exception as _alembic_err:
+    print(f"[startup] Alembic migration warning: {_alembic_err}", flush=True)
 
 # ─── Migrations: add new columns to existing tables ───────────────────────────
 try:
@@ -342,6 +373,8 @@ except Exception as _e:
     print(f"Warning: bootstrap admin setup failed ({_e}), continuing anyway.")
 
 app = FastAPI(title="SellerPulse API", version="2.0.0")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -433,7 +466,10 @@ app.add_middleware(SubscriptionEnforcementMiddleware)
 
 @app.on_event("startup")
 def startup():
-    start_scheduler()
+    if os.getenv("DISABLE_SCHEDULER", "").lower() in ("1", "true", "yes"):
+        log.info("Scheduler disabled (DISABLE_SCHEDULER=true) — web-only mode")
+    else:
+        start_scheduler()
 
 
 @app.on_event("shutdown")
@@ -444,7 +480,8 @@ def shutdown():
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 
 @app.post("/api/auth/login")
-def login(data: LoginRequest, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.username == data.username).first()
     if not user:
         # Also allow login by email address
@@ -512,7 +549,8 @@ def recover_account_get(db: Session = Depends(get_db)):
 
 
 @app.post("/api/auth/register")
-def register(data: RegisterRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def register(request: Request, data: RegisterRequest, db: Session = Depends(get_db)):
     """Create a new tenant workspace + admin user. Returns a JWT."""
     # Validate slug uniqueness
     slug = data.slug.lower().strip().replace(" ", "-")
@@ -534,6 +572,7 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
     db.flush()
 
     # Create admin user
+    import secrets as _secrets
     user = models.User(
         tenant_id=tenant.id,
         username=data.username,
@@ -541,8 +580,36 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
         password_hash=hash_password(data.password),
         role="admin",
         is_active=True,
+        email_verified=not bool(data.email),  # no email → skip verification
     )
     db.add(user)
+    db.flush()
+
+    # Send verification email if email provided
+    if data.email and _smtp_configured():
+        _ver_token = _secrets.token_urlsafe(32)
+        _ver_expires = datetime.now(timezone.utc) + timedelta(hours=48)
+        db.add(models.EmailVerificationToken(
+            user_id=user.id, token=_ver_token, expires_at=_ver_expires
+        ))
+        _app_url = os.getenv("APP_URL", "http://localhost:5173").rstrip("/")
+        _ver_url = f"{_app_url}/verify-email?token={_ver_token}"
+        _html = f"""
+        <div style="font-family:sans-serif;max-width:520px;margin:0 auto">
+          <h2 style="color:#ea580c">Welcome to SellerPulse!</h2>
+          <p>Hi {user.username}, please verify your email to activate your account.</p>
+          <a href="{_ver_url}" style="display:inline-block;background:#ea580c;color:white;
+             padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;margin:16px 0">
+            Verify Email
+          </a>
+          <p style="color:#999;font-size:11px">Link expires in 48 hours.</p>
+        </div>"""
+        try:
+            from notifications import send_email as _send_email
+            _send_email(data.email, "Verify your SellerPulse email", _html)
+        except Exception as _e:
+            log.warning("Verification email failed: %s", _e)
+
     db.commit()
 
     token = create_token(user.username, user.role, tenant.id)
@@ -552,6 +619,7 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
         "tenant_id": tenant.id,
         "slug": slug,
         "needs_amazon_connect": True,
+        "email_verification_sent": bool(data.email and _smtp_configured()),
     }
 
 
@@ -606,7 +674,8 @@ class ResetPasswordRequest(BaseModel):
     new_password: str
 
 @app.post("/api/auth/forgot-password", status_code=200)
-def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def forgot_password(request: Request, data: ForgotPasswordRequest, db: Session = Depends(get_db)):
     import secrets
     from datetime import timezone as _tz
     from notifications import send_email, _smtp_configured
@@ -654,7 +723,8 @@ def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
 
 
 @app.post("/api/auth/reset-password", status_code=200)
-def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def reset_password(request: Request, data: ResetPasswordRequest, db: Session = Depends(get_db)):
     from datetime import timezone as _tz
     from auth import hash_password
 
@@ -678,6 +748,23 @@ def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
     row.used = True
     db.commit()
     return {"ok": True}
+
+
+@app.get("/api/auth/verify-email")
+def verify_email(token: str, db: Session = Depends(get_db)):
+    from datetime import timezone as _tz
+    row = db.query(models.EmailVerificationToken).filter(
+        models.EmailVerificationToken.token == token,
+        models.EmailVerificationToken.used == False,
+    ).first()
+    if not row or datetime.now(_tz.utc) > row.expires_at:
+        raise HTTPException(400, "Invalid or expired verification link")
+    user = db.query(models.User).filter_by(id=row.user_id).first()
+    if user:
+        user.email_verified = True
+    row.used = True
+    db.commit()
+    return {"ok": True, "message": "Email verified — you're all set!"}
 
 
 @app.put("/api/auth/profile")

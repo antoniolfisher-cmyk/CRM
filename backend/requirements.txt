@@ -12,4 +12,7 @@ httpx==0.27.0
 anthropic>=0.25.0
 groq>=0.9.0
 psycopg2-binary==2.9.9
-# cache-bust: 2026-04-13
+slowapi==0.1.9
+sentry-sdk[fastapi]==2.5.1
+alembic==1.13.1
+# cache-bust: 2026-04-28

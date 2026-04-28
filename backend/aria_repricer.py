@@ -517,14 +517,22 @@ async def _reprice_all_tenants():
         await run_all_async(tenant_id=None)
         return
 
+    import asyncio as _asyncio
+    sem = _asyncio.Semaphore(3)   # max 3 tenants repricing concurrently
     total = {"repriced": 0, "pushed": 0, "skipped": 0, "errors": 0}
-    for tid in tenant_ids:
-        try:
-            r = await run_all_async(tenant_id=tid)
-            for k in total:
-                total[k] += r.get(k, 0)
-        except Exception as e:
-            log.error("Aria: tenant %d failed: %s", tid, e)
+    lock  = _asyncio.Lock()
+
+    async def _reprice_one(tid):
+        async with sem:
+            try:
+                r = await run_all_async(tenant_id=tid)
+                async with lock:
+                    for k in total:
+                        total[k] += r.get(k, 0)
+            except Exception as e:
+                log.error("Aria: tenant %d failed: %s", tid, e)
+
+    await _asyncio.gather(*[_reprice_one(tid) for tid in tenant_ids])
 
     log.info(
         "Aria scheduled run complete (all tenants) — repriced=%d pushed=%d skipped=%d errors=%d",

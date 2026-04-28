@@ -5,6 +5,7 @@ import Login from './pages/Login'
 import Register from './pages/Register'
 import ForgotPassword from './pages/ForgotPassword'
 import ResetPassword from './pages/ResetPassword'
+import VerifyEmail from './pages/VerifyEmail'
 import Onboarding from './pages/Onboarding'
 import Billing from './pages/Billing'
 import AdminBilling from './pages/AdminBilling'
@@ -32,6 +33,7 @@ export default function App() {
         <Route path="/register"          element={<PublicRoute><Register /></PublicRoute>} />
         <Route path="/forgot-password"   element={<PublicRoute><ForgotPassword /></PublicRoute>} />
         <Route path="/reset-password"    element={<ResetPassword />} />
+        <Route path="/verify-email"      element={<VerifyEmail />} />
         <Route path="/onboarding/amazon" element={<OnboardingRoute><Onboarding /></OnboardingRoute>} />
         <Route path="/*"                 element={<PrivateRoute />} />
       </Routes>
