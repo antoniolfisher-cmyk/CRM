@@ -49,17 +49,6 @@ try:
 except Exception as _create_all_err:
     print(f"[startup] create_all warning: {_create_all_err}", flush=True)
 
-# Run any pending Alembic migrations automatically on startup
-try:
-    from alembic.config import Config as _AlembicConfig
-    from alembic import command as _alembic_cmd
-    _alembic_cfg = _AlembicConfig(os.path.join(os.path.dirname(__file__), "alembic.ini"))
-    _alembic_cfg.set_main_option("script_location", os.path.join(os.path.dirname(__file__), "alembic"))
-    _alembic_cmd.upgrade(_alembic_cfg, "head")
-    print("[startup] Alembic migrations up to date", flush=True)
-except Exception as _alembic_err:
-    print(f"[startup] Alembic migration warning: {_alembic_err}", flush=True)
-
 # ─── Migrations: add new columns to existing tables ───────────────────────────
 try:
     from sqlalchemy import inspect as sa_inspect, text
