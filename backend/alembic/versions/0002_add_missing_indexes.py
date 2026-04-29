@@ -7,7 +7,7 @@ Create Date: 2026-04-29
 from alembic import op
 
 revision = '0002'
-down_revision = '0001'
+down_revision = '0001_safe_new_tables'
 branch_labels = None
 depends_on = None
 

@@ -693,16 +693,51 @@ def startup():
 
 
 def _run_alembic_migrations():
+    db_url = os.getenv("DATABASE_URL", "sqlite:///./crm.db").replace("postgres://", "postgresql://", 1)
     try:
         from alembic.config import Config
         from alembic import command
+        from alembic.runtime.migration import MigrationContext
+        from sqlalchemy import create_engine as _ce
+
         cfg = Config()
         cfg.set_main_option("script_location", os.path.join(os.path.dirname(__file__), "alembic"))
-        cfg.set_main_option("sqlalchemy.url", os.getenv("DATABASE_URL", "sqlite:///./crm.db").replace("postgres://", "postgresql://", 1))
+        cfg.set_main_option("sqlalchemy.url", db_url)
+
+        # Detect broken chain: if alembic_version has a stale revision that
+        # doesn't match any migration file, stamp it to the closest valid head
+        # so that subsequent migrations can run.
+        try:
+            _eng = _ce(db_url)
+            with _eng.connect() as _conn:
+                ctx = MigrationContext.configure(_conn)
+                current = ctx.get_current_heads()
+                if current and '0001_safe_new_tables' not in current and '0001' in current:
+                    log.warning("Fixing broken Alembic chain: stamping 0001_safe_new_tables")
+                    command.stamp(cfg, "0001_safe_new_tables")
+            _eng.dispose()
+        except Exception as _stamp_err:
+            log.warning("Alembic chain check skipped: %s", _stamp_err)
+
         command.upgrade(cfg, "head")
         log.info("Alembic migrations applied")
     except Exception as e:
         log.warning("Alembic migration skipped: %s", e)
+
+    # Emergency safety net: apply critical columns directly if migrations
+    # failed for any reason, so the app stays functional.
+    try:
+        from sqlalchemy import create_engine as _ce, text as _text
+        _eng = _ce(db_url)
+        with _eng.begin() as _conn:
+            _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_count INTEGER DEFAULT 0"))
+            _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ"))
+            _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ"))
+            _conn.execute(_text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ"))
+        _eng.dispose()
+        log.info("Emergency column safety-net applied")
+    except Exception as _e:
+        log.warning("Emergency column safety-net skipped: %s", _e)
 
 
 @app.on_event("shutdown")
