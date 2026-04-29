@@ -15,7 +15,7 @@ COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Force cache bust - updated 2026-04-29
-ARG CACHEBUST=2026-04-29-v1
+ARG CACHEBUST=2026-04-29-v2
 RUN echo "Cache bust: $CACHEBUST"
 
 # Copy backend source
@@ -28,10 +28,6 @@ COPY --from=frontend-build /frontend/dist ./static
 RUN mkdir -p /data
 
 ENV PORT=8000
-# 2 workers fits Railway's default 512 MB container; set WEB_CONCURRENCY=4 if you upgrade RAM
-ENV WEB_CONCURRENCY=2
 EXPOSE 8000
 
-# prestart.py runs migrations + seed once before workers spawn, then sets PRESTART_DONE
-# so each uvicorn worker skips the migration step and starts faster.
-CMD PRESTART_DONE=1 python prestart.py && PRESTART_DONE=1 uvicorn main:app --host 0.0.0.0 --port ${PORT} --workers ${WEB_CONCURRENCY}
+CMD python seed_if_empty.py; uvicorn main:app --host 0.0.0.0 --port ${PORT}
