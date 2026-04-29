@@ -735,23 +735,29 @@ def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
 
     if not user or not verify_password(data.password, user.password_hash):
         if user:
-            user.failed_login_count = (user.failed_login_count or 0) + 1
-            if user.failed_login_count >= _MAX_FAILED_LOGINS:
-                user.locked_until = datetime.now(_tz.utc) + timedelta(minutes=_LOCKOUT_MINUTES)
-                _audit(db, "auth.lockout", request=request,
-                       current={"sub": user.username, "tenant_id": user.tenant_id},
-                       detail=f"locked for {_LOCKOUT_MINUTES}min after {user.failed_login_count} failures")
-            db.commit()
+            try:
+                user.failed_login_count = (user.failed_login_count or 0) + 1
+                if user.failed_login_count >= _MAX_FAILED_LOGINS:
+                    user.locked_until = datetime.now(_tz.utc) + timedelta(minutes=_LOCKOUT_MINUTES)
+                    _audit(db, "auth.lockout", request=request,
+                           current={"sub": user.username, "tenant_id": user.tenant_id},
+                           detail=f"locked for {_LOCKOUT_MINUTES}min after {user.failed_login_count} failures")
+                db.commit()
+            except Exception:
+                db.rollback()
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is disabled")
 
-    # Successful login — reset failure counter
-    user.failed_login_count = 0
-    user.locked_until       = None
-    user.last_login_at      = datetime.now(_tz.utc)
-    db.commit()
+    # Successful login — reset failure counter (guarded in case migration is pending)
+    try:
+        user.failed_login_count = 0
+        user.locked_until       = None
+        user.last_login_at      = datetime.now(_tz.utc)
+        db.commit()
+    except Exception:
+        db.rollback()
 
     tenant_id = user.tenant_id or 1
     _audit(db, "auth.login", request=request,
