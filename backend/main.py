@@ -6,6 +6,7 @@ import json
 import urllib.parse
 from fastapi import FastAPI, Depends, HTTPException, Request, BackgroundTasks, UploadFile, File, Body
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -90,7 +91,7 @@ from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
 import models
 import schemas
-from database import engine, get_db
+from database import engine, get_db, get_read_db
 from fastapi.security import HTTPAuthorizationCredentials
 from auth import (
     LoginRequest, RegisterRequest, create_token, require_auth, require_admin,
@@ -670,6 +671,7 @@ class GlobalRateLimitMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(GlobalRateLimitMiddleware)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 # ─── Request timing + DB statement timeout middleware ─────────────────────────
@@ -3097,7 +3099,7 @@ def list_accounts(
     territory: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_read_db),
     current: dict = Depends(require_auth),
 ):
     tid = current.get("tenant_id")
@@ -3705,7 +3707,7 @@ def list_follow_ups(
     overdue_only: bool = False,
     limit: int = 100,
     offset: int = 0,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_read_db),
     current: dict = Depends(require_auth),
 ):
     tid = current.get("tenant_id")
@@ -3783,7 +3785,7 @@ def list_orders(
     status: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_read_db),
     current: dict = Depends(require_auth),
 ):
     tid = current.get("tenant_id")
@@ -3877,7 +3879,7 @@ def list_products(
     status: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_read_db),
     current: dict = Depends(require_auth),
 ):
     tid = current.get("tenant_id")

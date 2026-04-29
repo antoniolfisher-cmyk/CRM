@@ -1,7 +1,18 @@
+# Celery worker + beat scheduler
+# Deploy as a separate Railway service pointing to this Dockerfile.
+# Requires: REDIS_URL, DATABASE_URL (same values as the web service).
+# Once running, set USE_CELERY=true on the web service to disable the
+# built-in APScheduler so scheduled jobs run exclusively via Celery beat.
 FROM python:3.11-slim
 WORKDIR /app
+
 COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+
 COPY backend/ ./
-RUN mkdir -p /data
-CMD ["python", "worker.py"]
+
+ENV PYTHONUNBUFFERED=1
+
+# -B runs beat (scheduler) alongside the worker in one process.
+# --concurrency=4 handles up to 4 simultaneous background tasks.
+CMD celery -A celery_app worker -B --loglevel=info --concurrency=4

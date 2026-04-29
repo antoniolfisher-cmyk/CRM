@@ -581,6 +581,9 @@ def _is_scheduler_leader() -> bool:
 
 def start_scheduler():
     global _scheduler
+    if os.getenv("USE_CELERY", "").lower() in ("1", "true", "yes"):
+        log.info("Scheduler: USE_CELERY=true — APScheduler disabled, Celery beat handles scheduling")
+        return
     if not _is_scheduler_leader():
         log.info("Scheduler: another worker is leader — skipping job registration")
         return
