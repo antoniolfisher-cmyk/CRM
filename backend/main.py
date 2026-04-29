@@ -807,6 +807,7 @@ def _audit(db, action: str, *, request: Request = None, current: dict = None,
 
 @app.on_event("startup")
 def startup():
+    _check_production_config()
     # Migrations run in prestart.py before workers spawn — skip here to avoid races.
     # Fall back to running them if somehow prestart was not executed (local dev).
     if not os.getenv("PRESTART_DONE"):
@@ -815,6 +816,36 @@ def startup():
         log.info("Scheduler disabled (DISABLE_SCHEDULER=true) — web-only mode")
     else:
         start_scheduler()
+
+
+def _check_production_config():
+    """Warn loudly on startup if critical env vars are still at their insecure defaults."""
+    import sys
+    is_prod = os.getenv("RAILWAY_ENVIRONMENT") == "production"
+    errors = []
+    warnings = []
+
+    sk = os.getenv("SECRET_KEY", "")
+    if not sk or sk in ("dev-secret-change-in-production", "changeme", "secret", "sellerpulse-oauth-secret"):
+        errors.append("SECRET_KEY is not set or is using an insecure default — all JWTs are forgeable")
+
+    if os.getenv("CRM_PASSWORD", "changeme") == "changeme":
+        warnings.append("CRM_PASSWORD is still 'changeme' — change the admin password immediately")
+
+    if not os.getenv("STRIPE_SECRET_KEY", ""):
+        warnings.append("STRIPE_SECRET_KEY not set — billing is disabled")
+    elif os.getenv("STRIPE_SECRET_KEY", "").startswith("sk_test_") and is_prod:
+        warnings.append("STRIPE_SECRET_KEY is a test key in production — use sk_live_...")
+
+    for w in warnings:
+        log.warning("CONFIG WARNING: %s", w)
+
+    if errors:
+        for e in errors:
+            log.error("CONFIG ERROR: %s", e)
+        if is_prod:
+            log.error("FATAL: refusing to start in production with insecure configuration")
+            sys.exit(1)
 
 
 def _run_alembic_migrations():
