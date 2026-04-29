@@ -100,6 +100,8 @@ from auth import (
 from notifications import start_scheduler, stop_scheduler, send_daily_digests, send_email, build_digest_html, _smtp_configured, get_aria_schedule_info
 import aria_repricer
 import stripe_billing
+from fastapi.encoders import jsonable_encoder
+from cache import cache_get, cache_set, cache_bust, make_key
 
 # ── Background email queue ─────────────────────────────────────────────────────
 # Wraps send_email in a thread-pool executor so the request thread is never
@@ -947,6 +949,22 @@ def logout(
     exp   = current.get("exp", int(_time.time()) + TOKEN_EXPIRE_HOURS * 3600)
     revoke_token(token, exp)
     return {"ok": True}
+
+
+@app.post("/api/auth/refresh")
+def refresh_token(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer),
+    current: dict = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """Issue a new JWT with fresh 7-day expiry. Client should call when token < 24 h from expiry."""
+    user = db.query(models.User).filter_by(
+        username=current["sub"],
+        tenant_id=current.get("tenant_id"),
+    ).first()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="User not found or inactive")
+    return {"access_token": create_token(user.username, user.role, user.tenant_id), "token_type": "bearer"}
 
 
 @app.post("/api/auth/register")
@@ -3082,6 +3100,12 @@ def list_accounts(
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
 ):
+    tid = current.get("tenant_id")
+    ck = make_key(tid, "accounts", search=search, status=status,
+                  account_type=account_type, territory=territory, limit=limit, offset=offset)
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
     q = db.query(models.Account)
     q = _filter_owned(q, models.Account, current)
     if search:
@@ -3096,7 +3120,9 @@ def list_accounts(
         q = q.filter(models.Account.account_type == account_type)
     if territory:
         q = q.filter(models.Account.territory == territory)
-    return q.order_by(models.Account.name).offset(offset).limit(min(limit, 1000)).all()
+    result = q.order_by(models.Account.name).offset(offset).limit(min(limit, 1000)).all()
+    cache_set(ck, jsonable_encoder(result), ttl=30)
+    return result
 
 
 @app.get("/api/accounts/{account_id}", response_model=schemas.AccountOut)
@@ -3119,6 +3145,7 @@ def create_account(data: schemas.AccountCreate, db: Session = Depends(get_db), c
     db.add(acc)
     db.commit()
     db.refresh(acc)
+    cache_bust(tid, "accounts")
     return acc
 
 
@@ -3681,6 +3708,12 @@ def list_follow_ups(
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
 ):
+    tid = current.get("tenant_id")
+    ck = make_key(tid, "follow_ups", account_id=account_id, status=status, priority=priority,
+                  follow_up_type=follow_up_type, overdue_only=overdue_only, limit=limit, offset=offset)
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
     q = db.query(models.FollowUp).options(joinedload(models.FollowUp.account), joinedload(models.FollowUp.contact))
     q = _filter_owned(q, models.FollowUp, current)
     if account_id:
@@ -3693,7 +3726,9 @@ def list_follow_ups(
         q = q.filter(models.FollowUp.follow_up_type == follow_up_type)
     if overdue_only:
         q = q.filter(models.FollowUp.status == "pending", models.FollowUp.due_date < datetime.utcnow())
-    return q.order_by(models.FollowUp.due_date.asc()).offset(offset).limit(min(limit, 1000)).all()
+    result = q.order_by(models.FollowUp.due_date.asc()).offset(offset).limit(min(limit, 1000)).all()
+    cache_set(ck, jsonable_encoder(result), ttl=30)
+    return result
 
 
 @app.get("/api/follow-ups/{follow_up_id}", response_model=schemas.FollowUpOut)
@@ -3711,6 +3746,7 @@ def create_follow_up(data: schemas.FollowUpCreate, db: Session = Depends(get_db)
     db.add(fu)
     db.commit()
     db.refresh(fu)
+    cache_bust(current.get("tenant_id"), "follow_ups")
     return db.query(models.FollowUp).options(joinedload(models.FollowUp.account), joinedload(models.FollowUp.contact)).filter(models.FollowUp.id == fu.id).first()
 
 
@@ -3750,13 +3786,20 @@ def list_orders(
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
 ):
+    tid = current.get("tenant_id")
+    ck = make_key(tid, "orders", account_id=account_id, status=status, limit=limit, offset=offset)
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
     q = db.query(models.Order).options(joinedload(models.Order.account), joinedload(models.Order.items))
     q = _filter_owned(q, models.Order, current)
     if account_id:
         q = q.filter(models.Order.account_id == account_id)
     if status:
         q = q.filter(models.Order.status == status)
-    return q.order_by(models.Order.order_date.desc()).offset(offset).limit(min(limit, 1000)).all()
+    result = q.order_by(models.Order.order_date.desc()).offset(offset).limit(min(limit, 1000)).all()
+    cache_set(ck, jsonable_encoder(result), ttl=30)
+    return result
 
 
 @app.get("/api/orders/{order_id}", response_model=schemas.OrderOut)
@@ -3787,6 +3830,7 @@ def create_order(data: schemas.OrderCreate, db: Session = Depends(get_db), curre
     order.total = round(subtotal - order.discount, 2)
     db.commit()
     db.refresh(order)
+    cache_bust(current.get("tenant_id"), "orders")
     return db.query(models.Order).options(joinedload(models.Order.account), joinedload(models.Order.items)).filter(models.Order.id == order.id).first()
 
 
@@ -3836,6 +3880,12 @@ def list_products(
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
 ):
+    tid = current.get("tenant_id")
+    ck = make_key(tid, "products", search=search, replenish=replenish, ungated=ungated,
+                  status=status, limit=limit, offset=offset)
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
     q = db.query(models.Product)
     q = _filter_owned(q, models.Product, current)
     if search:
@@ -3851,7 +3901,9 @@ def list_products(
         q = q.filter(models.Product.ungated == ungated)
     if status is not None:
         q = q.filter(models.Product.status == status)
-    return q.order_by(models.Product.created_at.desc()).offset(offset).limit(min(limit, 1000)).all()
+    result = q.order_by(models.Product.created_at.desc()).offset(offset).limit(min(limit, 1000)).all()
+    cache_set(ck, jsonable_encoder(result), ttl=30)
+    return result
 
 
 @app.get("/api/products/{product_id}", response_model=schemas.ProductOut)
@@ -3874,6 +3926,7 @@ def create_product(data: schemas.ProductCreate, db: Session = Depends(get_db), c
     db.add(p)
     db.commit()
     db.refresh(p)
+    cache_bust(tid, "products")
     return p
 
 

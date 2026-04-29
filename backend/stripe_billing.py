@@ -12,6 +12,7 @@ are available (suitable for self-hosted / development installs).
 """
 
 import os
+import time
 import logging
 from datetime import datetime
 
@@ -120,6 +121,8 @@ def create_checkout_session(tenant_id: int, plan: str, success_path: str = "/onb
         raise ValueError(f"Invalid plan or missing Stripe price ID for plan: {plan}")
 
     app_url = _app_url()
+    # 5-minute idempotency window: retries within the same window reuse the session
+    idempotency_key = f"checkout:{tenant_id}:{plan}:{int(time.time()) // 300}"
     session = stripe.checkout.Session.create(
         mode="subscription",
         payment_method_types=["card"],
@@ -128,6 +131,7 @@ def create_checkout_session(tenant_id: int, plan: str, success_path: str = "/onb
         cancel_url=f"{app_url}{cancel_path}",
         metadata={"tenant_id": str(tenant_id), "plan": plan},
         subscription_data={"trial_period_days": 14},
+        idempotency_key=idempotency_key,
     )
     return session.url
 
