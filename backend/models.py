@@ -487,3 +487,20 @@ class PasswordResetToken(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User")
+
+
+# ─── Audit Log ───────────────────────────────────────────────────────────────
+
+class AuditLog(Base):
+    """Immutable record of security-relevant actions, scoped per tenant."""
+    __tablename__ = "audit_logs"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    tenant_id  = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
+    user_id    = Column(Integer, ForeignKey("users.id"), nullable=True)
+    username   = Column(String, nullable=True)
+    action     = Column(String, nullable=False, index=True)  # e.g. "login", "credentials.save"
+    target     = Column(String, nullable=True)               # e.g. "user:42", "tenant:7"
+    detail     = Column(Text, nullable=True)                 # JSON or plain description
+    ip         = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)

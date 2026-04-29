@@ -21,9 +21,10 @@ try:
         sentry_sdk.init(
             dsn=_sentry_dsn,
             integrations=[FastApiIntegration(), SqlalchemyIntegration()],
-            traces_sample_rate=0.1,
+            traces_sample_rate=0.05,
+            profiles_sample_rate=0.05,
             environment=os.getenv("RAILWAY_ENVIRONMENT", "production"),
-            send_default_pii=True,
+            send_default_pii=False,
         )
         log.info("Sentry initialised")
 except Exception as _sentry_err:
@@ -608,6 +609,56 @@ class GlobalRateLimitMiddleware(BaseHTTPMiddleware):
 app.add_middleware(GlobalRateLimitMiddleware)
 
 
+# ─── Sentry request context middleware ────────────────────────────────────────
+
+@app.middleware("http")
+async def _sentry_context(request: Request, call_next):
+    """Tag Sentry errors with tenant_id and username from JWT."""
+    try:
+        import sentry_sdk as _sentry
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            from auth import require_auth as _ra
+            import jose.jwt as _jwt
+            payload = _jwt.decode(
+                auth[7:],
+                os.getenv("SECRET_KEY", "changeme"),
+                algorithms=["HS256"],
+            )
+            with _sentry.configure_scope() as scope:
+                scope.set_user({"username": payload.get("sub")})
+                scope.set_tag("tenant_id", str(payload.get("tenant_id", "")))
+    except Exception:
+        pass
+    return await call_next(request)
+
+
+# ─── Audit log helper ────────────────────────────────────────────────────────
+
+def _audit(db, action: str, *, request: Request = None, current: dict = None,
+           target: str = None, detail: str = None):
+    """Write one immutable audit log row. Never raises — errors are logged only."""
+    try:
+        ip = None
+        if request:
+            ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or (
+                request.client.host if request.client else None
+            )
+        tenant_id = current.get("tenant_id") if current else None
+        username  = current.get("sub")       if current else None
+        db.add(models.AuditLog(
+            tenant_id=tenant_id,
+            username=username,
+            action=action,
+            target=target,
+            detail=detail,
+            ip=ip,
+        ))
+        db.commit()
+    except Exception as _e:
+        log.warning("Audit log write failed: %s", _e)
+
+
 @app.on_event("startup")
 def startup():
     _run_alembic_migrations()
@@ -649,6 +700,9 @@ def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is disabled")
     tenant_id = user.tenant_id or 1
+    _audit(db, "auth.login", request=request,
+           current={"sub": user.username, "tenant_id": tenant_id},
+           detail=f"role={user.role}")
     return {"access_token": create_token(user.username, user.role, tenant_id), "token_type": "bearer"}
 
 
@@ -1412,6 +1466,8 @@ def create_user(data: schemas.UserCreate, db: Session = Depends(get_db), current
     db.add(user)
     db.commit()
     db.refresh(user)
+    _audit(db, "user.create", current=current,
+           target=f"user:{user.id}", detail=f"username={user.username} role={user.role}")
     return user
 
 
@@ -1475,6 +1531,8 @@ def delete_user(user_id: int, db: Session = Depends(get_db), payload: dict = Dep
         raise HTTPException(status_code=404, detail="User not found")
     if user.username == payload["sub"]:
         raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    _audit(db, "user.delete", current=payload,
+           target=f"user:{user_id}", detail=f"username={user.username}")
     db.delete(user)
     db.commit()
 
@@ -1583,6 +1641,116 @@ async def billing_webhook(request: Request, db: Session = Depends(get_db)):
         return result
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+# ─── Audit Log ────────────────────────────────────────────────────────────────
+
+@app.get("/api/admin/audit-log")
+def get_audit_log(
+    tenant_id: int = None,
+    action: str = None,
+    limit: int = 200,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_superadmin),
+):
+    """Platform-wide audit log (superadmin only). Filter by tenant or action."""
+    q = db.query(models.AuditLog).order_by(models.AuditLog.created_at.desc())
+    if tenant_id:
+        q = q.filter(models.AuditLog.tenant_id == tenant_id)
+    if action:
+        q = q.filter(models.AuditLog.action.ilike(f"%{action}%"))
+    rows = q.offset(offset).limit(min(limit, 500)).all()
+    return [
+        {
+            "id":        r.id,
+            "tenant_id": r.tenant_id,
+            "username":  r.username,
+            "action":    r.action,
+            "target":    r.target,
+            "detail":    r.detail,
+            "ip":        r.ip,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+
+
+# ─── GDPR / Data Export ───────────────────────────────────────────────────────
+
+@app.get("/api/tenant/export")
+def export_tenant_data(
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_admin),
+):
+    """
+    Export all data belonging to the current tenant as a single JSON document.
+    Tenants can use this to satisfy GDPR/CCPA data portability requests.
+    """
+    from sqlalchemy.orm import joinedload
+    tid = current.get("tenant_id")
+    if not tid:
+        raise HTTPException(400, "No tenant context")
+
+    tenant = db.query(models.Tenant).filter_by(id=tid).first()
+    users  = db.query(models.User).filter_by(tenant_id=tid).all()
+    accounts = db.query(models.Account).filter_by(tenant_id=tid).all()
+    contacts = db.query(models.Contact).filter(
+        models.Contact.account_id.in_([a.id for a in accounts])
+    ).all()
+    follow_ups = db.query(models.FollowUp).filter_by(tenant_id=tid).all()
+    products = db.query(models.Product).filter_by(tenant_id=tid).all()
+    orders   = db.query(models.Order).filter_by(tenant_id=tid).all()
+
+    def _dt(v):
+        return v.isoformat() if v else None
+
+    payload = {
+        "exported_at": datetime.utcnow().isoformat(),
+        "tenant": {
+            "id": tenant.id, "name": tenant.name, "slug": tenant.slug,
+            "plan": tenant.plan, "created_at": _dt(tenant.created_at),
+        },
+        "users": [
+            {"id": u.id, "username": u.username, "email": u.email,
+             "role": u.role, "created_at": _dt(u.created_at)}
+            for u in users
+        ],
+        "accounts": [
+            {"id": a.id, "name": a.name, "email": a.email, "phone": a.phone,
+             "status": a.status, "account_type": a.account_type,
+             "pipeline_stage": a.pipeline_stage, "created_at": _dt(a.created_at)}
+            for a in accounts
+        ],
+        "contacts": [
+            {"id": c.id, "account_id": c.account_id,
+             "first_name": c.first_name, "last_name": c.last_name,
+             "email": c.email, "phone": c.phone}
+            for c in contacts
+        ],
+        "follow_ups": [
+            {"id": f.id, "account_id": f.account_id, "subject": f.subject,
+             "status": f.status, "priority": f.priority,
+             "due_date": _dt(f.due_date), "created_at": _dt(f.created_at)}
+            for f in follow_ups
+        ],
+        "products": [
+            {"id": p.id, "name": p.name, "asin": p.asin, "sku": p.sku,
+             "status": p.status, "cost": p.cost, "created_at": _dt(p.created_at)}
+            for p in products
+        ],
+        "orders": [
+            {"id": o.id, "status": o.status,
+             "total_amount": o.total_amount, "created_at": _dt(o.created_at)}
+            for o in orders
+        ],
+    }
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        content=payload,
+        headers={"Content-Disposition": f'attachment; filename="sellerpulse-export-{tid}.json"'},
+    )
 
 
 # ─── Super-Admin Billing Dashboard (platform owner only) ─────────────────────
@@ -1725,6 +1893,8 @@ def admin_suspend_tenant(
         raise HTTPException(404, "Tenant not found")
     tenant.is_active = False
     db.commit()
+    _audit(db, "tenant.suspend", current=current,
+           target=f"tenant:{tenant_id}", detail=f"name={tenant.name}")
     return {"ok": True, "tenant_id": tenant_id, "is_active": False}
 
 
@@ -1740,6 +1910,8 @@ def admin_activate_tenant(
         raise HTTPException(404, "Tenant not found")
     tenant.is_active = True
     db.commit()
+    _audit(db, "tenant.activate", current=current,
+           target=f"tenant:{tenant_id}", detail=f"name={tenant.name}")
     return {"ok": True, "tenant_id": tenant_id, "is_active": True}
 
 
@@ -1757,6 +1929,8 @@ def admin_grant_access(
     tenant.stripe_status = None
     tenant.trial_ends_at = None
     db.commit()
+    _audit(db, "tenant.grant_access", current=current,
+           target=f"tenant:{tenant_id}", detail=f"name={tenant.name}")
     return {"ok": True, "tenant_id": tenant_id}
 
 
@@ -1800,6 +1974,9 @@ def admin_unlock_user(
     if new_password:
         user.password_hash = hash_password(new_password)
     db.commit()
+    _audit(db, "user.unlock", current=current,
+           target=f"user:{user_id}",
+           detail=f"username={user.username} tenant={tenant_id} password_reset={bool(new_password)}")
     return {"ok": True, "user_id": user_id, "username": user.username, "password_reset": bool(new_password)}
 
 
@@ -1817,8 +1994,11 @@ def admin_change_plan(
     new_plan = body.get("plan", "starter")
     if new_plan not in stripe_billing.PLANS:
         raise HTTPException(400, f"Unknown plan: {new_plan}")
+    old_plan = tenant.plan
     tenant.plan = new_plan
     db.commit()
+    _audit(db, "tenant.plan_change", current=current,
+           target=f"tenant:{tenant_id}", detail=f"name={tenant.name} {old_plan}->{new_plan}")
     return {"ok": True, "tenant_id": tenant_id, "plan": new_plan}
 
 
@@ -5060,12 +5240,13 @@ def save_amazon_credentials(
     if "is_sandbox" in body:          cred.is_sandbox        = bool(body["is_sandbox"])
     cred.connected_at  = datetime.utcnow()
     cred.connected_by  = current["sub"]
-    # Default store_name to tenant company name if not provided
     if not cred.store_name:
         _t = db.query(models.Tenant).filter_by(id=tenant_id).first()
         if _t:
             cred.store_name = _t.name
     db.commit()
+    _audit(db, "amazon.credentials.save", current=current,
+           detail=f"seller_id={body.get('seller_id')} store={cred.store_name}")
     return {"ok": True}
 
 

@@ -89,6 +89,25 @@ export const api = {
   adminChangePlan: (id, plan) => req('PUT', `/admin/billing/tenants/${id}/plan`, { plan }),
   adminTenantUsers: (id) => req('GET', `/admin/billing/tenants/${id}/users`),
   adminUnlockUser: (tenantId, userId, newPassword) => req('POST', `/admin/billing/tenants/${tenantId}/users/${userId}/unlock`, newPassword ? { new_password: newPassword } : {}),
+  getAuditLog: (params = {}) => {
+    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== '')).toString()
+    return req('GET', `/admin/audit-log${qs ? '?' + qs : ''}`)
+  },
+
+  // GDPR / Data Export
+  exportTenantData: () => {
+    const token = localStorage.getItem(TOKEN_KEY)
+    return fetch('/api/tenant/export', {
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    }).then(async r => {
+      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText) }
+      const blob = await r.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a'); a.href = url
+      a.download = `sellerpulse-export-${Date.now()}.json`
+      a.click(); URL.revokeObjectURL(url)
+    })
+  },
 
   // Accounts
   getAccounts: (params = {}) => {
