@@ -1331,7 +1331,17 @@ def notification_status(db: Session = Depends(get_db), current: dict = Depends(r
     return {
         "smtp_configured": _smtp_configured(),
         "smtp_host": os.getenv("SMTP_HOST", ""),
-        "smtp_user": (os.getenv("SENDGRID_API_KEY") and "SendGrid API") or (os.getenv("RESEND_API_KEY") and "Resend API") or os.getenv("SMTP_USER", ""),
+        "smtp_user": (
+            (os.getenv("SENDGRID_API_KEY") and "SendGrid API") or
+            (os.getenv("RESEND_API_KEY") and "Resend API") or
+            os.getenv("SMTP_USER", "")
+        ),
+        "email_provider": (
+            "sendgrid" if os.getenv("SENDGRID_API_KEY") else
+            "resend"   if os.getenv("RESEND_API_KEY")   else
+            "smtp"     if (os.getenv("SMTP_HOST") and os.getenv("SMTP_USER")) else
+            "none"
+        ),
         "notify_hour_utc": int(os.getenv("NOTIFY_HOUR", "8")),
         "admin_email": user.email if user else None,
         "inbound_configured": bool(inbound_email),
@@ -2754,7 +2764,7 @@ def send_account_email(
     """Send a branded wholesale email and log it to the account thread."""
     from notifications import send_email as _send_email, _smtp_configured
     if not _smtp_configured():
-        raise HTTPException(status_code=400, detail="Email not configured — add SENDGRID_API_KEY in Railway")
+        raise HTTPException(status_code=400, detail="Email not configured — add SENDGRID_API_KEY, RESEND_API_KEY, or SMTP_HOST+SMTP_USER+SMTP_PASS in Railway")
     acc = db.query(models.Account).filter(models.Account.id == account_id).first()
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -6073,10 +6083,10 @@ async def send_ungate_email(req_id: int, body: dict, db: Session = Depends(get_d
 
     smtp_host = os.getenv("SMTP_HOST", "").strip()
     smtp_user = os.getenv("SMTP_USER", "").strip()
-    smtp_pass = os.getenv("SMTP_PASS", "").strip()
+    smtp_pass = (os.getenv("SMTP_PASS") or os.getenv("SMTP_PASSWORD") or "").strip()
     smtp_port = int(os.getenv("SMTP_PORT", "587"))
     if not all([smtp_host, smtp_user, smtp_pass]):
-        raise HTTPException(503, "SMTP not configured — add SMTP_HOST, SMTP_USER, SMTP_PASS to environment")
+        raise HTTPException(503, "SMTP not configured — add SMTP_HOST, SMTP_USER, and SMTP_PASS to Railway environment variables")
 
     to_email        = body.get("to_email", "seller-performance@amazon.com")
     subject         = body.get("subject", "")
@@ -6090,9 +6100,10 @@ async def send_ungate_email(req_id: int, body: dict, db: Session = Depends(get_d
     inv = db.query(models.UngateInvoice).filter_by(req_id=req_id).first() if include_invoice else None
     has_invoice = bool(inv and inv.data_b64)
 
+    smtp_from = os.getenv("SMTP_FROM", smtp_user)
     msg = MIMEMultipart("mixed" if has_invoice else "alternative")
     msg["Subject"] = subject
-    msg["From"]    = smtp_user
+    msg["From"]    = smtp_from
     msg["To"]      = to_email
     msg.attach(MIMEText(email_body, "plain"))
 
@@ -6108,7 +6119,7 @@ async def send_ungate_email(req_id: int, body: dict, db: Session = Depends(get_d
             server.ehlo()
             server.starttls()
             server.login(smtp_user, smtp_pass)
-            server.sendmail(smtp_user, [to_email], msg.as_string())
+            server.sendmail(smtp_from, [to_email], msg.as_string())
     except Exception as e:
         raise HTTPException(502, f"Failed to send email: {str(e)}")
 

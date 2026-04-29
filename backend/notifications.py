@@ -1,16 +1,23 @@
 """
 Email notification system for SellerPulse.
 
-Sends a daily follow-up digest to each active user who has an email address
-and has notifications enabled.
+Supported email providers (set ONE of the following in Railway):
 
-Required env vars:
-  SMTP_HOST      e.g. smtp.gmail.com
-  SMTP_PORT      e.g. 587
-  SMTP_USER      your sending email address
-  SMTP_PASSWORD  your email app password
-  SMTP_FROM      display name + address, e.g. "SellerPulse <you@gmail.com>"
-  NOTIFY_HOUR    UTC hour to send daily digest (default: 8  = 8:00 AM UTC)
+  Option A — SendGrid (recommended)
+    SENDGRID_API_KEY   your SendGrid API key
+
+  Option B — Resend
+    RESEND_API_KEY     your Resend API key
+
+  Option C — Raw SMTP (Gmail, Outlook, etc.)
+    SMTP_HOST          e.g. smtp.gmail.com
+    SMTP_PORT          e.g. 587
+    SMTP_USER          your sending email address
+    SMTP_PASS          your email app password  (also accepts SMTP_PASSWORD)
+
+  All options also respect:
+    SMTP_FROM          display name + address, e.g. "SellerPulse <noreply@sellers-pulse.com>"
+    NOTIFY_HOUR        UTC hour to send daily digest (default: 8)
 """
 
 import os
@@ -193,7 +200,13 @@ if APP_URL and not APP_URL.startswith("http"):
 # ─── email sending ────────────────────────────────────────────────────────────
 
 def _smtp_configured() -> bool:
-    return bool(os.getenv("SENDGRID_API_KEY"))
+    """True if any email provider is configured."""
+    return bool(
+        os.getenv("SENDGRID_API_KEY") or
+        os.getenv("RESEND_API_KEY") or
+        (os.getenv("SMTP_HOST") and os.getenv("SMTP_USER") and
+         (os.getenv("SMTP_PASS") or os.getenv("SMTP_PASSWORD")))
+    )
 
 
 def _send_via_sendgrid(to: str, subject: str, html: str, api_key: str,
@@ -243,22 +256,23 @@ def _send_via_sendgrid(to: str, subject: str, html: str, api_key: str,
     log.info("Email sent via SendGrid to %s: %s", to, subject)
 
 
-def _send_via_resend(to: str, subject: str, html: str, api_key: str):
-    # Build a clean lowercase from address
-    from_addr = SMTP_FROM or f"SellerPulse <noreply@sellerpulse.io>"
-    # Resend requires lowercase email addresses
-    if '<' in from_addr and '>' in from_addr:
-        name_part = from_addr[:from_addr.index('<')].strip()
-        email_part = from_addr[from_addr.index('<')+1:from_addr.index('>')].strip().lower()
-        from_addr = f"{name_part} <{email_part}>"
+def _send_via_resend(to: str, subject: str, html: str, api_key: str,
+                     reply_to: str = None):
+    # Read SMTP_FROM at call time so Railway env changes apply without restart
+    from_raw = os.getenv("SMTP_FROM", "SellerPulse <noreply@sellers-pulse.com>")
+    if '<' in from_raw and '>' in from_raw:
+        name_part  = from_raw[:from_raw.index('<')].strip()
+        email_part = from_raw[from_raw.index('<')+1:from_raw.index('>')].strip().lower()
+        from_addr  = f"{name_part} <{email_part}>"
     else:
-        from_addr = from_addr.lower().strip()
+        from_addr = from_raw.strip().lower()
 
     payload = json.dumps({
         "from": from_addr,
         "to": [to],
         "subject": subject,
         "html": html,
+        **({"reply_to": reply_to} if reply_to else {}),
     }).encode()
     req = urllib.request.Request(
         "https://api.resend.com/emails",
@@ -270,25 +284,60 @@ def _send_via_resend(to: str, subject: str, html: str, api_key: str):
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15) as _r:
             log.info("Email sent via Resend to %s: %s", to, subject)
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")
         raise Exception(f"Resend {e.code}: {body}")
 
 
+def _send_via_smtp(to: str, subject: str, html: str,
+                   reply_to: str = None):
+    host     = os.getenv("SMTP_HOST", "").strip()
+    port     = int(os.getenv("SMTP_PORT", "587"))
+    user     = os.getenv("SMTP_USER", "").strip()
+    password = (os.getenv("SMTP_PASS") or os.getenv("SMTP_PASSWORD") or "").strip()
+    from_raw = os.getenv("SMTP_FROM", user)
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = from_raw
+    msg["To"]      = to
+    if reply_to:
+        msg["Reply-To"] = reply_to
+    msg.attach(MIMEText(html, "html"))
+
+    with smtplib.SMTP(host, port, timeout=30) as server:
+        server.ehlo()
+        server.starttls()
+        server.login(user, password)
+        server.sendmail(from_raw, [to], msg.as_string())
+    log.info("Email sent via SMTP to %s: %s", to, subject)
+
+
 def send_email(to: str, subject: str, html: str,
                reply_to: str = None, custom_headers: dict = None,
                from_name: str = None):
-    # Read env vars at call time so Railway env changes take effect without restart
+    # Read env vars at call time so Railway env changes apply without restart
     sendgrid_key = os.getenv("SENDGRID_API_KEY", "").strip()
+    resend_key   = os.getenv("RESEND_API_KEY", "").strip()
+    smtp_host    = os.getenv("SMTP_HOST", "").strip()
+    smtp_user    = os.getenv("SMTP_USER", "").strip()
+    smtp_pass    = (os.getenv("SMTP_PASS") or os.getenv("SMTP_PASSWORD") or "").strip()
 
-    if not sendgrid_key:
-        raise Exception("No email provider configured — set SENDGRID_API_KEY in Railway")
-
-    _send_via_sendgrid(to, subject, html, sendgrid_key,
-                       reply_to=reply_to, custom_headers=custom_headers,
-                       from_name=from_name)
+    if sendgrid_key:
+        _send_via_sendgrid(to, subject, html, sendgrid_key,
+                           reply_to=reply_to, custom_headers=custom_headers,
+                           from_name=from_name)
+    elif resend_key:
+        _send_via_resend(to, subject, html, resend_key, reply_to=reply_to)
+    elif smtp_host and smtp_user and smtp_pass:
+        _send_via_smtp(to, subject, html, reply_to=reply_to)
+    else:
+        raise Exception(
+            "No email provider configured. Set one of: "
+            "SENDGRID_API_KEY, RESEND_API_KEY, or SMTP_HOST+SMTP_USER+SMTP_PASS in Railway."
+        )
 
 
 # ─── digest builder ───────────────────────────────────────────────────────────
