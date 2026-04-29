@@ -25,11 +25,15 @@ import Ungate from './pages/Ungate'
 import Profile from './pages/Profile'
 import Wholesale from './pages/Wholesale'
 import AuditLog from './pages/AuditLog'
+import Terms from './pages/Terms'
+import Privacy from './pages/Privacy'
 
 export default function App() {
   return (
     <AuthProvider>
       <Routes>
+        <Route path="/terms"             element={<Terms />} />
+        <Route path="/privacy"           element={<Privacy />} />
         <Route path="/login"             element={<PublicRoute><Login /></PublicRoute>} />
         <Route path="/register"          element={<PublicRoute><Register /></PublicRoute>} />
         <Route path="/forgot-password"   element={<PublicRoute><ForgotPassword /></PublicRoute>} />

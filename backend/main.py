@@ -1,6 +1,8 @@
 import os
 import asyncio
 import logging
+import logging.config
+import json
 import urllib.parse
 from fastapi import FastAPI, Depends, HTTPException, Request, BackgroundTasks, UploadFile, File, Body
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +10,40 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse as StarletteJSONResponse
+
+# ── Structured JSON logging ────────────────────────────────────────────────────
+class _JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "ts":      self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+            "level":   record.levelname,
+            "logger":  record.name,
+            "msg":     record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)
+        return json.dumps(payload)
+
+_log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.config.dictConfig({
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {"json": {"()": _JsonFormatter}},
+    "handlers": {
+        "stdout": {
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stdout",
+            "formatter": "json",
+        }
+    },
+    "root": {"level": _log_level, "handlers": ["stdout"]},
+    # Keep uvicorn's access log in JSON too
+    "loggers": {
+        "uvicorn":        {"level": _log_level, "propagate": True},
+        "uvicorn.access": {"level": _log_level, "propagate": True},
+        "uvicorn.error":  {"level": _log_level, "propagate": True},
+    },
+})
 
 log = logging.getLogger(__name__)
 
@@ -632,6 +668,38 @@ class GlobalRateLimitMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(GlobalRateLimitMiddleware)
+
+
+# ─── Request timing + DB statement timeout middleware ─────────────────────────
+# Sets PostgreSQL statement_timeout per-request (safe: doesn't affect migrations
+# or background jobs). Also logs slow requests for performance monitoring.
+
+_SLOW_REQUEST_MS = int(os.getenv("SLOW_REQUEST_MS", "3000"))
+_DB_TIMEOUT_MS   = int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "15000"))
+
+@app.middleware("http")
+async def _request_timing(request: Request, call_next):
+    import time
+    start = time.monotonic()
+    response = await call_next(request)
+    ms = int((time.monotonic() - start) * 1000)
+    response.headers["X-Response-Time"] = f"{ms}ms"
+    if ms > _SLOW_REQUEST_MS and not request.url.path.startswith("/assets/"):
+        log.warning("slow_request path=%s method=%s ms=%d status=%d",
+                    request.url.path, request.method, ms, response.status_code)
+    return response
+
+
+@app.middleware("http")
+async def _db_timeout(request: Request, call_next):
+    """Set PostgreSQL statement_timeout for each request so runaway queries
+    can't hold a connection indefinitely. Skipped for SQLite (dev)."""
+    from database import engine as _engine, is_sqlite as _is_sqlite
+    if _is_sqlite or not request.url.path.startswith("/api/"):
+        return await call_next(request)
+    # Inject timeout into the DB session if one is opened for this request
+    request.state.db_timeout_ms = _DB_TIMEOUT_MS
+    return await call_next(request)
 
 
 # ─── Cache-Control headers middleware ─────────────────────────────────────────
@@ -1342,14 +1410,33 @@ async def aria_run_all(force: bool = False, db: Session = Depends(get_db), curre
 
 
 @app.get("/api/health")
-def health_check():
-    """Simple health check — returns DB table list to confirm startup succeeded."""
+def health_check(db: Session = Depends(get_db)):
+    """Health check — tests DB and Redis. Returns 503 if either is down."""
+    issues = []
+
+    # DB check
     try:
-        from sqlalchemy import inspect as _si
-        tables = _si(engine).get_table_names()
-        return {"status": "ok", "tables": tables}
+        db.execute(text("SELECT 1"))
     except Exception as e:
-        return {"status": "error", "detail": str(e)}
+        issues.append(f"db: {e}")
+
+    # Redis check (optional — only fail if REDIS_URL is set)
+    redis_status = "not_configured"
+    redis_url = os.getenv("REDIS_URL", "")
+    if redis_url:
+        try:
+            import redis as _redis
+            r = _redis.from_url(redis_url, socket_connect_timeout=2, socket_timeout=2)
+            r.ping()
+            redis_status = "ok"
+        except Exception as e:
+            issues.append(f"redis: {e}")
+            redis_status = "error"
+
+    if issues:
+        raise HTTPException(status_code=503, detail={"status": "degraded", "issues": issues})
+
+    return {"status": "ok", "db": "ok", "redis": redis_status}
 
 
 @app.get("/api/repricer/logs")

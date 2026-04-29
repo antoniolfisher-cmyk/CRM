@@ -95,6 +95,11 @@ export default function Login() {
         <p className="text-center text-slate-600 text-xs mt-3">
           SellerPulse · Amazon Seller CRM
         </p>
+        <p className="text-center text-slate-400 text-xs mt-2">
+          <Link to="/terms" className="hover:text-orange-400 hover:underline">Terms of Service</Link>
+          {' · '}
+          <Link to="/privacy" className="hover:text-orange-400 hover:underline">Privacy Policy</Link>
+        </p>
       </div>
     </div>
   )
