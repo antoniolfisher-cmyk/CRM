@@ -261,9 +261,10 @@ try:
         with engine.connect() as _conn:
             _BF_FLAG = "backfill_tenant_id_v1"
             _conn.execute(text("CREATE TABLE IF NOT EXISTS _migration_flags (name TEXT PRIMARY KEY)"))
-            _already = _conn.execute(text(
-                f"SELECT 1 FROM _migration_flags WHERE name = '{_BF_FLAG}'"
-            )).fetchone()
+            _already = _conn.execute(
+                text("SELECT 1 FROM _migration_flags WHERE name = :name"),
+                {"name": _BF_FLAG}
+            ).fetchone()
             if not _already:
                 # Only if a tenant with id=1 will exist (bootstrap creates it)
                 for _t in ["users","accounts","contacts","follow_ups","orders",
@@ -275,7 +276,10 @@ try:
                         ))
                     except Exception:
                         pass
-                _conn.execute(text(f"INSERT INTO _migration_flags (name) VALUES ('{_BF_FLAG}') ON CONFLICT DO NOTHING"))
+                _conn.execute(
+                    text("INSERT INTO _migration_flags (name) VALUES (:name) ON CONFLICT DO NOTHING"),
+                    {"name": _BF_FLAG}
+                )
                 _conn.commit()
     except Exception:
         pass
@@ -5477,7 +5481,7 @@ async def amazon_oauth_callback(
 
         tokens        = r.json()
         refresh_token = tokens.get("refresh_token", "")
-        print(f"[oauth_callback] refresh_token present={bool(refresh_token)} prefix={refresh_token[:8] if refresh_token else 'NONE'}", flush=True)
+        log.info("[oauth_callback] refresh_token present=%s", bool(refresh_token))
         if not refresh_token:
             return RedirectResponse("/onboarding/amazon?error=no_refresh_token")
 
@@ -5896,6 +5900,8 @@ async def upload_fbm_listings(
     import csv, io as _io
     tid = current.get("tenant_id")
     data = await file.read()
+    if len(data) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large — maximum size is 50 MB")
     text = data.decode("utf-8-sig", errors="replace")   # strip BOM if present
 
     # Detect delimiter — Amazon reports are tab-delimited
