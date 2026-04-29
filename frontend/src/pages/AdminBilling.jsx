@@ -138,11 +138,16 @@ export default function AdminBilling() {
   const doAction = async (tenantId, action) => {
     setActionLoading(p => ({ ...p, [tenantId]: action }))
     try {
-      if (action === 'suspend')   await api.suspendTenant(tenantId)
-      if (action === 'activate')  await api.activateTenant(tenantId)
-      setTenants(prev => prev.map(t =>
-        t.id === tenantId ? { ...t, is_active: action === 'activate' } : t
-      ))
+      if (action === 'suspend')      await api.suspendTenant(tenantId)
+      if (action === 'activate')     await api.activateTenant(tenantId)
+      if (action === 'grant-access') await api.grantTenantAccess(tenantId)
+      setTenants(prev => prev.map(t => {
+        if (t.id !== tenantId) return t
+        if (action === 'suspend')      return { ...t, is_active: false }
+        if (action === 'activate')     return { ...t, is_active: true }
+        if (action === 'grant-access') return { ...t, is_active: true, stripe_status: null }
+        return t
+      }))
     } catch (e) {
       alert(e.message)
     } finally {
@@ -416,7 +421,7 @@ export default function AdminBilling() {
                         )}
                       </td>
                       <td className="px-4 py-3">
-                        <div className="flex gap-2">
+                        <div className="flex gap-2 flex-wrap">
                           {t.is_active ? (
                             <button
                               onClick={() => doAction(t.id, 'suspend')}
@@ -432,6 +437,15 @@ export default function AdminBilling() {
                               className="text-xs px-2.5 py-1 bg-green-50 text-green-700 rounded hover:bg-green-100 disabled:opacity-40 font-medium"
                             >
                               {actionLoading[t.id] === 'activate' ? '…' : 'Reactivate'}
+                            </button>
+                          )}
+                          {t.stripe_status && t.stripe_status !== 'active' && (
+                            <button
+                              onClick={() => doAction(t.id, 'grant-access')}
+                              disabled={!!actionLoading[t.id]}
+                              className="text-xs px-2.5 py-1 bg-blue-50 text-blue-700 rounded hover:bg-blue-100 disabled:opacity-40 font-medium"
+                            >
+                              {actionLoading[t.id] === 'grant-access' ? '…' : 'Grant Access'}
                             </button>
                           )}
                         </div>

@@ -85,6 +85,7 @@ export const api = {
   },
   suspendTenant: (id) => req('POST', `/admin/billing/tenants/${id}/suspend`),
   activateTenant: (id) => req('POST', `/admin/billing/tenants/${id}/activate`),
+  grantTenantAccess: (id) => req('POST', `/admin/billing/tenants/${id}/grant-access`),
   adminChangePlan: (id, plan) => req('PUT', `/admin/billing/tenants/${id}/plan`, { plan }),
 
   // Accounts

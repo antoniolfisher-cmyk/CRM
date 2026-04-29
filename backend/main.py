@@ -1615,6 +1615,23 @@ def admin_activate_tenant(
     return {"ok": True, "tenant_id": tenant_id, "is_active": True}
 
 
+@app.post("/api/admin/billing/tenants/{tenant_id}/grant-access")
+def admin_grant_access(
+    tenant_id: int,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_superadmin),
+):
+    """Clear stripe_status so the tenant bypasses the paywall (permanent free access)."""
+    tenant = db.query(models.Tenant).filter_by(id=tenant_id).first()
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+    tenant.is_active = True
+    tenant.stripe_status = None
+    tenant.trial_ends_at = None
+    db.commit()
+    return {"ok": True, "tenant_id": tenant_id}
+
+
 @app.put("/api/admin/billing/tenants/{tenant_id}/plan")
 def admin_change_plan(
     tenant_id: int,
