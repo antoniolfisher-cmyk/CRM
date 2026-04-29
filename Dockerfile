@@ -15,7 +15,7 @@ COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Force cache bust - updated 2026-04-29
-ARG CACHEBUST=2026-04-29-v2
+ARG CACHEBUST=2026-04-29-v3
 RUN echo "Cache bust: $CACHEBUST"
 
 # Copy backend source
