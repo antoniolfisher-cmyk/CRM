@@ -6,16 +6,9 @@
   },
   "deploy": {
     "runtime": "V2",
-    "numReplicas": 2,
+    "numReplicas": 1,
     "healthcheckPath": "/api/health",
     "sleepApplication": false,
-    "useLegacyStacker": false,
-    "ipv6EgressEnabled": false,
-    "multiRegionConfig": {
-      "us-west2": {
-        "numReplicas": 1
-      }
-    },
     "restartPolicyType": "ON_FAILURE",
     "healthcheckTimeout": 120,
     "restartPolicyMaxRetries": 3
