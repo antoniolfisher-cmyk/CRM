@@ -85,348 +85,351 @@ except Exception as _create_all_err:
     print(f"[startup] create_all warning: {_create_all_err}", flush=True)
 
 # ─── Migrations: add new columns to existing tables ───────────────────────────
-try:
-    from sqlalchemy import inspect as sa_inspect, text
-    _inspector = sa_inspect(engine)
-    for _table in ["accounts", "contacts", "follow_ups", "orders", "products"]:
+# Skipped when PRESTART_DONE=1 (prestart.py already ran Alembic + safety-net DDL).
+# Runs on every import in local dev (no PRESTART_DONE) so the DB stays in sync.
+if not os.getenv("PRESTART_DONE"):
+    try:
+        from sqlalchemy import inspect as sa_inspect, text
+        _inspector = sa_inspect(engine)
+        for _table in ["accounts", "contacts", "follow_ups", "orders", "products"]:
+            try:
+                _cols = [c["name"] for c in _inspector.get_columns(_table)]
+                if "created_by" not in _cols:
+                    with engine.connect() as _conn:
+                        _conn.execute(text(f"ALTER TABLE {_table} ADD COLUMN created_by VARCHAR"))
+                        _conn.commit()
+            except Exception:
+                pass
+        # Pipeline stage columns on accounts
         try:
-            _cols = [c["name"] for c in _inspector.get_columns(_table)]
-            if "created_by" not in _cols:
-                with engine.connect() as _conn:
-                    _conn.execute(text(f"ALTER TABLE {_table} ADD COLUMN created_by VARCHAR"))
-                    _conn.commit()
+            _cols = [c["name"] for c in _inspector.get_columns("accounts")]
+            for _col, _ddl in [
+                ("pipeline_stage",        "VARCHAR NOT NULL DEFAULT 'new'"),
+                ("pipeline_updated_at",   "TIMESTAMP WITH TIME ZONE"),
+                ("last_auto_followup_at", "TIMESTAMP WITH TIME ZONE"),
+            ]:
+                if _col not in _cols:
+                    try:
+                        with engine.connect() as _conn:
+                            _conn.execute(text(f"ALTER TABLE accounts ADD COLUMN {_col} {_ddl}"))
+                            _conn.commit()
+                    except Exception:
+                        pass
         except Exception:
             pass
-    # Pipeline stage columns on accounts
-    try:
-        _cols = [c["name"] for c in _inspector.get_columns("accounts")]
-        for _col, _ddl in [
-            ("pipeline_stage",        "VARCHAR NOT NULL DEFAULT 'new'"),
-            ("pipeline_updated_at",   "TIMESTAMP WITH TIME ZONE"),
-            ("last_auto_followup_at", "TIMESTAMP WITH TIME ZONE"),
-        ]:
-            if _col not in _cols:
+        # Keepa + Aria columns on products — each in its own connection so one failure
+        # doesn't block the rest (PostgreSQL DDL is transactional).
+        try:
+            _cols = [c["name"] for c in _inspector.get_columns("products")]
+            for _col, _ddl in [
+                ("keepa_bsr",           "INTEGER"),
+                ("keepa_category",      "VARCHAR"),
+                ("keepa_last_synced",   "TIMESTAMP WITH TIME ZONE"),
+                ("aria_suggested_price","DOUBLE PRECISION"),
+                ("aria_suggested_at",   "TIMESTAMP WITH TIME ZONE"),
+                ("aria_reasoning",      "TEXT"),
+                ("aria_last_buy_box",   "DOUBLE PRECISION"),
+                ("aria_strategy_id",    "INTEGER"),
+            ]:
+                if _col not in _cols:
+                    try:
+                        with engine.connect() as _conn:
+                            _conn.execute(text(f"ALTER TABLE products ADD COLUMN {_col} {_ddl}"))
+                            _conn.commit()
+                    except Exception as _ce:
+                        print(f"[migration] products.{_col}: {_ce}", flush=True)
+            # Ensure status column exists and default old rows
+            if "status" not in _cols:
                 try:
                     with engine.connect() as _conn:
-                        _conn.execute(text(f"ALTER TABLE accounts ADD COLUMN {_col} {_ddl}"))
+                        _conn.execute(text("ALTER TABLE products ADD COLUMN status TEXT DEFAULT 'sourcing'"))
+                        _conn.execute(text("UPDATE products SET status = 'approved' WHERE status IS NULL"))
                         _conn.commit()
                 except Exception:
                     pass
-    except Exception:
-        pass
-    # Keepa + Aria columns on products — each in its own connection so one failure
-    # doesn't block the rest (PostgreSQL DDL is transactional).
-    try:
-        _cols = [c["name"] for c in _inspector.get_columns("products")]
-        for _col, _ddl in [
-            ("keepa_bsr",           "INTEGER"),
-            ("keepa_category",      "VARCHAR"),
-            ("keepa_last_synced",   "TIMESTAMP WITH TIME ZONE"),
-            ("aria_suggested_price","DOUBLE PRECISION"),
-            ("aria_suggested_at",   "TIMESTAMP WITH TIME ZONE"),
-            ("aria_reasoning",      "TEXT"),
-            ("aria_last_buy_box",   "DOUBLE PRECISION"),
-            ("aria_strategy_id",    "INTEGER"),
-        ]:
-            if _col not in _cols:
+            else:
                 try:
                     with engine.connect() as _conn:
-                        _conn.execute(text(f"ALTER TABLE products ADD COLUMN {_col} {_ddl}"))
+                        _conn.execute(text("UPDATE products SET status = 'approved' WHERE status IS NULL"))
                         _conn.commit()
-                except Exception as _ce:
-                    print(f"[migration] products.{_col}: {_ce}", flush=True)
-        # Ensure status column exists and default old rows
-        if "status" not in _cols:
-            try:
-                with engine.connect() as _conn:
-                    _conn.execute(text("ALTER TABLE products ADD COLUMN status TEXT DEFAULT 'sourcing'"))
-                    _conn.execute(text("UPDATE products SET status = 'approved' WHERE status IS NULL"))
-                    _conn.commit()
-            except Exception:
-                pass
-        else:
-            try:
-                with engine.connect() as _conn:
-                    _conn.execute(text("UPDATE products SET status = 'approved' WHERE status IS NULL"))
-                    _conn.commit()
-            except Exception:
-                pass
-    except Exception:
-        pass
-    # One-time migration: approve all pre-workflow sourcing products
-    try:
-        with engine.connect() as _conn:
-            _conn.execute(text(
-                "CREATE TABLE IF NOT EXISTS _migration_flags (name TEXT PRIMARY KEY)"
-            ))
-            already = _conn.execute(text(
-                "SELECT 1 FROM _migration_flags WHERE name = 'approve_existing_sourcing'"
-            )).fetchone()
-            if not already:
-                _conn.execute(text(
-                    "UPDATE products SET status = 'approved' WHERE status = 'sourcing' OR status IS NULL"
-                ))
-                _conn.execute(text(
-                    "INSERT INTO _migration_flags (name) VALUES ('approve_existing_sourcing')"
-                ))
-                _conn.commit()
-    except Exception:
-        pass
-    # Repricer strategies schema
-    try:
-        if "repricer_strategies" in _inspector.get_table_names():
-            _cols = [c["name"] for c in _inspector.get_columns("repricer_strategies")]
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # One-time migration: approve all pre-workflow sourcing products
+        try:
             with engine.connect() as _conn:
-                for _col, _ddl in [
-                    ("target",         "VARCHAR"),
-                    ("compete_action", "VARCHAR DEFAULT 'beat_pct'"),
-                    ("compete_value",  "DOUBLE PRECISION"),
-                    ("winning_action", "VARCHAR DEFAULT 'raise_pct'"),
-                    ("winning_value",  "DOUBLE PRECISION"),
-                    ("profit_floor",    "DOUBLE PRECISION"),
-                    ("min_roi",         "DOUBLE PRECISION"),
-                    ("aggressiveness",  "INTEGER"),
-                ]:
-                    if _col not in _cols:
+                _conn.execute(text(
+                    "CREATE TABLE IF NOT EXISTS _migration_flags (name TEXT PRIMARY KEY)"
+                ))
+                already = _conn.execute(text(
+                    "SELECT 1 FROM _migration_flags WHERE name = 'approve_existing_sourcing'"
+                )).fetchone()
+                if not already:
+                    _conn.execute(text(
+                        "UPDATE products SET status = 'approved' WHERE status = 'sourcing' OR status IS NULL"
+                    ))
+                    _conn.execute(text(
+                        "INSERT INTO _migration_flags (name) VALUES ('approve_existing_sourcing')"
+                    ))
+                    _conn.commit()
+        except Exception:
+            pass
+        # Repricer strategies schema
+        try:
+            if "repricer_strategies" in _inspector.get_table_names():
+                _cols = [c["name"] for c in _inspector.get_columns("repricer_strategies")]
+                with engine.connect() as _conn:
+                    for _col, _ddl in [
+                        ("target",         "VARCHAR"),
+                        ("compete_action", "VARCHAR DEFAULT 'beat_pct'"),
+                        ("compete_value",  "DOUBLE PRECISION"),
+                        ("winning_action", "VARCHAR DEFAULT 'raise_pct'"),
+                        ("winning_value",  "DOUBLE PRECISION"),
+                        ("profit_floor",    "DOUBLE PRECISION"),
+                        ("min_roi",         "DOUBLE PRECISION"),
+                        ("aggressiveness",  "INTEGER"),
+                    ]:
+                        if _col not in _cols:
+                            try:
+                                with engine.connect() as _conn:
+                                    _conn.execute(text(f"ALTER TABLE repricer_strategies ADD COLUMN {_col} {_ddl}"))
+                                    _conn.commit()
+                            except Exception:
+                                pass
+        except Exception:
+            pass
+        # ── Multi-tenant migration: add tenant_id to all tables ─────────────────
+        try:
+            _TENANT_TABLES = [
+                "users", "accounts", "contacts", "follow_ups", "orders",
+                "products", "repricer_strategies", "ungate_templates",
+                "ungate_requests", "time_entries", "email_messages",
+            ]
+            for _table in _TENANT_TABLES:
+                try:
+                    if _table not in _inspector.get_table_names():
+                        continue
+                    _cols = [c["name"] for c in _inspector.get_columns(_table)]
+                    if "tenant_id" not in _cols:
+                        with engine.connect() as _conn:
+                            _conn.execute(text(f"ALTER TABLE {_table} ADD COLUMN tenant_id INTEGER"))
+                            _conn.commit()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # Backfill tenant_id=1 on all existing rows (one-time)
+        try:
+            with engine.connect() as _conn:
+                _BF_FLAG = "backfill_tenant_id_v1"
+                _conn.execute(text("CREATE TABLE IF NOT EXISTS _migration_flags (name TEXT PRIMARY KEY)"))
+                _already = _conn.execute(text(
+                    f"SELECT 1 FROM _migration_flags WHERE name = '{_BF_FLAG}'"
+                )).fetchone()
+                if not _already:
+                    # Only if a tenant with id=1 will exist (bootstrap creates it)
+                    for _t in ["users","accounts","contacts","follow_ups","orders",
+                               "products","repricer_strategies","ungate_templates",
+                               "ungate_requests","time_entries","email_messages"]:
                         try:
-                            with engine.connect() as _conn:
-                                _conn.execute(text(f"ALTER TABLE repricer_strategies ADD COLUMN {_col} {_ddl}"))
-                                _conn.commit()
+                            _conn.execute(text(
+                                f"UPDATE {_t} SET tenant_id = 1 WHERE tenant_id IS NULL"
+                            ))
                         except Exception:
                             pass
-    except Exception:
-        pass
-    # ── Multi-tenant migration: add tenant_id to all tables ─────────────────
-    try:
-        _TENANT_TABLES = [
-            "users", "accounts", "contacts", "follow_ups", "orders",
-            "products", "repricer_strategies", "ungate_templates",
-            "ungate_requests", "time_entries", "email_messages",
-        ]
-        for _table in _TENANT_TABLES:
-            try:
-                if _table not in _inspector.get_table_names():
-                    continue
-                _cols = [c["name"] for c in _inspector.get_columns(_table)]
-                if "tenant_id" not in _cols:
+                    _conn.execute(text(f"INSERT INTO _migration_flags (name) VALUES ('{_BF_FLAG}') ON CONFLICT DO NOTHING"))
+                    _conn.commit()
+        except Exception:
+            pass
+        # ── Add store_name to amazon_credentials ────────────────────────────────
+        try:
+            if "amazon_credentials" in _inspector.get_table_names():
+                _ac_cols = [c["name"] for c in _inspector.get_columns("amazon_credentials")]
+                if "store_name" not in _ac_cols:
                     with engine.connect() as _conn:
-                        _conn.execute(text(f"ALTER TABLE {_table} ADD COLUMN tenant_id INTEGER"))
+                        _conn.execute(text("ALTER TABLE amazon_credentials ADD COLUMN store_name VARCHAR"))
                         _conn.commit()
-            except Exception:
-                pass
-    except Exception:
-        pass
-    # Backfill tenant_id=1 on all existing rows (one-time)
-    try:
-        with engine.connect() as _conn:
-            _BF_FLAG = "backfill_tenant_id_v1"
-            _conn.execute(text("CREATE TABLE IF NOT EXISTS _migration_flags (name TEXT PRIMARY KEY)"))
-            _already = _conn.execute(text(
-                f"SELECT 1 FROM _migration_flags WHERE name = '{_BF_FLAG}'"
-            )).fetchone()
-            if not _already:
-                # Only if a tenant with id=1 will exist (bootstrap creates it)
-                for _t in ["users","accounts","contacts","follow_ups","orders",
-                           "products","repricer_strategies","ungate_templates",
-                           "ungate_requests","time_entries","email_messages"]:
-                    try:
-                        _conn.execute(text(
-                            f"UPDATE {_t} SET tenant_id = 1 WHERE tenant_id IS NULL"
-                        ))
-                    except Exception:
-                        pass
-                _conn.execute(text(f"INSERT INTO _migration_flags (name) VALUES ('{_BF_FLAG}') ON CONFLICT DO NOTHING"))
-                _conn.commit()
-    except Exception:
-        pass
-    # ── Add store_name to amazon_credentials ────────────────────────────────
-    try:
-        if "amazon_credentials" in _inspector.get_table_names():
-            _ac_cols = [c["name"] for c in _inspector.get_columns("amazon_credentials")]
-            if "store_name" not in _ac_cols:
-                with engine.connect() as _conn:
-                    _conn.execute(text("ALTER TABLE amazon_credentials ADD COLUMN store_name VARCHAR"))
-                    _conn.commit()
-    except Exception:
-        pass
-    # ── Add 90-day price stat columns + fulfillment_channel to products ─────
-    try:
-        _p_cols = [c["name"] for c in _inspector.get_columns("products")]
-        with engine.connect() as _conn:
-            for _col, _ddl in [
-                ("price_90_high",       "FLOAT"),
-                ("price_90_low",        "FLOAT"),
-                ("price_90_median",     "FLOAT"),
-                ("fba_low",             "FLOAT"),
-                ("fba_high",            "FLOAT"),
-                ("fba_median",          "FLOAT"),
-                ("fbm_low",             "FLOAT"),
-                ("fbm_high",            "FLOAT"),
-                ("fbm_median",          "FLOAT"),
-                ("fulfillment_channel", "VARCHAR"),
-            ]:
-                if _col not in _p_cols:
-                    _conn.execute(text(f"ALTER TABLE products ADD COLUMN {_col} {_ddl}"))
-            _conn.commit()
-    except Exception:
-        pass
-    # billing_invoices is created by models.Base.metadata.create_all above
-    # order_number unique constraint relaxed for multi-tenant
-    try:
-        _cols = [c["name"] for c in _inspector.get_columns("orders")]
-        _idx  = [i["name"] for i in _inspector.get_indexes("orders")]
-        # SQLite: drop-and-recreate not needed; just leave the unique constraint
-    except Exception:
-        pass
-    # ── Add invoice_filename to ungate_requests ───────────────────────────────
-    try:
-        if "ungate_requests" in _inspector.get_table_names():
-            _ur_cols = [c["name"] for c in _inspector.get_columns("ungate_requests")]
-            if "invoice_filename" not in _ur_cols:
-                with engine.connect() as _conn:
-                    _conn.execute(text("ALTER TABLE ungate_requests ADD COLUMN invoice_filename VARCHAR"))
-                    _conn.commit()
-    except Exception:
-        pass
-    # ── Migrate ungate templates: replace {SELLER_ID} with {SELLER_NAME} ─────
-    try:
-        if "ungate_templates" in _inspector.get_table_names():
+        except Exception:
+            pass
+        # ── Add 90-day price stat columns + fulfillment_channel to products ─────
+        try:
+            _p_cols = [c["name"] for c in _inspector.get_columns("products")]
             with engine.connect() as _conn:
-                _conn.execute(text(
-                    "UPDATE ungate_templates SET body = REPLACE(body, 'Seller ID: {SELLER_ID}', 'Store: {SELLER_NAME}')"
-                    " WHERE body LIKE '%{SELLER_ID}%'"
-                ))
-                _conn.execute(text(
-                    "UPDATE ungate_templates SET body = REPLACE(body, 'Amazon Seller Account: {SELLER_ID}', 'Amazon Store: {SELLER_NAME}')"
-                    " WHERE body LIKE '%{SELLER_ID}%'"
-                ))
-                _conn.execute(text(
-                    "UPDATE ungate_templates SET body = REPLACE(body, '(Seller ID: {SELLER_ID})', '({SELLER_NAME})')"
-                    " WHERE body LIKE '%{SELLER_ID}%'"
-                ))
-                # Catch any remaining {SELLER_ID} references
-                _conn.execute(text(
-                    "UPDATE ungate_templates SET body = REPLACE(body, '{SELLER_ID}', '{SELLER_NAME}')"
-                    " WHERE body LIKE '%{SELLER_ID}%'"
-                ))
-                _conn.execute(text(
-                    "UPDATE ungate_templates SET subject = REPLACE(subject, '{SELLER_ID}', '{SELLER_NAME}')"
-                    " WHERE subject LIKE '%{SELLER_ID}%'"
-                ))
-                _conn.commit()
-    except Exception:
-        pass
-    # ── Add ship_from_json to amazon_credentials ─────────────────────────────
-    try:
-        if "amazon_credentials" in _inspector.get_table_names():
-            _ac2_cols = [c["name"] for c in _inspector.get_columns("amazon_credentials")]
-            if "ship_from_json" not in _ac2_cols:
-                with engine.connect() as _conn:
-                    _conn.execute(text("ALTER TABLE amazon_credentials ADD COLUMN ship_from_json TEXT"))
-                    _conn.commit()
-    except Exception:
-        pass
-    # ── Add dashboard_sections, page_permissions, email_verified to users ───────
-    try:
-        if "users" in _inspector.get_table_names():
-            _u_cols = [c["name"] for c in _inspector.get_columns("users")]
-            with engine.connect() as _conn:
-                if "dashboard_sections" not in _u_cols:
-                    _conn.execute(text("ALTER TABLE users ADD COLUMN dashboard_sections TEXT"))
-                if "page_permissions" not in _u_cols:
-                    _conn.execute(text("ALTER TABLE users ADD COLUMN page_permissions TEXT"))
-                if "email_verified" not in _u_cols:
-                    _conn.execute(text("ALTER TABLE users ADD COLUMN email_verified BOOLEAN DEFAULT FALSE"))
-                _conn.commit()
-    except Exception:
-        pass
-    # ── Create password_reset_tokens and email_verification_tokens if absent ──
-    try:
-        _tnames = _inspector.get_table_names()
-        with engine.connect() as _conn:
-            if "password_reset_tokens" not in _tnames:
-                _conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS password_reset_tokens (
-                        id SERIAL PRIMARY KEY,
-                        user_id INTEGER NOT NULL REFERENCES users(id),
-                        token VARCHAR NOT NULL UNIQUE,
-                        expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-                        used BOOLEAN DEFAULT FALSE,
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-                    )
-                """))
-            if "email_verification_tokens" not in _tnames:
-                _conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS email_verification_tokens (
-                        id SERIAL PRIMARY KEY,
-                        user_id INTEGER NOT NULL REFERENCES users(id),
-                        token VARCHAR NOT NULL UNIQUE,
-                        expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-                        used BOOLEAN DEFAULT FALSE,
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-                    )
-                """))
-            _conn.commit()
-    except Exception:
-        pass
-    # ── Apply STORE_NAME env var to "Default" tenant on startup ─────────────
-    try:
-        _store_env = os.getenv("STORE_NAME", "").strip()
-        if _store_env:
-            with engine.connect() as _conn:
-                _conn.execute(text(
-                    "UPDATE tenants SET name = :name WHERE LOWER(name) = 'default'"
-                ), {"name": _store_env})
-                _conn.commit()
-    except Exception:
-        pass
-    # ── Add seller_sku + aria live-push columns to products ──────────────────
-    # Each column in its own connection+commit so one failure doesn't block others.
-    # Use TIMESTAMP WITH TIME ZONE (PostgreSQL) not DATETIME (SQLite-only).
-    try:
-        _p2_cols = [c["name"] for c in _inspector.get_columns("products")]
-        for _col, _ddl in [
-            ("seller_sku",           "VARCHAR"),
-            ("aria_live_price",      "DOUBLE PRECISION"),
-            ("aria_live_pushed_at",  "TIMESTAMP WITH TIME ZONE"),
-            ("buy_box_winner",       "BOOLEAN"),
-            ("buy_box_checked_at",   "TIMESTAMP WITH TIME ZONE"),
-        ]:
-            if _col not in _p2_cols:
-                try:
-                    with engine.connect() as _conn:
+                for _col, _ddl in [
+                    ("price_90_high",       "FLOAT"),
+                    ("price_90_low",        "FLOAT"),
+                    ("price_90_median",     "FLOAT"),
+                    ("fba_low",             "FLOAT"),
+                    ("fba_high",            "FLOAT"),
+                    ("fba_median",          "FLOAT"),
+                    ("fbm_low",             "FLOAT"),
+                    ("fbm_high",            "FLOAT"),
+                    ("fbm_median",          "FLOAT"),
+                    ("fulfillment_channel", "VARCHAR"),
+                ]:
+                    if _col not in _p_cols:
                         _conn.execute(text(f"ALTER TABLE products ADD COLUMN {_col} {_ddl}"))
+                _conn.commit()
+        except Exception:
+            pass
+        # billing_invoices is created by models.Base.metadata.create_all above
+        # order_number unique constraint relaxed for multi-tenant
+        try:
+            _cols = [c["name"] for c in _inspector.get_columns("orders")]
+            _idx  = [i["name"] for i in _inspector.get_indexes("orders")]
+            # SQLite: drop-and-recreate not needed; just leave the unique constraint
+        except Exception:
+            pass
+        # ── Add invoice_filename to ungate_requests ───────────────────────────────
+        try:
+            if "ungate_requests" in _inspector.get_table_names():
+                _ur_cols = [c["name"] for c in _inspector.get_columns("ungate_requests")]
+                if "invoice_filename" not in _ur_cols:
+                    with engine.connect() as _conn:
+                        _conn.execute(text("ALTER TABLE ungate_requests ADD COLUMN invoice_filename VARCHAR"))
                         _conn.commit()
-                except Exception as _col_err:
-                    print(f"[migration] products.{_col}: {_col_err}", flush=True)
+        except Exception:
+            pass
+        # ── Migrate ungate templates: replace {SELLER_ID} with {SELLER_NAME} ─────
+        try:
+            if "ungate_templates" in _inspector.get_table_names():
+                with engine.connect() as _conn:
+                    _conn.execute(text(
+                        "UPDATE ungate_templates SET body = REPLACE(body, 'Seller ID: {SELLER_ID}', 'Store: {SELLER_NAME}')"
+                        " WHERE body LIKE '%{SELLER_ID}%'"
+                    ))
+                    _conn.execute(text(
+                        "UPDATE ungate_templates SET body = REPLACE(body, 'Amazon Seller Account: {SELLER_ID}', 'Amazon Store: {SELLER_NAME}')"
+                        " WHERE body LIKE '%{SELLER_ID}%'"
+                    ))
+                    _conn.execute(text(
+                        "UPDATE ungate_templates SET body = REPLACE(body, '(Seller ID: {SELLER_ID})', '({SELLER_NAME})')"
+                        " WHERE body LIKE '%{SELLER_ID}%'"
+                    ))
+                    # Catch any remaining {SELLER_ID} references
+                    _conn.execute(text(
+                        "UPDATE ungate_templates SET body = REPLACE(body, '{SELLER_ID}', '{SELLER_NAME}')"
+                        " WHERE body LIKE '%{SELLER_ID}%'"
+                    ))
+                    _conn.execute(text(
+                        "UPDATE ungate_templates SET subject = REPLACE(subject, '{SELLER_ID}', '{SELLER_NAME}')"
+                        " WHERE subject LIKE '%{SELLER_ID}%'"
+                    ))
+                    _conn.commit()
+        except Exception:
+            pass
+        # ── Add ship_from_json to amazon_credentials ─────────────────────────────
+        try:
+            if "amazon_credentials" in _inspector.get_table_names():
+                _ac2_cols = [c["name"] for c in _inspector.get_columns("amazon_credentials")]
+                if "ship_from_json" not in _ac2_cols:
+                    with engine.connect() as _conn:
+                        _conn.execute(text("ALTER TABLE amazon_credentials ADD COLUMN ship_from_json TEXT"))
+                        _conn.commit()
+        except Exception:
+            pass
+        # ── Add dashboard_sections, page_permissions, email_verified to users ───────
+        try:
+            if "users" in _inspector.get_table_names():
+                _u_cols = [c["name"] for c in _inspector.get_columns("users")]
+                with engine.connect() as _conn:
+                    if "dashboard_sections" not in _u_cols:
+                        _conn.execute(text("ALTER TABLE users ADD COLUMN dashboard_sections TEXT"))
+                    if "page_permissions" not in _u_cols:
+                        _conn.execute(text("ALTER TABLE users ADD COLUMN page_permissions TEXT"))
+                    if "email_verified" not in _u_cols:
+                        _conn.execute(text("ALTER TABLE users ADD COLUMN email_verified BOOLEAN DEFAULT FALSE"))
+                    _conn.commit()
+        except Exception:
+            pass
+        # ── Create password_reset_tokens and email_verification_tokens if absent ──
+        try:
+            _tnames = _inspector.get_table_names()
+            with engine.connect() as _conn:
+                if "password_reset_tokens" not in _tnames:
+                    _conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                            id SERIAL PRIMARY KEY,
+                            user_id INTEGER NOT NULL REFERENCES users(id),
+                            token VARCHAR NOT NULL UNIQUE,
+                            expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                            used BOOLEAN DEFAULT FALSE,
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                        )
+                    """))
+                if "email_verification_tokens" not in _tnames:
+                    _conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS email_verification_tokens (
+                            id SERIAL PRIMARY KEY,
+                            user_id INTEGER NOT NULL REFERENCES users(id),
+                            token VARCHAR NOT NULL UNIQUE,
+                            expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                            used BOOLEAN DEFAULT FALSE,
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                        )
+                    """))
+                _conn.commit()
+        except Exception:
+            pass
+        # ── Apply STORE_NAME env var to "Default" tenant on startup ─────────────
+        try:
+            _store_env = os.getenv("STORE_NAME", "").strip()
+            if _store_env:
+                with engine.connect() as _conn:
+                    _conn.execute(text(
+                        "UPDATE tenants SET name = :name WHERE LOWER(name) = 'default'"
+                    ), {"name": _store_env})
+                    _conn.commit()
+        except Exception:
+            pass
+        # ── Add seller_sku + aria live-push columns to products ──────────────────
+        # Each column in its own connection+commit so one failure doesn't block others.
+        # Use TIMESTAMP WITH TIME ZONE (PostgreSQL) not DATETIME (SQLite-only).
+        try:
+            _p2_cols = [c["name"] for c in _inspector.get_columns("products")]
+            for _col, _ddl in [
+                ("seller_sku",           "VARCHAR"),
+                ("aria_live_price",      "DOUBLE PRECISION"),
+                ("aria_live_pushed_at",  "TIMESTAMP WITH TIME ZONE"),
+                ("buy_box_winner",       "BOOLEAN"),
+                ("buy_box_checked_at",   "TIMESTAMP WITH TIME ZONE"),
+            ]:
+                if _col not in _p2_cols:
+                    try:
+                        with engine.connect() as _conn:
+                            _conn.execute(text(f"ALTER TABLE products ADD COLUMN {_col} {_ddl}"))
+                            _conn.commit()
+                    except Exception as _col_err:
+                        print(f"[migration] products.{_col}: {_col_err}", flush=True)
+        except Exception:
+            pass
+        # ── Backfill seller_sku from order_number for legacy products ─────────────
+        # order_number previously stored the Amazon seller SKU from inventory sync.
+        # Copy it to seller_sku so Aria can push prices immediately.
+        try:
+            with engine.connect() as _conn:
+                _conn.execute(text(
+                    "UPDATE products SET seller_sku = order_number "
+                    "WHERE seller_sku IS NULL AND order_number IS NOT NULL "
+                    "AND order_number != ''"
+                ))
+                _conn.commit()
+        except Exception:
+            pass
+        # repricer_logs is created by models.Base.metadata.create_all above (dialect-safe)
     except Exception:
         pass
-    # ── Backfill seller_sku from order_number for legacy products ─────────────
-    # order_number previously stored the Amazon seller SKU from inventory sync.
-    # Copy it to seller_sku so Aria can push prices immediately.
-    try:
-        with engine.connect() as _conn:
-            _conn.execute(text(
-                "UPDATE products SET seller_sku = order_number "
-                "WHERE seller_sku IS NULL AND order_number IS NOT NULL "
-                "AND order_number != ''"
-            ))
-            _conn.commit()
-    except Exception:
-        pass
-    # repricer_logs is created by models.Base.metadata.create_all above (dialect-safe)
-except Exception:
-    pass
 
-# Create default admin + tenant on startup if none exist
-try:
-    _startup_db = next(get_db())
+    # Create default admin + tenant on startup if none exist
     try:
-        ensure_bootstrap_admin(_startup_db)
-    finally:
-        _startup_db.close()
-except Exception as _e:
-    print(f"Warning: bootstrap admin setup failed ({_e}), continuing anyway.")
+        _startup_db = next(get_db())
+        try:
+            ensure_bootstrap_admin(_startup_db)
+        finally:
+            _startup_db.close()
+    except Exception as _e:
+        print(f"Warning: bootstrap admin setup failed ({_e}), continuing anyway.")
 
 app = FastAPI(title="SellerPulse API", version="2.0.0")
 if _limiter_enabled:

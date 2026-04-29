@@ -66,8 +66,24 @@ def seed():
         log.warning("Seed skipped: %s", e)
 
 
+def bootstrap():
+    """Create the default tenant + admin user if none exist."""
+    try:
+        from database import SessionLocal
+        from auth import ensure_bootstrap_admin
+        db = SessionLocal()
+        try:
+            ensure_bootstrap_admin(db)
+            log.info("Bootstrap admin check complete")
+        finally:
+            db.close()
+    except Exception as e:
+        log.warning("Bootstrap admin skipped: %s", e)
+
+
 if __name__ == "__main__":
     log.info("=== Pre-start ===")
     run_migrations()
     seed()
+    bootstrap()
     log.info("=== Pre-start complete — handing off to uvicorn ===")
