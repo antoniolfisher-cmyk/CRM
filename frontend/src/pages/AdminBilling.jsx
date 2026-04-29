@@ -54,6 +54,71 @@ function StatCard({ label, value, sub, color = 'text-gray-900' }) {
   )
 }
 
+// ── Tenant users panel ───────────────────────────────────────────────────────
+function TenantUsersPanel({ tenantId }) {
+  const [users, setUsers]     = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [unlocking, setUnlocking] = useState({})
+  const [pwInputs, setPwInputs]   = useState({})
+
+  useEffect(() => {
+    setLoading(true)
+    api.adminTenantUsers(tenantId)
+      .then(setUsers)
+      .catch(() => setUsers([]))
+      .finally(() => setLoading(false))
+  }, [tenantId])
+
+  const unlock = async (userId) => {
+    const pw = pwInputs[userId] || ''
+    setUnlocking(p => ({ ...p, [userId]: true }))
+    try {
+      await api.adminUnlockUser(tenantId, userId, pw)
+      setUsers(prev => prev.map(u => u.id === userId ? { ...u, is_active: true, email_verified: true } : u))
+      setPwInputs(p => ({ ...p, [userId]: '' }))
+    } catch (e) {
+      alert(e.message)
+    } finally {
+      setUnlocking(p => ({ ...p, [userId]: false }))
+    }
+  }
+
+  if (loading) return <div className="px-6 py-3 text-xs text-gray-400">Loading users…</div>
+  if (!users?.length) return <div className="px-6 py-3 text-xs text-gray-400">No users found for this tenant.</div>
+
+  return (
+    <div className="px-6 py-3 bg-slate-50 border-t border-gray-100">
+      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Users</p>
+      <div className="space-y-2">
+        {users.map(u => (
+          <div key={u.id} className="flex items-center gap-3 flex-wrap">
+            <span className={`w-2 h-2 rounded-full shrink-0 ${u.is_active ? 'bg-green-400' : 'bg-red-400'}`} />
+            <span className="text-xs font-medium text-gray-800 w-36 truncate">{u.username}</span>
+            <span className="text-xs text-gray-400 w-44 truncate">{u.email || '—'}</span>
+            <span className="text-xs text-gray-400 w-12">{u.role}</span>
+            {!u.is_active && <span className="text-xs bg-red-50 text-red-500 px-1.5 py-0.5 rounded">Disabled</span>}
+            {!u.email_verified && <span className="text-xs bg-yellow-50 text-yellow-600 px-1.5 py-0.5 rounded">Unverified</span>}
+            <input
+              type="text"
+              placeholder="New password (optional)"
+              value={pwInputs[u.id] || ''}
+              onChange={e => setPwInputs(p => ({ ...p, [u.id]: e.target.value }))}
+              className="text-xs border border-gray-300 rounded px-2 py-0.5 w-44 focus:outline-none focus:ring-1 focus:ring-blue-400"
+            />
+            <button
+              onClick={() => unlock(u.id)}
+              disabled={unlocking[u.id]}
+              className="text-xs px-2.5 py-1 bg-blue-50 text-blue-700 rounded hover:bg-blue-100 disabled:opacity-40 font-medium"
+            >
+              {unlocking[u.id] ? '…' : (!u.is_active ? 'Enable & Unlock' : 'Reset Password')}
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ── Plan change dropdown ─────────────────────────────────────────────────────
 function PlanDropdown({ tenantId, currentPlan, onChanged }) {
   const [open, setOpen]     = useState(false)
@@ -107,6 +172,7 @@ export default function AdminBilling() {
   const [loading, setLoading]       = useState(true)
   const [tab, setTab]               = useState('sellers')   // 'sellers' | 'invoices'
   const [actionLoading, setActionLoading] = useState({})
+  const [expandedTenant, setExpandedTenant] = useState(null)
   const [planFilter, setPlanFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [search, setSearch]         = useState('')
@@ -355,7 +421,8 @@ export default function AdminBilling() {
                       </td>
                     </tr>
                   )}
-                  {filteredTenants.map(t => (
+
+                  {filteredTenants.map(t => (<>
                     <tr key={t.id} className={`hover:bg-gray-50 transition-colors ${!t.is_active ? 'opacity-50' : ''}`}>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
@@ -448,10 +515,23 @@ export default function AdminBilling() {
                               {actionLoading[t.id] === 'grant-access' ? '…' : 'Grant Access'}
                             </button>
                           )}
+                          <button
+                            onClick={() => setExpandedTenant(expandedTenant === t.id ? null : t.id)}
+                            className="text-xs px-2.5 py-1 bg-slate-50 text-slate-600 rounded hover:bg-slate-100 font-medium"
+                          >
+                            {expandedTenant === t.id ? 'Hide Users' : 'Users'}
+                          </button>
                         </div>
                       </td>
                     </tr>
-                  ))}
+                    {expandedTenant === t.id && (
+                      <tr key={`${t.id}-users`}>
+                        <td colSpan={8} className="p-0">
+                          <TenantUsersPanel tenantId={t.id} />
+                        </td>
+                      </tr>
+                    )}
+                  </>))}
                 </tbody>
               </table>
             </div>

@@ -1722,6 +1722,49 @@ def admin_grant_access(
     return {"ok": True, "tenant_id": tenant_id}
 
 
+@app.get("/api/admin/billing/tenants/{tenant_id}/users")
+def admin_tenant_users(
+    tenant_id: int,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_superadmin),
+):
+    """List all users for a tenant with their login status."""
+    users = db.query(models.User).filter_by(tenant_id=tenant_id).order_by(models.User.created_at).all()
+    return [
+        {
+            "id":             u.id,
+            "username":       u.username,
+            "email":          u.email,
+            "role":           u.role,
+            "is_active":      u.is_active,
+            "email_verified": u.email_verified,
+            "created_at":     u.created_at.isoformat() if u.created_at else None,
+        }
+        for u in users
+    ]
+
+
+@app.post("/api/admin/billing/tenants/{tenant_id}/users/{user_id}/unlock")
+def admin_unlock_user(
+    tenant_id: int,
+    user_id: int,
+    body: dict = {},
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_superadmin),
+):
+    """Enable a disabled user and optionally reset their password."""
+    user = db.query(models.User).filter_by(id=user_id, tenant_id=tenant_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    user.is_active = True
+    user.email_verified = True
+    new_password = body.get("new_password", "").strip()
+    if new_password:
+        user.password_hash = hash_password(new_password)
+    db.commit()
+    return {"ok": True, "user_id": user_id, "username": user.username, "password_reset": bool(new_password)}
+
+
 @app.put("/api/admin/billing/tenants/{tenant_id}/plan")
 def admin_change_plan(
     tenant_id: int,
