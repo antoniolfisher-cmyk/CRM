@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { api } from '../api'
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -422,8 +422,9 @@ export default function AdminBilling() {
                     </tr>
                   )}
 
-                  {filteredTenants.map(t => (<>
-                    <tr key={t.id} className={`hover:bg-gray-50 transition-colors ${!t.is_active ? 'opacity-50' : ''}`}>
+                  {filteredTenants.map(t => (
+                    <React.Fragment key={t.id}>
+                    <tr className={`hover:bg-gray-50 transition-colors ${!t.is_active ? 'opacity-50' : ''}`}>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
                           <div className="w-8 h-8 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
@@ -525,13 +526,14 @@ export default function AdminBilling() {
                       </td>
                     </tr>
                     {expandedTenant === t.id && (
-                      <tr key={`${t.id}-users`}>
+                      <tr>
                         <td colSpan={8} className="p-0">
                           <TenantUsersPanel tenantId={t.id} />
                         </td>
                       </tr>
                     )}
-                  </>))}
+                    </React.Fragment>
+                  ))}
                 </tbody>
               </table>
             </div>
