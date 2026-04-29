@@ -504,6 +504,82 @@ class SubscriptionEnforcementMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SubscriptionEnforcementMiddleware)
 
 
+# ─── Global rate limit middleware ─────────────────────────────────────────────
+
+class _RateLimiter:
+    """
+    In-memory sliding-window rate limiter.
+    Limits: 300 req/min per IP by default; tighter for expensive paths.
+    Resets on redeploy — acceptable until Redis is added.
+    """
+    # (prefix, limit_per_minute)
+    RULES: list[tuple[str, int]] = [
+        ("/api/repricer/aria/run-all",       5),
+        ("/api/repricer/aria/run/",         20),
+        ("/api/keepa/bulk-refresh",          5),
+        ("/api/keepa/batch",                10),
+        ("/api/keepa/amazon-search",        10),
+        ("/api/amazon/inventory/sync-now",  10),
+        ("/api/",                          300),   # catch-all for all API routes
+    ]
+
+    def __init__(self):
+        self._windows: dict[str, list[float]] = {}
+        self._lock = __import__("threading").Lock()
+
+    def is_allowed(self, ip: str, path: str) -> bool:
+        import time
+        limit = 300
+        for prefix, lim in self.RULES:
+            if path.startswith(prefix):
+                limit = lim
+                break
+
+        key = f"{ip}:{path.split('?')[0][:60]}"  # strip query params, cap length
+        now = time.monotonic()
+        cutoff = now - 60.0
+
+        with self._lock:
+            timestamps = [t for t in self._windows.get(key, []) if t > cutoff]
+            if len(timestamps) >= limit:
+                self._windows[key] = timestamps
+                return False
+            timestamps.append(now)
+            self._windows[key] = timestamps
+
+            # Periodic cleanup — prevent unbounded memory growth
+            if len(self._windows) > 50_000:
+                self._windows = {
+                    k: v for k, v in self._windows.items()
+                    if any(t > cutoff for t in v)
+                }
+        return True
+
+
+_rate_limiter = _RateLimiter()
+
+
+class GlobalRateLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if not path.startswith("/api/"):
+            return await call_next(request)
+        # Skip health check from rate limiting
+        if path == "/api/health":
+            return await call_next(request)
+
+        ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown").split(",")[0].strip()
+        if not _rate_limiter.is_allowed(ip, path):
+            return StarletteJSONResponse(
+                status_code=429,
+                content={"detail": "Too many requests. Please slow down."},
+            )
+        return await call_next(request)
+
+
+app.add_middleware(GlobalRateLimitMiddleware)
+
+
 @app.on_event("startup")
 def startup():
     _run_alembic_migrations()
