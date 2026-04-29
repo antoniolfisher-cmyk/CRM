@@ -834,7 +834,7 @@ def scheduled_sync_all():
     log.info("Amazon scheduled sync starting for %d tenant(s)", len(tenant_ids))
 
     async def _sync_all():
-        sem = asyncio.Semaphore(5)   # max 5 concurrent tenant syncs
+        sem = asyncio.Semaphore(20)  # max 20 concurrent tenant syncs
 
         async def _sync_one(tid):
             async with sem:

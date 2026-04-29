@@ -47,7 +47,7 @@ except Exception as _slowapi_err:
     RateLimitExceeded = Exception
     def _rate_limit_exceeded_handler(req, exc): pass
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, text
 from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
@@ -3035,7 +3035,7 @@ def get_follow_up(follow_up_id: int, db: Session = Depends(get_db), current: dic
 
 @app.post("/api/follow-ups", response_model=schemas.FollowUpOut, status_code=201)
 def create_follow_up(data: schemas.FollowUpCreate, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
-    fu = models.FollowUp(**data.model_dump(), created_by=current["sub"])
+    fu = models.FollowUp(**data.model_dump(), created_by=current["sub"], tenant_id=current.get("tenant_id"))
     db.add(fu)
     db.commit()
     db.refresh(fu)
@@ -6336,9 +6336,13 @@ def timeclock_export(
 
 
 @app.get("/api/health")
-def health():
-    """Lightweight healthcheck — just verifies the process is alive."""
-    return {"status": "ok"}
+def health(db: Session = Depends(get_db)):
+    """Healthcheck — verifies process is alive and DB is reachable."""
+    try:
+        db.execute(text("SELECT 1"))
+        return {"status": "ok", "db": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"DB unavailable: {e}")
 
 
 # ─── Serve React SPA (must be last) ───────────────────────────────────────────
