@@ -213,7 +213,7 @@ def handle_webhook(payload: bytes, sig_header: str, db) -> dict:
 
     if event_type == "checkout.session.completed":
         tenant_id = int(data.get("metadata", {}).get("tenant_id", 0))
-        plan      = data.get("metadata", {}).get("plan", "pro")
+        plan      = data.get("metadata", {}).get("plan", "enterprise")
         customer  = data.get("customer")
         sub_id    = data.get("subscription")
         if tenant_id:
