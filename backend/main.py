@@ -508,11 +508,11 @@ app.add_middleware(SubscriptionEnforcementMiddleware)
 
 class _RateLimiter:
     """
-    In-memory sliding-window rate limiter.
+    Sliding-window rate limiter.
+    Uses Redis (fixed-window via INCR+EXPIRE) when REDIS_URL is set;
+    falls back to in-memory sliding window for single-replica deployments.
     Limits: 300 req/min per IP by default; tighter for expensive paths.
-    Resets on redeploy — acceptable until Redis is added.
     """
-    # (prefix, limit_per_minute)
     RULES: list[tuple[str, int]] = [
         ("/api/repricer/aria/run-all",       5),
         ("/api/repricer/aria/run/",         20),
@@ -520,25 +520,58 @@ class _RateLimiter:
         ("/api/keepa/batch",                10),
         ("/api/keepa/amazon-search",        10),
         ("/api/amazon/inventory/sync-now",  10),
-        ("/api/",                          300),   # catch-all for all API routes
+        ("/api/",                          300),
     ]
 
     def __init__(self):
+        self._redis = None
+        self._redis_checked = False
+        # in-memory fallback
         self._windows: dict[str, list[float]] = {}
         self._lock = __import__("threading").Lock()
 
-    def is_allowed(self, ip: str, path: str) -> bool:
-        import time
-        limit = 300
+    def _get_redis(self):
+        if self._redis_checked:
+            return self._redis
+        self._redis_checked = True
+        url = os.getenv("REDIS_URL", "").strip()
+        if not url:
+            return None
+        try:
+            import redis as _redis
+            r = _redis.from_url(url, socket_connect_timeout=2, socket_timeout=1, decode_responses=True)
+            r.ping()
+            self._redis = r
+            log.info("Rate limiter: using Redis at %s", url.split("@")[-1])
+        except Exception as e:
+            log.warning("Rate limiter: Redis unavailable (%s) — using in-memory fallback", e)
+        return self._redis
+
+    def _limit_for(self, path: str) -> int:
         for prefix, lim in self.RULES:
             if path.startswith(prefix):
-                limit = lim
-                break
+                return lim
+        return 300
 
-        key = f"{ip}:{path.split('?')[0][:60]}"  # strip query params, cap length
+    def is_allowed(self, ip: str, path: str) -> bool:
+        import time
+        limit = self._limit_for(path)
+        key = f"rl:{ip}:{path.split('?')[0][:60]}"
+
+        r = self._get_redis()
+        if r is not None:
+            try:
+                pipe = r.pipeline()
+                pipe.incr(key)
+                pipe.expire(key, 60)
+                count, _ = pipe.execute()
+                return count <= limit
+            except Exception as e:
+                log.warning("Redis rate-limit error — falling back to in-memory: %s", e)
+
+        # In-memory fallback
         now = time.monotonic()
         cutoff = now - 60.0
-
         with self._lock:
             timestamps = [t for t in self._windows.get(key, []) if t > cutoff]
             if len(timestamps) >= limit:
@@ -546,13 +579,8 @@ class _RateLimiter:
                 return False
             timestamps.append(now)
             self._windows[key] = timestamps
-
-            # Periodic cleanup — prevent unbounded memory growth
             if len(self._windows) > 50_000:
-                self._windows = {
-                    k: v for k, v in self._windows.items()
-                    if any(t > cutoff for t in v)
-                }
+                self._windows = {k: v for k, v in self._windows.items() if any(t > cutoff for t in v)}
         return True
 
 

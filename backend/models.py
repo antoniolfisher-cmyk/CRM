@@ -2,6 +2,7 @@ from sqlalchemy import Column, Integer, String, Float, DateTime, Text, ForeignKe
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
+from crypto import EncryptedString
 import enum
 
 
@@ -37,9 +38,9 @@ class AmazonCredential(Base):
     tenant_id        = Column(Integer, ForeignKey("tenants.id"), unique=True, nullable=False)
 
     # These can come from OAuth flow or manual entry
-    lwa_client_id     = Column(String, nullable=True)   # app-level (shared) or per-seller
-    lwa_client_secret = Column(String, nullable=True)   # app-level (shared) or per-seller
-    sp_refresh_token  = Column(String, nullable=True)   # per-seller, from OAuth
+    lwa_client_id     = Column(String, nullable=True)
+    lwa_client_secret = Column(EncryptedString(1024), nullable=True)
+    sp_refresh_token  = Column(EncryptedString(1024), nullable=True)
     seller_id         = Column(String, nullable=True)
     store_name        = Column(String, nullable=True)   # Amazon storefront/business name
     marketplace_id    = Column(String, default="ATVPDKIKX0DER")
