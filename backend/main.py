@@ -55,10 +55,11 @@ from datetime import datetime, timedelta, timezone
 import models
 import schemas
 from database import engine, get_db
+from fastapi.security import HTTPAuthorizationCredentials
 from auth import (
     LoginRequest, RegisterRequest, create_token, require_auth, require_admin,
     require_superadmin, hash_password, verify_password, ensure_bootstrap_admin, get_tenant_id,
-    revoke_token, TOKEN_EXPIRE_HOURS,
+    revoke_token, TOKEN_EXPIRE_HOURS, bearer,
 )
 from notifications import start_scheduler, stop_scheduler, send_daily_digests, send_email, build_digest_html, _smtp_configured, get_aria_schedule_info
 import aria_repricer
