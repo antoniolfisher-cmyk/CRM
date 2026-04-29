@@ -2,32 +2,50 @@ import os
 import asyncio
 import logging
 import urllib.parse
-import sentry_sdk
-from sentry_sdk.integrations.fastapi import FastApiIntegration
-from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
 from fastapi import FastAPI, Depends, HTTPException, Request, BackgroundTasks, UploadFile, File, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse as StarletteJSONResponse
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
 
 log = logging.getLogger(__name__)
 
-_sentry_dsn = os.getenv("SENTRY_DSN", "")
-if _sentry_dsn:
-    sentry_sdk.init(
-        dsn=_sentry_dsn,
-        integrations=[FastApiIntegration(), SqlalchemyIntegration()],
-        traces_sample_rate=0.1,
-        environment=os.getenv("RAILWAY_ENVIRONMENT", "production"),
-        send_default_pii=True,
-    )
+# Sentry — optional, only active when SENTRY_DSN is set
+try:
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+    from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+    _sentry_dsn = os.getenv("SENTRY_DSN", "")
+    if _sentry_dsn:
+        sentry_sdk.init(
+            dsn=_sentry_dsn,
+            integrations=[FastApiIntegration(), SqlalchemyIntegration()],
+            traces_sample_rate=0.1,
+            environment=os.getenv("RAILWAY_ENVIRONMENT", "production"),
+            send_default_pii=True,
+        )
+        log.info("Sentry initialised")
+except Exception as _sentry_err:
+    log.warning("Sentry not loaded: %s", _sentry_err)
 
-limiter = Limiter(key_func=get_remote_address)
+# Rate limiting — optional, gracefully disabled if slowapi not installed
+try:
+    from slowapi import Limiter, _rate_limit_exceeded_handler
+    from slowapi.util import get_remote_address
+    from slowapi.errors import RateLimitExceeded
+    limiter = Limiter(key_func=get_remote_address)
+    _limiter_enabled = True
+except Exception as _slowapi_err:
+    log.warning("slowapi not loaded — rate limiting disabled: %s", _slowapi_err)
+    _limiter_enabled = False
+    # Stub so decorators don't crash
+    class _NoopLimiter:
+        def limit(self, *a, **kw):
+            return lambda f: f
+    limiter = _NoopLimiter()
+    RateLimitExceeded = Exception
+    def _rate_limit_exceeded_handler(req, exc): pass
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, or_
 from typing import List, Optional
