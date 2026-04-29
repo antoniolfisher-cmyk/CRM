@@ -381,8 +381,9 @@ except Exception as _e:
     print(f"Warning: bootstrap admin setup failed ({_e}), continuing anyway.")
 
 app = FastAPI(title="SellerPulse API", version="2.0.0")
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+if _limiter_enabled:
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
