@@ -13,6 +13,40 @@ SECRET_KEY          = os.getenv("SECRET_KEY", "dev-secret-change-in-production")
 ALGORITHM           = "HS256"
 TOKEN_EXPIRE_HOURS  = 24 * 7   # 7 days
 
+# ── Token blacklist (revoked tokens stored in Redis until their natural expiry) ─
+def _get_redis():
+    url = os.getenv("REDIS_URL", "")
+    if not url:
+        return None
+    try:
+        import redis as _redis
+        r = _redis.from_url(url, socket_connect_timeout=1, socket_timeout=1, decode_responses=True)
+        r.ping()
+        return r
+    except Exception:
+        return None
+
+def revoke_token(token: str, exp: int) -> None:
+    """Add a token to the blacklist until it expires naturally."""
+    r = _get_redis()
+    if not r:
+        return
+    import time
+    ttl = max(int(exp - time.time()), 1)
+    try:
+        r.setex(f"revoked:{token}", ttl, "1")
+    except Exception:
+        pass
+
+def is_token_revoked(token: str) -> bool:
+    r = _get_redis()
+    if not r:
+        return False
+    try:
+        return bool(r.exists(f"revoked:{token}"))
+    except Exception:
+        return False
+
 BOOTSTRAP_USERNAME   = os.getenv("CRM_USERNAME", "admin")
 BOOTSTRAP_PASSWORD   = os.getenv("CRM_PASSWORD", "changeme")
 SUPERADMIN_USERNAME  = os.getenv("SUPERADMIN_USERNAME", BOOTSTRAP_USERNAME)
@@ -61,10 +95,13 @@ def create_token(username: str, role: str, tenant_id: int) -> str:
 def _decode(credentials: HTTPAuthorizationCredentials):
     if not credentials:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    token = credentials.credentials
     try:
-        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         if not payload.get("sub"):
             raise HTTPException(status_code=401, detail="Invalid token")
+        if is_token_revoked(token):
+            raise HTTPException(status_code=401, detail="Token has been revoked")
         return payload
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")

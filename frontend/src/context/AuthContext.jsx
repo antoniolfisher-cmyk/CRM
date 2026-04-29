@@ -74,7 +74,15 @@ export function AuthProvider({ children }) {
     setUser(userInfo)
   }
 
-  const logout = () => {
+  const logout = async () => {
+    // Tell the server to revoke the token (best-effort; don't block UI on failure)
+    const t = localStorage.getItem(TOKEN_KEY)
+    if (t) {
+      fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${t}` },
+      }).catch(() => {})
+    }
     localStorage.removeItem(TOKEN_KEY)
     setToken(null)
     setUser(null)

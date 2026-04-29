@@ -28,6 +28,8 @@ COPY --from=frontend-build /frontend/dist ./static
 RUN mkdir -p /data
 
 ENV PORT=8000
+# WEB_CONCURRENCY controls uvicorn worker count (default 4; Railway can override via env var)
+ENV WEB_CONCURRENCY=4
 EXPOSE 8000
 
-CMD python seed_if_empty.py; uvicorn main:app --host 0.0.0.0 --port ${PORT}
+CMD python seed_if_empty.py; uvicorn main:app --host 0.0.0.0 --port ${PORT} --workers ${WEB_CONCURRENCY}

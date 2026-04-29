@@ -58,6 +58,7 @@ from database import engine, get_db
 from auth import (
     LoginRequest, RegisterRequest, create_token, require_auth, require_admin,
     require_superadmin, hash_password, verify_password, ensure_bootstrap_admin, get_tenant_id,
+    revoke_token, TOKEN_EXPIRE_HOURS,
 )
 from notifications import start_scheduler, stop_scheduler, send_daily_digests, send_email, build_digest_html, _smtp_configured, get_aria_schedule_info
 import aria_repricer
@@ -417,12 +418,20 @@ if _limiter_enabled:
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+_ALLOWED_ORIGINS = [o.strip() for o in os.getenv(
+    "CORS_ORIGINS",
+    "https://sellers-pulse.com,https://www.sellers-pulse.com",
+).split(",") if o.strip()]
+# Always allow localhost in dev so the local Vite dev server works
+if os.getenv("RAILWAY_ENVIRONMENT") != "production":
+    _ALLOWED_ORIGINS += ["http://localhost:5173", "http://localhost:3000"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
 
 
@@ -633,6 +642,31 @@ async def _cache_headers(request: Request, call_next):
     return response
 
 
+# ─── Security headers middleware ──────────────────────────────────────────────
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"]  = "nosniff"
+    response.headers["X-Frame-Options"]          = "DENY"
+    response.headers["X-XSS-Protection"]         = "1; mode=block"
+    response.headers["Referrer-Policy"]           = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"]        = "camera=(), microphone=(), geolocation=()"
+    # HSTS — tells browsers to always use HTTPS (1 year)
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    # CSP — restrict resource loading; unsafe-inline needed for Vite-injected styles
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data: https:; "
+        "connect-src 'self' https://api.stripe.com https://*.sentry.io; "
+        "frame-src https://js.stripe.com https://hooks.stripe.com;"
+    )
+    return response
+
+
 # ─── Sentry request context middleware ────────────────────────────────────────
 
 @app.middleware("http")
@@ -799,6 +833,20 @@ def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
            current={"sub": user.username, "tenant_id": tenant_id},
            detail=f"role={user.role}")
     return {"access_token": create_token(user.username, user.role, tenant_id), "token_type": "bearer"}
+
+
+@app.post("/api/auth/logout", status_code=200)
+def logout(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(bearer),
+    current: dict = Depends(require_auth),
+):
+    """Revoke the current JWT so it cannot be reused even before it expires."""
+    import time as _time
+    token = credentials.credentials
+    exp   = current.get("exp", int(_time.time()) + TOKEN_EXPIRE_HOURS * 3600)
+    revoke_token(token, exp)
+    return {"ok": True}
 
 
 @app.post("/api/auth/register")
@@ -1022,7 +1070,9 @@ def verify_email(token: str, db: Session = Depends(get_db)):
 
 @app.put("/api/auth/profile")
 def update_profile(
+    request: Request,
     data: ProfileUpdate,
+    credentials: HTTPAuthorizationCredentials = Depends(bearer),
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
 ):
@@ -1031,7 +1081,7 @@ def update_profile(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Password change requires current password verification
+    password_changed = False
     if data.new_password:
         if not data.current_password:
             raise HTTPException(status_code=400, detail="current_password is required to change password")
@@ -1040,6 +1090,7 @@ def update_profile(
         if len(data.new_password) < 8:
             raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
         user.password_hash = hash_password(data.new_password)
+        password_changed = True
 
     new_username = None
     if data.username and data.username.strip() and data.username.strip() != user.username:
@@ -1059,9 +1110,12 @@ def update_profile(
 
     db.commit()
 
+    import time as _time
     new_token = None
-    if new_username:
-        new_token = create_token(new_username, user.role, user.tenant_id or 1)
+    if new_username or password_changed:
+        # Revoke old token and issue a fresh one
+        revoke_token(credentials.credentials, current.get("exp", int(_time.time()) + TOKEN_EXPIRE_HOURS * 3600))
+        new_token = create_token(user.username, user.role, user.tenant_id or 1)
 
     return {
         "message": "Profile updated",

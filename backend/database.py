@@ -15,11 +15,13 @@ connect_args = {"check_same_thread": False} if is_sqlite else {}
 if is_sqlite:
     engine = create_engine(DATABASE_URL, connect_args=connect_args)
 else:
+    connect_args["options"] = "-c statement_timeout=10000"   # 10 s hard limit per query
     engine = create_engine(
         DATABASE_URL,
         pool_size=20,
         max_overflow=40,
-        pool_recycle=3600,
+        pool_recycle=1800,   # recycle every 30 min to avoid stale connections
+        pool_timeout=30,
         pool_pre_ping=True,
         connect_args=connect_args,
     )

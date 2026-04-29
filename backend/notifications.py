@@ -552,8 +552,33 @@ def send_trial_reminders():
         db.close()
 
 
+def _is_scheduler_leader() -> bool:
+    """
+    With multiple uvicorn workers each starts APScheduler.
+    Use Redis to elect a single leader so jobs only fire once.
+    Falls back to True (always run) when Redis is unavailable.
+    """
+    redis_url = os.getenv("REDIS_URL", "")
+    if not redis_url:
+        return True   # no Redis — single worker assumed
+    try:
+        import redis as _redis
+        r = _redis.from_url(redis_url, socket_connect_timeout=2, socket_timeout=2, decode_responses=True)
+        # SET NX with a 55-second TTL — one worker wins per minute window
+        result = r.set("scheduler:leader", os.getpid(), nx=True, ex=55)
+        if result:
+            return True
+        # Already a leader — check if it's us (re-election after worker restart)
+        return str(r.get("scheduler:leader")) == str(os.getpid())
+    except Exception:
+        return True   # Redis error — allow this worker to run jobs
+
+
 def start_scheduler():
     global _scheduler
+    if not _is_scheduler_leader():
+        log.info("Scheduler: another worker is leader — skipping job registration")
+        return
     _scheduler = BackgroundScheduler(timezone="UTC")
     _scheduler.add_job(
         send_daily_digests,
