@@ -309,7 +309,7 @@ try:
                     _conn.commit()
     except Exception:
         pass
-    # ── Add dashboard_sections and page_permissions to users ─────────────────
+    # ── Add dashboard_sections, page_permissions, email_verified to users ───────
     try:
         if "users" in _inspector.get_table_names():
             _u_cols = [c["name"] for c in _inspector.get_columns("users")]
@@ -318,7 +318,38 @@ try:
                     _conn.execute(text("ALTER TABLE users ADD COLUMN dashboard_sections TEXT"))
                 if "page_permissions" not in _u_cols:
                     _conn.execute(text("ALTER TABLE users ADD COLUMN page_permissions TEXT"))
+                if "email_verified" not in _u_cols:
+                    _conn.execute(text("ALTER TABLE users ADD COLUMN email_verified BOOLEAN DEFAULT FALSE"))
                 _conn.commit()
+    except Exception:
+        pass
+    # ── Create password_reset_tokens and email_verification_tokens if absent ──
+    try:
+        _tnames = _inspector.get_table_names()
+        with engine.connect() as _conn:
+            if "password_reset_tokens" not in _tnames:
+                _conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                        id SERIAL PRIMARY KEY,
+                        user_id INTEGER NOT NULL REFERENCES users(id),
+                        token VARCHAR NOT NULL UNIQUE,
+                        expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                        used BOOLEAN DEFAULT FALSE,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """))
+            if "email_verification_tokens" not in _tnames:
+                _conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS email_verification_tokens (
+                        id SERIAL PRIMARY KEY,
+                        user_id INTEGER NOT NULL REFERENCES users(id),
+                        token VARCHAR NOT NULL UNIQUE,
+                        expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                        used BOOLEAN DEFAULT FALSE,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """))
+            _conn.commit()
     except Exception:
         pass
     # ── Apply STORE_NAME env var to "Default" tenant on startup ─────────────
