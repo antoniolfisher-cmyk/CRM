@@ -30,24 +30,68 @@ STRIPE_WEBHOOK_SECRET  = property(_wh)
 
 # ── Plans ─────────────────────────────────────────────────────────────────────
 PLANS = {
+    "starter": {
+        "name":        "Starter",
+        "price":       0,
+        "price_label": "Free",
+        "stripe_price_id": "",
+        "features": ["Up to 3 users", "Up to 50 products", "Up to 100 accounts", "Basic CRM"],
+        "limits": {"users": 3, "products": 50, "accounts": 100},
+    },
+    "pro": {
+        "name":        "Pro",
+        "price":       9900,    # $99/mo
+        "price_label": "$99/mo",
+        "stripe_price_id": os.getenv("STRIPE_PRO_PRICE_ID", "") or os.getenv("STRIPE_PRICE_PRO", ""),
+        "features": ["Up to 10 users", "Up to 500 products", "Up to 1,000 accounts", "AI Repricer", "Keepa"],
+        "limits": {"users": 10, "products": 500, "accounts": 1000},
+    },
     "enterprise": {
         "name":        "Enterprise",
-        "price":       17500,   # cents = $175/mo
+        "price":       17500,   # $175/mo
         "price_label": "$175/mo",
         "stripe_price_id": os.getenv("STRIPE_ENTERPRISE_PRICE_ID", "") or os.getenv("STRIPE_PRICE_ENTERPRISE", ""),
         "features": [
-            "Unlimited users",
-            "Unlimited ASINs",
-            "Full Amazon SP-API integration",
-            "Live Sales & Inventory dashboard",
-            "AI Repricer (Aria)",
-            "Ungate workflow",
-            "Keepa data",
-            "Priority support",
+            "Unlimited users", "Unlimited ASINs", "Full Amazon SP-API integration",
+            "Live Sales & Inventory dashboard", "AI Repricer (Aria)",
+            "Ungate workflow", "Keepa data", "Priority support",
         ],
-        "limits": {"users": -1, "products": -1},
+        "limits": {"users": -1, "products": -1, "accounts": -1},
     },
 }
+
+
+def check_plan_limit(db, tenant_id: int, resource: str) -> tuple[bool, str]:
+    """
+    Check if a tenant can create another resource given their plan limits.
+    Returns (allowed: bool, message: str).
+    -1 means unlimited.
+    """
+    import models as _models
+    tenant = db.query(_models.Tenant).filter_by(id=tenant_id).first()
+    if not tenant:
+        return True, ""
+
+    plan = PLANS.get(tenant.plan or "starter", PLANS["starter"])
+    limit = plan["limits"].get(resource, -1)
+    if limit == -1:
+        return True, ""
+
+    if resource == "users":
+        count = db.query(_models.User).filter_by(tenant_id=tenant_id, is_active=True).count()
+    elif resource == "products":
+        count = db.query(_models.Product).filter_by(tenant_id=tenant_id).count()
+    elif resource == "accounts":
+        count = db.query(_models.Account).filter_by(tenant_id=tenant_id).count()
+    else:
+        return True, ""
+
+    if count >= limit:
+        return False, (
+            f"Your {tenant.plan or 'starter'} plan allows up to {limit} {resource}. "
+            f"Upgrade your plan to add more."
+        )
+    return True, ""
 
 PLAN_PRICES_CENTS = {"enterprise": 17500}
 
@@ -183,12 +227,16 @@ def handle_webhook(payload: bytes, sig_header: str, db) -> dict:
                 db.commit()
                 log.info("Tenant %d activated plan=%s", tenant_id, plan)
 
-    elif event_type == "invoice.payment_succeeded":
-        customer  = data.get("customer")
-        tenant    = db.query(models.Tenant).filter_by(stripe_customer_id=customer).first()
+    elif event_type in ("invoice.payment_succeeded", "invoice.paid"):
+        customer = data.get("customer")
+        tenant   = db.query(models.Tenant).filter_by(stripe_customer_id=customer).first()
         if tenant:
+            # Mark active whenever a payment succeeds (recovers past_due accounts)
+            if tenant.stripe_status in ("past_due", "trialing", None):
+                tenant.stripe_status = "active"
             record_invoice(db, data, tenant.id, "paid", tenant.plan)
-            log.info("Invoice paid for tenant %d", tenant.id)
+            db.commit()
+            log.info("Invoice paid for tenant %d — status=%s", tenant.id, tenant.stripe_status)
 
     elif event_type == "invoice.payment_failed":
         customer = data.get("customer")
@@ -204,12 +252,28 @@ def handle_webhook(payload: bytes, sig_header: str, db) -> dict:
         sub_id = sub.get("id")
         tenant = db.query(models.Tenant).filter_by(stripe_subscription_id=sub_id).first()
         if tenant:
-            tenant.stripe_status = sub.get("status", "canceled")
+            new_status = sub.get("status", "canceled")
+            tenant.stripe_status = new_status
+            # Sync trial end date from Stripe (authoritative source)
+            trial_end = sub.get("trial_end")
+            if trial_end:
+                tenant.trial_ends_at = datetime.utcfromtimestamp(trial_end)
             if event_type == "customer.subscription.deleted":
                 tenant.plan          = "starter"
                 tenant.stripe_status = "canceled"
             db.commit()
             log.info("Tenant %d subscription updated: %s", tenant.id, tenant.stripe_status)
+
+    elif event_type == "customer.subscription.trial_will_end":
+        # Stripe fires this 3 days before trial ends
+        sub_id = data.get("id")
+        tenant = db.query(models.Tenant).filter_by(stripe_subscription_id=sub_id).first()
+        if tenant:
+            trial_end = data.get("trial_end")
+            if trial_end:
+                tenant.trial_ends_at = datetime.utcfromtimestamp(trial_end)
+            db.commit()
+            log.info("Trial ending soon for tenant %d", tenant.id)
 
     elif event_type == "charge.refunded":
         charge_id = data.get("id")

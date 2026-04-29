@@ -25,6 +25,7 @@ class Tenant(Base):
     trial_ends_at           = Column(DateTime(timezone=True), nullable=True)
 
     created_at              = Column(DateTime(timezone=True), server_default=func.now())
+    deleted_at              = Column(DateTime(timezone=True), nullable=True)
 
     users             = relationship("User", back_populates="tenant")
     amazon_credential = relationship("AmazonCredential", back_populates="tenant", uselist=False)
@@ -67,8 +68,11 @@ class User(Base):
     email              = Column(String, nullable=True)
     notify_email       = Column(Boolean, default=True)
     email_verified     = Column(Boolean, default=False)
-    dashboard_sections = Column(Text, nullable=True)   # comma-separated dashboard widget keys; NULL = all
-    page_permissions   = Column(Text, nullable=True)   # comma-separated page keys; NULL = all pages
+    dashboard_sections = Column(Text, nullable=True)
+    page_permissions   = Column(Text, nullable=True)
+    failed_login_count = Column(Integer, default=0)
+    locked_until       = Column(DateTime(timezone=True), nullable=True)
+    last_login_at      = Column(DateTime(timezone=True), nullable=True)
     created_at         = Column(DateTime(timezone=True), server_default=func.now())
 
     tenant = relationship("Tenant", back_populates="users")

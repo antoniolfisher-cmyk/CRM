@@ -712,17 +712,47 @@ def shutdown():
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 
+_MAX_FAILED_LOGINS = 10       # lock after this many consecutive failures
+_LOCKOUT_MINUTES   = 30       # locked for this long
+
 @app.post("/api/auth/login")
 @limiter.limit("10/minute")
 def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
+    from datetime import timezone as _tz
     user = db.query(models.User).filter(models.User.username == data.username).first()
     if not user:
-        # Also allow login by email address
         user = db.query(models.User).filter(models.User.email == data.username).first()
+
+    # Check lockout before verifying password to avoid timing oracle
+    if user and user.locked_until:
+        if datetime.now(_tz.utc) < user.locked_until:
+            remaining = int((user.locked_until - datetime.now(_tz.utc)).total_seconds() // 60) + 1
+            raise HTTPException(status_code=429, detail=f"Account locked due to too many failed attempts. Try again in {remaining} minute(s).")
+        else:
+            # Lock expired — reset counter
+            user.failed_login_count = 0
+            user.locked_until = None
+
     if not user or not verify_password(data.password, user.password_hash):
+        if user:
+            user.failed_login_count = (user.failed_login_count or 0) + 1
+            if user.failed_login_count >= _MAX_FAILED_LOGINS:
+                user.locked_until = datetime.now(_tz.utc) + timedelta(minutes=_LOCKOUT_MINUTES)
+                _audit(db, "auth.lockout", request=request,
+                       current={"sub": user.username, "tenant_id": user.tenant_id},
+                       detail=f"locked for {_LOCKOUT_MINUTES}min after {user.failed_login_count} failures")
+            db.commit()
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is disabled")
+
+    # Successful login — reset failure counter
+    user.failed_login_count = 0
+    user.locked_until       = None
+    user.last_login_at      = datetime.now(_tz.utc)
+    db.commit()
+
     tenant_id = user.tenant_id or 1
     _audit(db, "auth.login", request=request,
            current={"sub": user.username, "tenant_id": tenant_id},
@@ -1472,6 +1502,11 @@ def list_users(db: Session = Depends(get_db), current: dict = Depends(require_ad
 
 @app.post("/api/users", response_model=schemas.UserOut, status_code=201)
 def create_user(data: schemas.UserCreate, db: Session = Depends(get_db), current: dict = Depends(require_admin)):
+    tid = current.get("tenant_id")
+    if tid:
+        allowed, msg = stripe_billing.check_plan_limit(db, tid, "users")
+        if not allowed:
+            raise HTTPException(status_code=403, detail=msg)
     if db.query(models.User).filter(models.User.username == data.username).first():
         raise HTTPException(status_code=409, detail="Username already exists")
     if data.role not in ("admin", "user"):
@@ -1775,6 +1810,71 @@ def export_tenant_data(
         content=payload,
         headers={"Content-Disposition": f'attachment; filename="sellerpulse-export-{tid}.json"'},
     )
+
+
+@app.delete("/api/tenant/me", status_code=200)
+def delete_tenant_account(
+    body: dict = {},
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_admin),
+):
+    """
+    GDPR right to erasure — permanently anonymise all tenant data.
+    Requires confirmation: {"confirm": "DELETE MY ACCOUNT"}.
+    Soft-deletes the tenant and scrubs PII from all related records.
+    Superadmins cannot delete their own platform account this way.
+    """
+    if current.get("role") == "superadmin":
+        raise HTTPException(403, "Platform admin account cannot be self-deleted.")
+    if body.get("confirm") != "DELETE MY ACCOUNT":
+        raise HTTPException(400, 'Send {"confirm": "DELETE MY ACCOUNT"} to confirm erasure.')
+
+    tid = current.get("tenant_id")
+    if not tid:
+        raise HTTPException(400, "No tenant context")
+
+    from datetime import timezone as _tz
+
+    tenant = db.query(models.Tenant).filter_by(id=tid).first()
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+
+    # Scrub PII from all users
+    for u in db.query(models.User).filter_by(tenant_id=tid).all():
+        u.email         = None
+        u.password_hash = "DELETED"
+        u.is_active     = False
+
+    # Scrub PII from accounts and contacts
+    for a in db.query(models.Account).filter_by(tenant_id=tid).all():
+        a.email   = None
+        a.phone   = None
+        a.website = None
+
+    for c in db.query(models.Contact).filter(
+        models.Contact.account_id.in_(
+            db.query(models.Account.id).filter_by(tenant_id=tid)
+        )
+    ).all():
+        c.email = None
+        c.phone = None
+
+    # Remove Amazon credentials
+    cred = db.query(models.AmazonCredential).filter_by(tenant_id=tid).first()
+    if cred:
+        cred.sp_refresh_token  = None
+        cred.lwa_client_secret = None
+
+    # Soft-delete tenant
+    tenant.is_active  = False
+    tenant.deleted_at = datetime.now(_tz.utc)
+    tenant.name       = f"[Deleted Tenant {tid}]"
+
+    _audit(db, "tenant.gdpr_erasure", current=current,
+           target=f"tenant:{tid}", detail="Self-requested GDPR erasure")
+    db.commit()
+
+    return {"ok": True, "message": "Your account and associated data have been scheduled for deletion."}
 
 
 # ─── Super-Admin Billing Dashboard (platform owner only) ─────────────────────
@@ -2803,7 +2903,12 @@ def get_account(account_id: int, db: Session = Depends(get_db), current: dict = 
 
 @app.post("/api/accounts", response_model=schemas.AccountOut, status_code=201)
 def create_account(data: schemas.AccountCreate, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
-    acc = models.Account(**data.model_dump(), created_by=current["sub"], tenant_id=current.get("tenant_id"))
+    tid = current.get("tenant_id")
+    if tid:
+        allowed, msg = stripe_billing.check_plan_limit(db, tid, "accounts")
+        if not allowed:
+            raise HTTPException(status_code=403, detail=msg)
+    acc = models.Account(**data.model_dump(), created_by=current["sub"], tenant_id=tid)
     db.add(acc)
     db.commit()
     db.refresh(acc)
@@ -3554,7 +3659,12 @@ def get_product(product_id: int, db: Session = Depends(get_db), current: dict = 
 
 @app.post("/api/products", response_model=schemas.ProductOut, status_code=201)
 def create_product(data: schemas.ProductCreate, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
-    p = models.Product(**data.model_dump(), created_by=current["sub"], tenant_id=current.get("tenant_id"))
+    tid = current.get("tenant_id")
+    if tid:
+        allowed, msg = stripe_billing.check_plan_limit(db, tid, "products")
+        if not allowed:
+            raise HTTPException(status_code=403, detail=msg)
+    p = models.Product(**data.model_dump(), created_by=current["sub"], tenant_id=tid)
     db.add(p)
     db.commit()
     db.refresh(p)
