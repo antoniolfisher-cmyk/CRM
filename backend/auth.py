@@ -106,29 +106,7 @@ def ensure_bootstrap_admin(db: Session):
     1. Create the default Tenant (id auto-assigned)
     2. Create the admin user tied to that tenant
     3. If Amazon env vars are set, migrate them into AmazonCredential for tenant 1
-
-    Emergency recovery:
-    Set RESET_PASSWORD_FOR=username:newpassword in Railway Variables.
-    On next deploy the password is reset, then remove the variable.
     """
-    # ── Emergency password reset via env var ─────────────────────────────────
-    _reset = os.getenv("RESET_PASSWORD_FOR", "").strip()
-    if _reset and ":" in _reset:
-        _reset_user, _reset_pass = _reset.split(":", 1)
-        _reset_user = _reset_user.strip()
-        _reset_pass = _reset_pass.strip()
-        if _reset_user and _reset_pass:
-            _u = db.query(models.User).filter(models.User.username == _reset_user).first()
-            if _u:
-                _u.password_hash = hash_password(_reset_pass)
-                _u.is_active = True
-                db.commit()
-                print(f"[recovery] Password reset for user '{_reset_user}' via RESET_PASSWORD_FOR env var. REMOVE THIS VARIABLE NOW.")
-            else:
-                # List all users to help debug
-                _all = db.query(models.User).all()
-                print(f"[recovery] User '{_reset_user}' not found. Existing users: {[u.username for u in _all]}")
-
     if db.query(models.Tenant).count() == 0:
         tenant = models.Tenant(
             name="Default",
