@@ -546,6 +546,10 @@ class SubscriptionEnforcementMiddleware(BaseHTTPMiddleware):
         if tenant is None:
             return await call_next(request)
 
+        # Beta tenants have permanent access — no billing/trial checks ever
+        if getattr(tenant, 'is_beta', False):
+            return await call_next(request)
+
         stripe_status = tenant.stripe_status
 
         # Legacy/self-hosted tenants with no stripe_status — always allow
@@ -2287,6 +2291,7 @@ def admin_billing_tenants(
             "slug":              t.slug,
             "plan":              t.plan,
             "is_active":         t.is_active,
+            "is_beta":           getattr(t, 'is_beta', False),
             "stripe_status":     t.stripe_status,
             "stripe_customer_id": t.stripe_customer_id,
             "trial_ends_at":     t.trial_ends_at.isoformat() if t.trial_ends_at else None,
@@ -2399,6 +2404,31 @@ def admin_grant_access(
     _audit(db, "tenant.grant_access", current=current,
            target=f"tenant:{tenant_id}", detail=f"name={tenant.name}")
     return {"ok": True, "tenant_id": tenant_id}
+
+
+@app.post("/api/admin/billing/tenants/{tenant_id}/beta")
+def admin_set_beta(
+    tenant_id: int,
+    body: dict = {},
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_superadmin),
+):
+    """Toggle beta status. Beta tenants get permanent full access regardless of billing."""
+    tenant = db.query(models.Tenant).filter_by(id=tenant_id).first()
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+    is_beta = body.get("is_beta", True)
+    tenant.is_beta   = is_beta
+    tenant.is_active = True
+    if is_beta:
+        tenant.plan          = "enterprise"
+        tenant.stripe_status = None
+        tenant.trial_ends_at = None
+    db.commit()
+    _audit(db, "tenant.beta_set", current=current,
+           target=f"tenant:{tenant_id}",
+           detail=f"name={tenant.name} is_beta={is_beta}")
+    return {"ok": True, "tenant_id": tenant_id, "is_beta": is_beta}
 
 
 @app.get("/api/admin/billing/tenants/{tenant_id}/users")

@@ -16,6 +16,7 @@ class Tenant(Base):
     slug                    = Column(String, unique=True, nullable=False, index=True)
     plan                    = Column(String, default="starter")   # starter|pro|enterprise
     is_active               = Column(Boolean, default=True)
+    is_beta                 = Column(Boolean, default=False)  # permanent bypass: immune to billing/trial enforcement
 
     # Stripe billing
     stripe_customer_id      = Column(String, nullable=True)

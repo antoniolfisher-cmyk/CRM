@@ -245,7 +245,7 @@ def handle_webhook(payload: bytes, sig_header: str, db) -> dict:
     elif event_type == "invoice.payment_failed":
         customer = data.get("customer")
         tenant   = db.query(models.Tenant).filter_by(stripe_customer_id=customer).first()
-        if tenant:
+        if tenant and not getattr(tenant, 'is_beta', False):
             tenant.stripe_status = "past_due"
             record_invoice(db, data, tenant.id, "failed", tenant.plan)
             db.commit()
@@ -255,7 +255,7 @@ def handle_webhook(payload: bytes, sig_header: str, db) -> dict:
         sub    = data
         sub_id = sub.get("id")
         tenant = db.query(models.Tenant).filter_by(stripe_subscription_id=sub_id).first()
-        if tenant:
+        if tenant and not getattr(tenant, 'is_beta', False):
             new_status = sub.get("status", "canceled")
             tenant.stripe_status = new_status
             # Sync trial end date from Stripe (authoritative source)

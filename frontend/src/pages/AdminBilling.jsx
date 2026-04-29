@@ -205,14 +205,18 @@ export default function AdminBilling() {
   const doAction = async (tenantId, action) => {
     setActionLoading(p => ({ ...p, [tenantId]: action }))
     try {
-      if (action === 'suspend')      await api.suspendTenant(tenantId)
-      if (action === 'activate')     await api.activateTenant(tenantId)
-      if (action === 'grant-access') await api.grantTenantAccess(tenantId)
+      if (action === 'suspend')       await api.suspendTenant(tenantId)
+      if (action === 'activate')      await api.activateTenant(tenantId)
+      if (action === 'grant-access')  await api.grantTenantAccess(tenantId)
+      if (action === 'beta-on')       await api.setBetaTenant(tenantId, true)
+      if (action === 'beta-off')      await api.setBetaTenant(tenantId, false)
       setTenants(prev => prev.map(t => {
         if (t.id !== tenantId) return t
         if (action === 'suspend')      return { ...t, is_active: false }
         if (action === 'activate')     return { ...t, is_active: true }
         if (action === 'grant-access') return { ...t, is_active: true, stripe_status: null }
+        if (action === 'beta-on')      return { ...t, is_beta: true,  plan: 'enterprise', stripe_status: null }
+        if (action === 'beta-off')     return { ...t, is_beta: false }
         return t
       }))
     } catch (e) {
@@ -451,6 +455,11 @@ export default function AdminBilling() {
                       </td>
                       <td className="px-4 py-3">
                         <StatusBadge status={t.stripe_status || 'free'} />
+                        {t.is_beta && (
+                          <div className="mt-1">
+                            <span className="text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded font-semibold">⭐ Beta</span>
+                          </div>
+                        )}
                         {!t.is_active && (
                           <div className="mt-1">
                             <span className="text-xs bg-red-50 text-red-500 px-1.5 py-0.5 rounded font-medium">Suspended</span>
@@ -518,6 +527,18 @@ export default function AdminBilling() {
                               {actionLoading[t.id] === 'grant-access' ? '…' : 'Grant Access'}
                             </button>
                           )}
+                          <button
+                            onClick={() => doAction(t.id, t.is_beta ? 'beta-off' : 'beta-on')}
+                            disabled={!!actionLoading[t.id]}
+                            className={`text-xs px-2.5 py-1 rounded disabled:opacity-40 font-medium ${
+                              t.is_beta
+                                ? 'bg-purple-100 text-purple-700 hover:bg-purple-200'
+                                : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
+                            }`}
+                            title={t.is_beta ? 'Remove beta access' : 'Grant permanent beta access (enterprise plan, immune to billing)'}
+                          >
+                            {actionLoading[t.id] === 'beta-on' || actionLoading[t.id] === 'beta-off' ? '…' : t.is_beta ? '⭐ Beta' : 'Beta'}
+                          </button>
                           <button
                             onClick={() => setExpandedTenant(expandedTenant === t.id ? null : t.id)}
                             className="text-xs px-2.5 py-1 bg-slate-50 text-slate-600 rounded hover:bg-slate-100 font-medium"

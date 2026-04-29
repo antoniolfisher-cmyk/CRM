@@ -86,6 +86,7 @@ export const api = {
   suspendTenant: (id) => req('POST', `/admin/billing/tenants/${id}/suspend`),
   activateTenant: (id) => req('POST', `/admin/billing/tenants/${id}/activate`),
   grantTenantAccess: (id) => req('POST', `/admin/billing/tenants/${id}/grant-access`),
+  setBetaTenant: (id, is_beta) => req('POST', `/admin/billing/tenants/${id}/beta`, { is_beta }),
   adminChangePlan: (id, plan) => req('PUT', `/admin/billing/tenants/${id}/plan`, { plan }),
   adminTenantUsers: (id) => req('GET', `/admin/billing/tenants/${id}/users`),
   adminUnlockUser: (tenantId, userId, newPassword) => req('POST', `/admin/billing/tenants/${tenantId}/users/${userId}/unlock`, newPassword ? { new_password: newPassword } : {}),
