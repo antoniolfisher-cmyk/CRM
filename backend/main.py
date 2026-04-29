@@ -1159,6 +1159,8 @@ def reset_password(request: Request, data: ResetPasswordRequest, db: Session = D
         raise HTTPException(400, "User not found")
 
     user.password_hash = hash_password(data.new_password)
+    user.failed_login_count = 0
+    user.locked_until = None
     row.used = True
     db.commit()
     return {"ok": True}
@@ -2321,6 +2323,8 @@ def admin_unlock_user(
         raise HTTPException(404, "User not found")
     user.is_active = True
     user.email_verified = True
+    user.failed_login_count = 0
+    user.locked_until = None
     new_password = body.get("new_password", "").strip()
     if new_password:
         user.password_hash = hash_password(new_password)
