@@ -609,6 +609,30 @@ class GlobalRateLimitMiddleware(BaseHTTPMiddleware):
 app.add_middleware(GlobalRateLimitMiddleware)
 
 
+# ─── Cache-Control headers middleware ─────────────────────────────────────────
+
+@app.middleware("http")
+async def _cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+
+    if path.startswith("/api/"):
+        # API responses must never be cached by proxies
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"]        = "no-cache"
+    elif path.startswith("/assets/") or path.endswith((".js", ".css", ".woff2", ".woff", ".ttf")):
+        # Vite hashes all asset filenames — safe to cache for 1 year
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif path in ("/", "/index.html") or not "." in path.split("/")[-1]:
+        # HTML entry point must never be cached so new deploys propagate instantly
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    else:
+        # Images and other static files — cache for 7 days
+        response.headers["Cache-Control"] = "public, max-age=604800"
+
+    return response
+
+
 # ─── Sentry request context middleware ────────────────────────────────────────
 
 @app.middleware("http")

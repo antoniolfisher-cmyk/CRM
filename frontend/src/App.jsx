@@ -24,6 +24,7 @@ import UpcScanner from './pages/UpcScanner'
 import Ungate from './pages/Ungate'
 import Profile from './pages/Profile'
 import Wholesale from './pages/Wholesale'
+import AuditLog from './pages/AuditLog'
 
 export default function App() {
   return (
@@ -90,6 +91,7 @@ function PrivateRoute() {
         <Route path="/repricer"       element={isAdmin ? <Repricer />     : <Navigate to="/" replace />} />
         <Route path="/admin"          element={isAdmin ? <Admin />        : <Navigate to="/" replace />} />
         <Route path="/admin-billing"  element={isSuperAdmin ? <AdminBilling /> : <Navigate to="/" replace />} />
+        <Route path="/audit-log"      element={isSuperAdmin ? <AuditLog />     : <Navigate to="/" replace />} />
         <Route path="/profile"        element={<Profile />} />
         <Route path="*"               element={<Navigate to="/" replace />} />
       </Routes>

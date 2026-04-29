@@ -16,4 +16,5 @@ slowapi==0.1.9
 sentry-sdk[fastapi]==2.5.1
 alembic==1.13.1
 redis==5.0.4
+celery[redis]==5.3.6
 # cache-bust: 2026-04-29

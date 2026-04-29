@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useAuth } from '../context/AuthContext'
+import { api } from '../api'
 
 export default function Profile() {
   const { user, token, loginWithToken, isAdmin } = useAuth()
@@ -17,6 +18,22 @@ export default function Profile() {
   const [storeMsg, setStoreMsg]         = useState(null)
   const [storeErr, setStoreErr]         = useState(null)
   const [storeLoading, setStoreLoading] = useState(false)
+
+  // Data export
+  const [exportLoading, setExportLoading] = useState(false)
+  const [exportErr, setExportErr]         = useState(null)
+
+  const handleExport = async () => {
+    setExportLoading(true)
+    setExportErr(null)
+    try {
+      await api.exportTenantData()
+    } catch (e) {
+      setExportErr(e.message)
+    } finally {
+      setExportLoading(false)
+    }
+  }
 
   // Password form
   const [currentPwd, setCurrentPwd]   = useState('')
@@ -243,6 +260,33 @@ export default function Profile() {
               {storeLoading ? 'Saving…' : 'Save Store Name'}
             </button>
           </form>
+        </div>
+      )}
+
+      {/* Data Export */}
+      {isAdmin && (
+        <div className="card p-6 space-y-3">
+          <div>
+            <h2 className="font-semibold text-gray-900 text-lg">Data Export</h2>
+            <p className="text-sm text-gray-500 mt-0.5">
+              Download all your workspace data — accounts, contacts, follow-ups, products, orders, and users — as a single JSON file.
+            </p>
+          </div>
+          {exportErr && (
+            <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              {exportErr}
+            </p>
+          )}
+          <button
+            onClick={handleExport}
+            disabled={exportLoading}
+            className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+          >
+            <svg className="w-4 h-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            {exportLoading ? 'Preparing export…' : 'Export My Data (JSON)'}
+          </button>
         </div>
       )}
 
