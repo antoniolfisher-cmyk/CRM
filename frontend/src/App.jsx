@@ -27,6 +27,7 @@ import Wholesale from './pages/Wholesale'
 import AuditLog from './pages/AuditLog'
 import Terms from './pages/Terms'
 import Privacy from './pages/Privacy'
+import Waitlist from './pages/Waitlist'
 
 export default function App() {
   return (
@@ -34,6 +35,7 @@ export default function App() {
       <Routes>
         <Route path="/terms"             element={<Terms />} />
         <Route path="/privacy"           element={<Privacy />} />
+        <Route path="/waitlist"          element={<Waitlist />} />
         <Route path="/login"             element={<PublicRoute><Login /></PublicRoute>} />
         <Route path="/register"          element={<PublicRoute><Register /></PublicRoute>} />
         <Route path="/forgot-password"   element={<PublicRoute><ForgotPassword /></PublicRoute>} />

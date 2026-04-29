@@ -170,7 +170,8 @@ export default function AdminBilling() {
   const [tenants, setTenants]       = useState([])
   const [invoices, setInvoices]     = useState([])
   const [loading, setLoading]       = useState(true)
-  const [tab, setTab]               = useState('sellers')   // 'sellers' | 'invoices'
+  const [tab, setTab]               = useState('sellers')   // 'sellers' | 'invoices' | 'waitlist'
+  const [waitlist, setWaitlist]     = useState(null)
   const [actionLoading, setActionLoading] = useState({})
   const [expandedTenant, setExpandedTenant] = useState(null)
   const [planFilter, setPlanFilter] = useState('')
@@ -335,6 +336,7 @@ export default function AdminBilling() {
           {[
             { key: 'sellers',  label: `Sellers (${tenants.length})` },
             { key: 'invoices', label: `Payment History (${invoices.length})` },
+            { key: 'waitlist', label: `Waitlist${waitlist ? ` (${waitlist.length})` : ''}` },
           ].map(t => (
             <button
               key={t.key}
@@ -651,6 +653,78 @@ export default function AdminBilling() {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* WAITLIST TAB */}
+      {tab === 'waitlist' && (
+        <WaitlistPanel waitlist={waitlist} setWaitlist={setWaitlist} />
+      )}
+    </div>
+  )
+}
+
+// ── Waitlist panel ────────────────────────────────────────────────────────────
+function WaitlistPanel({ waitlist, setWaitlist }) {
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (waitlist !== null) return
+    setLoading(true)
+    fetch('/api/admin/waitlist', { headers: { Authorization: `Bearer ${localStorage.getItem('crm_token')}` } })
+      .then(r => r.json())
+      .then(setWaitlist)
+      .catch(() => setWaitlist([]))
+      .finally(() => setLoading(false))
+  }, [waitlist, setWaitlist])
+
+  const exportCSV = async () => {
+    const t = localStorage.getItem('crm_token')
+    const res = await fetch('/api/admin/waitlist/export.csv', { headers: { Authorization: `Bearer ${t}` } })
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a'); a.href = url; a.download = 'waitlist.csv'; a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  if (loading) return <div className="py-10 text-center text-sm text-gray-400">Loading waitlist…</div>
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-sm text-gray-500">{waitlist?.length ?? 0} signups</p>
+        <button onClick={exportCSV} className="text-xs px-3 py-1.5 bg-green-50 text-green-700 rounded-lg hover:bg-green-100 font-medium border border-green-200">
+          ↓ Export CSV
+        </button>
+      </div>
+      {!waitlist?.length ? (
+        <div className="py-10 text-center text-sm text-gray-400">No waitlist signups yet. Share <span className="font-medium text-gray-600">sellers-pulse.com/waitlist</span> to start collecting.</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider border-b border-gray-100">
+                <th className="pb-2 pr-4">Name</th>
+                <th className="pb-2 pr-4">Email</th>
+                <th className="pb-2 pr-4">Company</th>
+                <th className="pb-2 pr-4">Monthly GMV</th>
+                <th className="pb-2 pr-4">Notes</th>
+                <th className="pb-2">Joined</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {waitlist.map(e => (
+                <tr key={e.id} className="hover:bg-gray-50">
+                  <td className="py-2.5 pr-4 font-medium text-gray-800">{e.name || '—'}</td>
+                  <td className="py-2.5 pr-4 text-blue-600">{e.email}</td>
+                  <td className="py-2.5 pr-4 text-gray-600">{e.company || '—'}</td>
+                  <td className="py-2.5 pr-4 text-gray-600">{e.monthly_gmv || '—'}</td>
+                  <td className="py-2.5 pr-4 text-gray-500 max-w-xs truncate">{e.notes || '—'}</td>
+                  <td className="py-2.5 text-gray-400 text-xs whitespace-nowrap">{new Date(e.created_at).toLocaleDateString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>

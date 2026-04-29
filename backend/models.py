@@ -508,3 +508,18 @@ class AuditLog(Base):
     detail     = Column(Text, nullable=True)                 # JSON or plain description
     ip         = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+# ─── Waitlist ─────────────────────────────────────────────────────────────────
+
+class WaitlistEntry(Base):
+    __tablename__ = "waitlist"
+
+    id           = Column(Integer, primary_key=True, index=True)
+    email        = Column(String, unique=True, nullable=False, index=True)
+    name         = Column(String, nullable=True)
+    company      = Column(String, nullable=True)
+    monthly_gmv  = Column(String, nullable=True)   # revenue range they select
+    source       = Column(String, nullable=True)   # utm_source or referral
+    notes        = Column(Text, nullable=True)
+    created_at   = Column(DateTime(timezone=True), server_default=func.now(), index=True)

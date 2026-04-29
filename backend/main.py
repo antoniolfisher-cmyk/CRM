@@ -1466,6 +1466,85 @@ async def aria_run_all(force: bool = False, db: Session = Depends(get_db), curre
         raise HTTPException(500, detail=f"Aria run failed: {str(e)}")
 
 
+# ─── Waitlist ─────────────────────────────────────────────────────────────────
+
+class _WaitlistIn(BaseModel):
+    email:       str
+    name:        Optional[str] = None
+    company:     Optional[str] = None
+    monthly_gmv: Optional[str] = None
+    source:      Optional[str] = None
+    notes:       Optional[str] = None
+
+@app.post("/api/waitlist", status_code=201)
+@limiter.limit("5/minute")
+def join_waitlist(request: Request, data: _WaitlistIn, db: Session = Depends(get_db)):
+    """Public endpoint — no auth required. Captures waitlist signups."""
+    email = (data.email or "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(400, "Valid email required")
+    existing = db.query(models.WaitlistEntry).filter_by(email=email).first()
+    if existing:
+        return {"ok": True, "message": "You're already on the list!"}
+    entry = models.WaitlistEntry(
+        email=email,
+        name=(data.name or "").strip() or None,
+        company=(data.company or "").strip() or None,
+        monthly_gmv=data.monthly_gmv,
+        source=data.source,
+        notes=(data.notes or "").strip() or None,
+    )
+    db.add(entry)
+    db.commit()
+    log.info("Waitlist signup: %s", email)
+    return {"ok": True, "message": "You're on the list! We'll be in touch soon."}
+
+
+@app.get("/api/admin/waitlist")
+def get_waitlist(
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_superadmin),
+):
+    """Superadmin only — returns all waitlist entries newest-first."""
+    entries = db.query(models.WaitlistEntry).order_by(models.WaitlistEntry.created_at.desc()).all()
+    return [
+        {
+            "id":          e.id,
+            "email":       e.email,
+            "name":        e.name,
+            "company":     e.company,
+            "monthly_gmv": e.monthly_gmv,
+            "source":      e.source,
+            "notes":       e.notes,
+            "created_at":  e.created_at.isoformat() if e.created_at else None,
+        }
+        for e in entries
+    ]
+
+
+@app.get("/api/admin/waitlist/export.csv")
+def export_waitlist_csv(
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_superadmin),
+):
+    """Download all waitlist entries as CSV."""
+    import csv, io as _io
+    from fastapi.responses import StreamingResponse
+    entries = db.query(models.WaitlistEntry).order_by(models.WaitlistEntry.created_at.asc()).all()
+    buf = _io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["id", "email", "name", "company", "monthly_gmv", "source", "notes", "created_at"])
+    for e in entries:
+        writer.writerow([e.id, e.email, e.name or "", e.company or "", e.monthly_gmv or "",
+                         e.source or "", e.notes or "", e.created_at])
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.read()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=waitlist.csv"},
+    )
+
+
 @app.get("/api/health")
 def health_check(db: Session = Depends(get_db)):
     """Health check — tests DB and Redis. Returns 503 if either is down."""
