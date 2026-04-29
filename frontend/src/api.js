@@ -111,7 +111,8 @@ export const api = {
 
   // Accounts
   getAccounts: (params = {}) => {
-    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v)).toString()
+    const merged = { limit: 500, ...params }
+    const qs = new URLSearchParams(Object.entries(merged).filter(([, v]) => v)).toString()
     return req('GET', `/accounts${qs ? '?' + qs : ''}`)
   },
   getAccount: (id) => req('GET', `/accounts/${id}`),
@@ -131,8 +132,9 @@ export const api = {
 
   // Follow-ups
   getFollowUps: (params = {}) => {
+    const merged = { limit: 500, ...params }
     const qs = new URLSearchParams(
-      Object.entries(params).filter(([, v]) => v !== undefined && v !== '' && v !== false)
+      Object.entries(merged).filter(([, v]) => v !== undefined && v !== '' && v !== false)
     ).toString()
     return req('GET', `/follow-ups${qs ? '?' + qs : ''}`)
   },
@@ -143,7 +145,8 @@ export const api = {
 
   // Products
   getProducts: (params = {}) => {
-    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== '')).toString()
+    const merged = { limit: 500, ...params }
+    const qs = new URLSearchParams(Object.entries(merged).filter(([, v]) => v !== undefined && v !== '')).toString()
     return req('GET', `/products${qs ? '?' + qs : ''}`)
   },
   getProduct: (id) => req('GET', `/products/${id}`),
@@ -245,7 +248,8 @@ export const api = {
 
   // Orders
   getOrders: (params = {}) => {
-    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v)).toString()
+    const merged = { limit: 500, ...params }
+    const qs = new URLSearchParams(Object.entries(merged).filter(([, v]) => v)).toString()
     return req('GET', `/orders${qs ? '?' + qs : ''}`)
   },
   getOrder: (id) => req('GET', `/orders/${id}`),

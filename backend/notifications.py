@@ -554,24 +554,29 @@ def send_trial_reminders():
 
 def _is_scheduler_leader() -> bool:
     """
-    With multiple uvicorn workers each starts APScheduler.
-    Use Redis to elect a single leader so jobs only fire once.
-    Falls back to True (always run) when Redis is unavailable.
+    With multiple uvicorn workers (and multiple Railway replicas) each process
+    starts APScheduler. Use Redis SET NX to elect a single leader globally so
+    jobs fire exactly once. Falls back to True when Redis is unavailable.
     """
+    import socket
     redis_url = os.getenv("REDIS_URL", "")
     if not redis_url:
-        return True   # no Redis — single worker assumed
+        return True   # no Redis — single worker assumed, always run
+    # Unique ID: hostname (unique per Railway replica) + PID (unique per worker)
+    _my_id = f"{socket.gethostname()}:{os.getpid()}"
     try:
         import redis as _redis
         r = _redis.from_url(redis_url, socket_connect_timeout=2, socket_timeout=2, decode_responses=True)
-        # SET NX with a 55-second TTL — one worker wins per minute window
-        result = r.set("scheduler:leader", os.getpid(), nx=True, ex=55)
+        # 55-second TTL: leader must renew before next job check or a new leader is elected
+        result = r.set("scheduler:leader", _my_id, nx=True, ex=55)
         if result:
+            log.info("Scheduler leader elected: %s", _my_id)
             return True
-        # Already a leader — check if it's us (re-election after worker restart)
-        return str(r.get("scheduler:leader")) == str(os.getpid())
-    except Exception:
-        return True   # Redis error — allow this worker to run jobs
+        # Another process won — check if it is still us (restart scenario)
+        return r.get("scheduler:leader") == _my_id
+    except Exception as _e:
+        log.warning("Scheduler leader election failed (%s) — running scheduler anyway", _e)
+        return True   # Redis error — allow this worker to avoid silent job loss
 
 
 def start_scheduler():
@@ -627,8 +632,35 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    # Audit log retention — delete rows older than AUDIT_LOG_RETENTION_DAYS (default 90)
+    _scheduler.add_job(
+        _purge_old_audit_logs,
+        CronTrigger(hour=2, minute=0),   # 2 AM UTC daily, low-traffic window
+        id="audit_log_purge",
+        replace_existing=True,
+    )
+
     _scheduler.start()
     log.info("Notification scheduler started — digests at %02d:00 UTC", NOTIFY_HOUR)
+
+
+def _purge_old_audit_logs():
+    """Delete audit log rows older than AUDIT_LOG_RETENTION_DAYS (default: 90)."""
+    retention_days = int(os.getenv("AUDIT_LOG_RETENTION_DAYS", "90"))
+    cutoff = datetime.utcnow() - timedelta(days=retention_days)
+    try:
+        db = SessionLocal()
+        deleted = db.query(models.AuditLog).filter(models.AuditLog.created_at < cutoff).delete()
+        db.commit()
+        if deleted:
+            log.info("Audit log purge: deleted %d rows older than %d days", deleted, retention_days)
+    except Exception as e:
+        log.warning("Audit log purge failed: %s", e)
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
 
 
 def stop_scheduler():

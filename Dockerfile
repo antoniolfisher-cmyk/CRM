@@ -28,8 +28,10 @@ COPY --from=frontend-build /frontend/dist ./static
 RUN mkdir -p /data
 
 ENV PORT=8000
-# WEB_CONCURRENCY controls uvicorn worker count (default 4; Railway can override via env var)
-ENV WEB_CONCURRENCY=4
+# 2 workers fits Railway's default 512 MB container; set WEB_CONCURRENCY=4 if you upgrade RAM
+ENV WEB_CONCURRENCY=2
 EXPOSE 8000
 
-CMD python seed_if_empty.py; uvicorn main:app --host 0.0.0.0 --port ${PORT} --workers ${WEB_CONCURRENCY}
+# prestart.py runs migrations + seed once before workers spawn, then sets PRESTART_DONE
+# so each uvicorn worker skips the migration step and starts faster.
+CMD PRESTART_DONE=1 python prestart.py && PRESTART_DONE=1 uvicorn main:app --host 0.0.0.0 --port ${PORT} --workers ${WEB_CONCURRENCY}

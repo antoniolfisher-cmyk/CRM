@@ -64,6 +64,21 @@ from notifications import start_scheduler, stop_scheduler, send_daily_digests, s
 import aria_repricer
 import stripe_billing
 
+# ── Background email queue ─────────────────────────────────────────────────────
+# Wraps send_email in a thread-pool executor so the request thread is never
+# blocked by SMTP/SendGrid/Resend latency (~200 ms–2 s per message).
+import concurrent.futures as _futures
+_email_pool = _futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="email")
+
+def _send_email_bg(to: str, subject: str, html: str, **kwargs):
+    """Fire-and-forget email — non-blocking, logs failures without raising."""
+    def _run():
+        try:
+            send_email(to, subject, html, **kwargs)
+        except Exception as _e:
+            log.warning("Background email failed to=%s subject=%r: %s", to, subject, _e)
+    _email_pool.submit(_run)
+
 try:
     models.Base.metadata.create_all(bind=engine)
 except Exception as _create_all_err:
@@ -719,7 +734,10 @@ def _audit(db, action: str, *, request: Request = None, current: dict = None,
 
 @app.on_event("startup")
 def startup():
-    _run_alembic_migrations()
+    # Migrations run in prestart.py before workers spawn — skip here to avoid races.
+    # Fall back to running them if somehow prestart was not executed (local dev).
+    if not os.getenv("PRESTART_DONE"):
+        _run_alembic_migrations()
     if os.getenv("DISABLE_SCHEDULER", "").lower() in ("1", "true", "yes"):
         log.info("Scheduler disabled (DISABLE_SCHEDULER=true) — web-only mode")
     else:
@@ -819,6 +837,19 @@ def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is disabled")
 
+    # Block unverified emails — only if the user has an email set and verification
+    # is enabled (REQUIRE_EMAIL_VERIFICATION=true). Admin-created users with no email
+    # are always allowed through.
+    if (
+        os.getenv("REQUIRE_EMAIL_VERIFICATION", "").lower() in ("1", "true", "yes")
+        and user.email
+        and not getattr(user, "email_verified", True)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Please verify your email address before logging in. Check your inbox for the verification link.",
+        )
+
     # Successful login — reset failure counter (guarded in case migration is pending)
     try:
         user.failed_login_count = 0
@@ -905,11 +936,7 @@ def register(request: Request, data: RegisterRequest, db: Session = Depends(get_
           </a>
           <p style="color:#999;font-size:11px">Link expires in 48 hours.</p>
         </div>"""
-        try:
-            from notifications import send_email as _send_email
-            _send_email(data.email, "Verify your SellerPulse email", _html)
-        except Exception as _e:
-            log.warning("Verification email failed: %s", _e)
+        _send_email_bg(data.email, "Verify your SellerPulse email", _html)
 
     db.commit()
 
@@ -1015,10 +1042,7 @@ def forgot_password(request: Request, data: ForgotPasswordRequest, db: Session =
           <p style="color:#666;font-size:12px">If you didn't request this, ignore this email.</p>
           <p style="color:#999;font-size:11px">Link: {reset_url}</p>
         </div>"""
-        try:
-            send_email(user.email, "Reset your SellerPulse password", html)
-        except Exception as e:
-            log.warning("Password reset email failed: %s", e)
+        _send_email_bg(user.email, "Reset your SellerPulse password", html)
 
     return {"ok": True}
 
@@ -2965,7 +2989,7 @@ def list_accounts(
     status: Optional[str] = None,
     account_type: Optional[str] = None,
     territory: Optional[str] = None,
-    limit: int = 500,
+    limit: int = 100,
     offset: int = 0,
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
@@ -3462,7 +3486,6 @@ async def inbound_email_webhook(request: Request, db: Session = Depends(get_db))
                 models.User.username == acc.created_by
             ).first()
             if owner and owner.email:
-                from notifications import send_email as _send_email, _smtp_configured
                 if _smtp_configured():
                     try:
                         # Resolve tenant store name for branded notification email
@@ -3489,7 +3512,7 @@ async def inbound_email_webhook(request: Request, db: Session = Depends(get_db))
                             body_preview=body_text[:400],
                             store_name=_notif_store,
                         )
-                        _send_email(
+                        _send_email_bg(
                             owner.email,
                             f"New reply from {acc.name}: {subject}",
                             notif,
@@ -3506,7 +3529,7 @@ async def inbound_email_webhook(request: Request, db: Session = Depends(get_db))
 @app.get("/api/contacts", response_model=List[schemas.ContactOut])
 def list_contacts(
     account_id: Optional[int] = None,
-    limit: int = 500,
+    limit: int = 100,
     offset: int = 0,
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
@@ -3565,7 +3588,7 @@ def list_follow_ups(
     priority: Optional[str] = None,
     follow_up_type: Optional[str] = None,
     overdue_only: bool = False,
-    limit: int = 500,
+    limit: int = 100,
     offset: int = 0,
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
@@ -3634,7 +3657,7 @@ def delete_follow_up(follow_up_id: int, db: Session = Depends(get_db), current: 
 def list_orders(
     account_id: Optional[int] = None,
     status: Optional[str] = None,
-    limit: int = 500,
+    limit: int = 100,
     offset: int = 0,
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
@@ -3720,7 +3743,7 @@ def list_products(
     replenish: Optional[bool] = None,
     ungated: Optional[bool] = None,
     status: Optional[str] = None,
-    limit: int = 500,
+    limit: int = 100,
     offset: int = 0,
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
@@ -6261,7 +6284,7 @@ def _ungate_req_query(db, current):
 
 @app.get("/api/ungate/requests")
 def list_ungate_requests(
-    limit: int = 500,
+    limit: int = 100,
     offset: int = 0,
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),

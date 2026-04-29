@@ -6,7 +6,7 @@
   },
   "deploy": {
     "runtime": "V2",
-    "numReplicas": 1,
+    "numReplicas": 2,
     "healthcheckPath": "/api/health",
     "sleepApplication": false,
     "useLegacyStacker": false,
