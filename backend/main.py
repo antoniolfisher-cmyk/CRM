@@ -506,10 +506,24 @@ app.add_middleware(SubscriptionEnforcementMiddleware)
 
 @app.on_event("startup")
 def startup():
+    _run_alembic_migrations()
     if os.getenv("DISABLE_SCHEDULER", "").lower() in ("1", "true", "yes"):
         log.info("Scheduler disabled (DISABLE_SCHEDULER=true) — web-only mode")
     else:
         start_scheduler()
+
+
+def _run_alembic_migrations():
+    try:
+        from alembic.config import Config
+        from alembic import command
+        cfg = Config()
+        cfg.set_main_option("script_location", os.path.join(os.path.dirname(__file__), "alembic"))
+        cfg.set_main_option("sqlalchemy.url", os.getenv("DATABASE_URL", "sqlite:///./crm.db").replace("postgres://", "postgresql://", 1))
+        command.upgrade(cfg, "head")
+        log.info("Alembic migrations applied")
+    except Exception as e:
+        log.warning("Alembic migration skipped: %s", e)
 
 
 @app.on_event("shutdown")
@@ -2395,6 +2409,8 @@ def list_accounts(
     status: Optional[str] = None,
     account_type: Optional[str] = None,
     territory: Optional[str] = None,
+    limit: int = 500,
+    offset: int = 0,
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
 ):
@@ -2412,7 +2428,7 @@ def list_accounts(
         q = q.filter(models.Account.account_type == account_type)
     if territory:
         q = q.filter(models.Account.territory == territory)
-    return q.order_by(models.Account.name).all()
+    return q.order_by(models.Account.name).offset(offset).limit(min(limit, 1000)).all()
 
 
 @app.get("/api/accounts/{account_id}", response_model=schemas.AccountOut)
@@ -2927,12 +2943,18 @@ async def inbound_email_webhook(request: Request, db: Session = Depends(get_db))
 # ─── Contacts ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/contacts", response_model=List[schemas.ContactOut])
-def list_contacts(account_id: Optional[int] = None, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+def list_contacts(
+    account_id: Optional[int] = None,
+    limit: int = 500,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_auth),
+):
     q = db.query(models.Contact)
     q = _filter_owned(q, models.Contact, current)
     if account_id:
         q = q.filter(models.Contact.account_id == account_id)
-    return q.all()
+    return q.order_by(models.Contact.id).offset(offset).limit(min(limit, 1000)).all()
 
 
 @app.post("/api/contacts", response_model=schemas.ContactOut, status_code=201)
@@ -2982,6 +3004,8 @@ def list_follow_ups(
     priority: Optional[str] = None,
     follow_up_type: Optional[str] = None,
     overdue_only: bool = False,
+    limit: int = 500,
+    offset: int = 0,
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
 ):
@@ -2997,7 +3021,7 @@ def list_follow_ups(
         q = q.filter(models.FollowUp.follow_up_type == follow_up_type)
     if overdue_only:
         q = q.filter(models.FollowUp.status == "pending", models.FollowUp.due_date < datetime.utcnow())
-    return q.order_by(models.FollowUp.due_date.asc()).all()
+    return q.order_by(models.FollowUp.due_date.asc()).offset(offset).limit(min(limit, 1000)).all()
 
 
 @app.get("/api/follow-ups/{follow_up_id}", response_model=schemas.FollowUpOut)
@@ -3049,6 +3073,8 @@ def delete_follow_up(follow_up_id: int, db: Session = Depends(get_db), current: 
 def list_orders(
     account_id: Optional[int] = None,
     status: Optional[str] = None,
+    limit: int = 500,
+    offset: int = 0,
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
 ):
@@ -3058,7 +3084,7 @@ def list_orders(
         q = q.filter(models.Order.account_id == account_id)
     if status:
         q = q.filter(models.Order.status == status)
-    return q.order_by(models.Order.order_date.desc()).all()
+    return q.order_by(models.Order.order_date.desc()).offset(offset).limit(min(limit, 1000)).all()
 
 
 @app.get("/api/orders/{order_id}", response_model=schemas.OrderOut)
@@ -3133,6 +3159,8 @@ def list_products(
     replenish: Optional[bool] = None,
     ungated: Optional[bool] = None,
     status: Optional[str] = None,
+    limit: int = 500,
+    offset: int = 0,
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
 ):
@@ -3151,7 +3179,7 @@ def list_products(
         q = q.filter(models.Product.ungated == ungated)
     if status is not None:
         q = q.filter(models.Product.status == status)
-    return q.order_by(models.Product.created_at.desc()).all()
+    return q.order_by(models.Product.created_at.desc()).offset(offset).limit(min(limit, 1000)).all()
 
 
 @app.get("/api/products/{product_id}", response_model=schemas.ProductOut)
@@ -5665,8 +5693,13 @@ def _ungate_req_query(db, current):
 
 
 @app.get("/api/ungate/requests")
-def list_ungate_requests(db: Session = Depends(get_db), current: dict = Depends(require_auth)):
-    return _ungate_req_query(db, current).order_by(models.UngateRequest.created_at.desc()).all()
+def list_ungate_requests(
+    limit: int = 500,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_auth),
+):
+    return _ungate_req_query(db, current).order_by(models.UngateRequest.created_at.desc()).offset(offset).limit(min(limit, 1000)).all()
 
 
 @app.post("/api/ungate/requests")
