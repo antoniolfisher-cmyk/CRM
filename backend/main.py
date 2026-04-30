@@ -5964,6 +5964,7 @@ async def import_amazon_inventory(current: dict = Depends(require_auth)):
         raise HTTPException(503, "Amazon SP-API credentials are not configured")
     try:
         result = await amazon_sync.run_sync(tid)
+        cache_bust(tid, "products")
         return {
             "imported": result["created"] + result["updated"],
             "created":  result["created"],
@@ -5995,7 +5996,9 @@ async def amazon_inventory_sync_now(current: dict = Depends(require_auth)):
     if amazon_sync.get_sync_state(tid or 0).get("running"):
         raise HTTPException(409, "Sync already in progress")
     try:
-        return await amazon_sync.run_sync(tid)
+        result = await amazon_sync.run_sync(tid)
+        cache_bust(tid, "products")   # invalidate stale product cache immediately
+        return result
     except Exception as e:
         raise HTTPException(502, str(e))
 

@@ -588,6 +588,7 @@ async def run_sync(tenant_id: Optional[int] = None) -> dict:
             if existing:
                 existing.quantity = item["quantity"]
                 existing.fulfillment_channel = channel
+                existing.status = "approved"   # live Amazon inventory is always approved
                 if item.get("seller_sku"):
                     existing.seller_sku = item["seller_sku"]
                 updated += 1
