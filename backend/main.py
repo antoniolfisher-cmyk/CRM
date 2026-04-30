@@ -4048,27 +4048,38 @@ def list_products(
     tid = current.get("tenant_id")
     ck = make_key(tid, "products", search=search, replenish=replenish, ungated=ungated,
                   status=status, limit=limit, offset=offset)
-    cached = cache_get(ck)
-    if cached is not None:
-        return cached
-    q = db.query(models.Product)
-    q = _filter_owned(q, models.Product, current)
-    if search:
-        q = q.filter(or_(
-            models.Product.product_name.ilike(f"%{search}%"),
-            models.Product.asin.ilike(f"%{search}%"),
-            models.Product.order_number.ilike(f"%{search}%"),
-            models.Product.va_finder.ilike(f"%{search}%"),
-        ))
-    if replenish is not None:
-        q = q.filter(models.Product.replenish == replenish)
-    if ungated is not None:
-        q = q.filter(models.Product.ungated == ungated)
-    if status is not None:
-        q = q.filter(models.Product.status == status)
-    result = q.order_by(models.Product.created_at.desc()).offset(offset).limit(min(limit, 1000)).all()
-    cache_set(ck, jsonable_encoder(result), ttl=30)
-    return result
+    try:
+        cached = cache_get(ck)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+    try:
+        q = db.query(models.Product)
+        q = _filter_owned(q, models.Product, current)
+        if search:
+            q = q.filter(or_(
+                models.Product.product_name.ilike(f"%{search}%"),
+                models.Product.asin.ilike(f"%{search}%"),
+                models.Product.order_number.ilike(f"%{search}%"),
+                models.Product.va_finder.ilike(f"%{search}%"),
+            ))
+        if replenish is not None:
+            q = q.filter(models.Product.replenish == replenish)
+        if ungated is not None:
+            q = q.filter(models.Product.ungated == ungated)
+        if status is not None:
+            q = q.filter(models.Product.status == status)
+        result = q.order_by(models.Product.created_at.desc()).offset(offset).limit(min(limit, 1000)).all()
+        try:
+            cache_set(ck, jsonable_encoder(result), ttl=30)
+        except Exception:
+            pass
+        return result
+    except Exception as _e:
+        import traceback
+        print(f"[products] list failed: {_e}\n{traceback.format_exc()}", flush=True)
+        raise HTTPException(status_code=500, detail=f"Products query failed: {_e}")
 
 
 @app.get("/api/products/{product_id}", response_model=schemas.ProductOut)
