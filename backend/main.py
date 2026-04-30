@@ -154,69 +154,52 @@ try:
                     pass
     except Exception:
         pass
-    # Products table — ALL columns that might be missing on older DBs.
-    # Each ALTER runs in its own connection so one failure never blocks the rest.
+    # Products table — add every column the ORM model expects.
+    # No inspector check — always attempt ADD COLUMN IF NOT EXISTS (idempotent in PG).
+    # Each column runs in its own connection so one DDL error never blocks the rest.
+    for _col, _ddl in [
+        ("keepa_bsr",            "INTEGER"),
+        ("keepa_category",       "VARCHAR"),
+        ("keepa_last_synced",    "TIMESTAMP WITH TIME ZONE"),
+        ("price_90_high",        "DOUBLE PRECISION"),
+        ("price_90_low",         "DOUBLE PRECISION"),
+        ("price_90_median",      "DOUBLE PRECISION"),
+        ("fba_low",              "DOUBLE PRECISION"),
+        ("fba_high",             "DOUBLE PRECISION"),
+        ("fba_median",           "DOUBLE PRECISION"),
+        ("fbm_low",              "DOUBLE PRECISION"),
+        ("fbm_high",             "DOUBLE PRECISION"),
+        ("fbm_median",           "DOUBLE PRECISION"),
+        ("status",               "TEXT DEFAULT 'sourcing'"),
+        ("seller_sku",           "VARCHAR"),
+        ("aria_suggested_price", "DOUBLE PRECISION"),
+        ("aria_suggested_at",    "TIMESTAMP WITH TIME ZONE"),
+        ("aria_reasoning",       "TEXT"),
+        ("aria_last_buy_box",    "DOUBLE PRECISION"),
+        ("aria_strategy_id",     "INTEGER"),
+        ("aria_live_price",      "DOUBLE PRECISION"),
+        ("aria_live_pushed_at",  "TIMESTAMP WITH TIME ZONE"),
+        ("buy_box_winner",       "BOOLEAN"),
+        ("buy_box_checked_at",   "TIMESTAMP WITH TIME ZONE"),
+        ("fulfillment_channel",  "VARCHAR"),
+    ]:
+        try:
+            with engine.connect() as _conn:
+                _conn.execute(text(f"ALTER TABLE products ADD COLUMN IF NOT EXISTS {_col} {_ddl}"))
+                _conn.commit()
+        except Exception as _ce:
+            print(f"[startup] products.{_col}: {_ce}", flush=True)
+    # Fix product statuses — runs every startup, idempotent
     try:
-        _cols = [c["name"] for c in _inspector.get_columns("products")]
-        for _col, _ddl in [
-            # Keepa
-            ("keepa_bsr",            "INTEGER"),
-            ("keepa_category",       "VARCHAR"),
-            ("keepa_last_synced",    "TIMESTAMP WITH TIME ZONE"),
-            ("price_90_high",        "DOUBLE PRECISION"),
-            ("price_90_low",         "DOUBLE PRECISION"),
-            ("price_90_median",      "DOUBLE PRECISION"),
-            ("fba_low",              "DOUBLE PRECISION"),
-            ("fba_high",             "DOUBLE PRECISION"),
-            ("fba_median",           "DOUBLE PRECISION"),
-            ("fbm_low",              "DOUBLE PRECISION"),
-            ("fbm_high",             "DOUBLE PRECISION"),
-            ("fbm_median",           "DOUBLE PRECISION"),
-            # Aria repricer
-            ("seller_sku",           "VARCHAR"),
-            ("aria_suggested_price", "DOUBLE PRECISION"),
-            ("aria_suggested_at",    "TIMESTAMP WITH TIME ZONE"),
-            ("aria_reasoning",       "TEXT"),
-            ("aria_last_buy_box",    "DOUBLE PRECISION"),
-            ("aria_strategy_id",     "INTEGER"),
-            ("aria_live_price",      "DOUBLE PRECISION"),
-            ("aria_live_pushed_at",  "TIMESTAMP WITH TIME ZONE"),
-            # Buy Box & fulfillment
-            ("buy_box_winner",       "BOOLEAN"),
-            ("buy_box_checked_at",   "TIMESTAMP WITH TIME ZONE"),
-            ("fulfillment_channel",  "VARCHAR"),
-        ]:
-            if _col not in _cols:
-                try:
-                    with engine.connect() as _conn:
-                        _conn.execute(text(f"ALTER TABLE products ADD COLUMN IF NOT EXISTS {_col} {_ddl}"))
-                        _conn.commit()
-                except Exception as _ce:
-                    print(f"[migration] products.{_col}: {_ce}", flush=True)
-        # Ensure status column exists and default old rows
-        if "status" not in _cols:
-            try:
-                with engine.connect() as _conn:
-                    _conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'sourcing'"))
-                    _conn.execute(text("UPDATE products SET status = 'approved' WHERE status IS NULL"))
-                    _conn.commit()
-            except Exception:
-                pass
-        else:
-            try:
-                with engine.connect() as _conn:
-                    # Fix NULL statuses
-                    _conn.execute(text("UPDATE products SET status = 'approved' WHERE status IS NULL"))
-                    # FBA/FBM products from Amazon sync are always approved
-                    _conn.execute(text(
-                        "UPDATE products SET status = 'approved' "
-                        "WHERE fulfillment_channel IN ('FBA', 'FBM') AND status != 'approved'"
-                    ))
-                    _conn.commit()
-            except Exception:
-                pass
-    except Exception:
-        pass
+        with engine.connect() as _conn:
+            _conn.execute(text("UPDATE products SET status = 'approved' WHERE status IS NULL"))
+            _conn.execute(text(
+                "UPDATE products SET status = 'approved' "
+                "WHERE fulfillment_channel IN ('FBA', 'FBM') AND (status IS NULL OR status != 'approved')"
+            ))
+            _conn.commit()
+    except Exception as _ce:
+        print(f"[startup] products status fix: {_ce}", flush=True)
     # One-time migration: approve all pre-workflow sourcing products
     try:
         with engine.connect() as _conn:
@@ -7566,6 +7549,22 @@ def health(db: Session = Depends(get_db)):
         return {"status": "ok", "db": "ok"}
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"DB unavailable: {e}")
+
+
+@app.get("/api/debug/schema", include_in_schema=False)
+def debug_schema(current: dict = Depends(require_auth)):
+    """Returns actual DB columns for products table — superadmin only."""
+    if not current.get("is_superadmin"):
+        raise HTTPException(403, "superadmin only")
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT column_name, data_type FROM information_schema.columns "
+                "WHERE table_name = 'products' ORDER BY ordinal_position"
+            )).fetchall()
+        return {"columns": [{"name": r[0], "type": r[1]} for r in rows]}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # ─── Serve React SPA (must be last) ───────────────────────────────────────────
