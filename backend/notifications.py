@@ -643,6 +643,19 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    # Keepa bulk refresh — every 6 hours, enriches all products with BSR/buy box data
+    try:
+        from keepa_scheduler import scheduled_keepa_refresh
+        _scheduler.add_job(
+            scheduled_keepa_refresh,
+            IntervalTrigger(hours=6),
+            id="keepa_bulk_refresh",
+            replace_existing=True,
+        )
+        log.info("Keepa bulk refresh scheduled every 6 hours")
+    except Exception as _e:
+        log.warning("Keepa scheduler not loaded: %s", _e)
+
     _scheduler.start()
     log.info("Notification scheduler started — digests at %02d:00 UTC", NOTIFY_HOUR)
 

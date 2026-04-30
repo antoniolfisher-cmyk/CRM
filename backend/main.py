@@ -1294,7 +1294,7 @@ def update_profile(
 # ─── Debug (admin only) ───────────────────────────────────────────────────────
 
 @app.get("/api/debug/net")
-def debug_net():
+def debug_net(current: dict = Depends(require_superadmin)):
     import socket, httpx
     results = {}
     try:
@@ -1303,6 +1303,7 @@ def debug_net():
     except Exception as e:
         results["tcp_443"] = str(e)
     key = os.getenv("SENDGRID_API_KEY", "").strip()
+    key_preview = (key[:8] + "…") if len(key) > 8 else "(not set)"
     try:
         r = httpx.post(
             "https://api.sendgrid.com/v3/mail/send",
@@ -1316,6 +1317,7 @@ def debug_net():
         results["api_body"] = r.text[:300]
     except Exception as e:
         results["api_post"] = str(e)
+    results["key_preview"] = key_preview
     return results
 
 
@@ -5453,8 +5455,8 @@ def _get_oauth_callback_url() -> str:
 
 
 @app.get("/api/debug/db-status")
-def debug_db_status(db: Session = Depends(get_db)):
-    """Public endpoint — shows tenant and user counts to diagnose bootstrap issues."""
+def debug_db_status(current: dict = Depends(require_superadmin), db: Session = Depends(get_db)):
+    """Superadmin only — shows tenant and user counts."""
     tenants = db.query(models.Tenant).all()
     users   = db.query(models.User).all()
     return {
@@ -5466,8 +5468,8 @@ def debug_db_status(db: Session = Depends(get_db)):
 
 
 @app.get("/api/debug/oauth-config")
-def debug_oauth_config():
-    """Public endpoint — shows exactly what redirect URI the app will send to Amazon."""
+def debug_oauth_config(current: dict = Depends(require_superadmin)):
+    """Superadmin only — shows OAuth redirect URI and app ID."""
     return {
         "app_url_env":    os.getenv("APP_URL", "(not set)"),
         "callback_url":   _get_oauth_callback_url(),
