@@ -888,6 +888,8 @@ def _run_alembic_migrations():
             _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_count INTEGER DEFAULT 0"))
             _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ"))
             _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ"))
+            _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS dashboard_sections TEXT"))
+            _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS page_permissions TEXT"))
             _conn.execute(_text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ"))
         _eng.dispose()
         log.info("Emergency column safety-net applied")
