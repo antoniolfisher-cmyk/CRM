@@ -5681,6 +5681,13 @@ def get_amazon_credentials(
     """Return current Amazon connection status for the tenant."""
     tenant_id = current.get("tenant_id", 1)
     cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
+    import json as _json
+    ship_from = None
+    if cred and cred.ship_from_json:
+        try:
+            ship_from = _json.loads(cred.ship_from_json)
+        except Exception:
+            pass
     return {
         "connected":      bool(cred and cred.sp_refresh_token),
         "seller_id":      cred.seller_id if cred else None,
@@ -5688,6 +5695,7 @@ def get_amazon_credentials(
         "marketplace_id": cred.marketplace_id if cred else "ATVPDKIKX0DER",
         "connected_at":   cred.connected_at.isoformat() if cred and cred.connected_at else None,
         "is_sandbox":     cred.is_sandbox if cred else False,
+        "ship_from":      ship_from,
     }
 
 
@@ -5803,6 +5811,36 @@ def save_amazon_credentials(
     db.commit()
     _audit(db, "amazon.credentials.save", current=current,
            detail=f"seller_id={body.get('seller_id')} store={cred.store_name}")
+    return {"ok": True}
+
+
+@app.get("/api/amazon/ship-from")
+def get_ship_from(current: dict = Depends(require_auth), db: Session = Depends(get_db)):
+    """Return the saved ship-from address for this tenant."""
+    import json as _json
+    cred = db.query(models.AmazonCredential).filter_by(
+        tenant_id=current.get("tenant_id", 1)
+    ).first()
+    if cred and cred.ship_from_json:
+        try:
+            return _json.loads(cred.ship_from_json)
+        except Exception:
+            pass
+    # Return the store name as a hint even if no address saved yet
+    return {"store_name": cred.store_name if cred else None}
+
+
+@app.put("/api/amazon/ship-from")
+def save_ship_from(body: dict, current: dict = Depends(require_auth),
+                   db: Session = Depends(get_db)):
+    """Save the ship-from address for this tenant's FBA shipments."""
+    import json as _json
+    tid = current.get("tenant_id", 1)
+    cred = db.query(models.AmazonCredential).filter_by(tenant_id=tid).first()
+    if not cred:
+        raise HTTPException(404, "Amazon account not connected")
+    cred.ship_from_json = _json.dumps(body)
+    db.commit()
     return {"ok": True}
 
 

@@ -1,11 +1,9 @@
 /**
- * FBA Inbound — Ship to Amazon wizard.
- * Steps: Find Product → Shipment Details → FC Assignment → Shipping Rate → Labels
+ * FBA Inbound — Boxem-style create shipment page.
+ * Two modes: Create FBA Shipment | Create FBM Listing
  */
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { api } from '../api'
-
-const STEPS = ['Find Product', 'Shipment Details', 'FC Assignment', 'Shipping Rate', 'Labels']
 
 const US_STATES = [
   'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA',
@@ -13,596 +11,755 @@ const US_STATES = [
   'NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT',
   'VA','WA','WV','WI','WY',
 ]
-const CONDITIONS = ['NewItem','UsedLikeNew','UsedVeryGood','UsedGood','UsedAcceptable']
+const CONDITIONS = [
+  { value: 'NewItem',          label: 'New' },
+  { value: 'UsedLikeNew',      label: 'Used – Like New' },
+  { value: 'UsedVeryGood',     label: 'Used – Very Good' },
+  { value: 'UsedGood',         label: 'Used – Good' },
+  { value: 'UsedAcceptable',   label: 'Used – Acceptable' },
+]
+const SHIP_METHODS = [
+  { value: 'partnered_ups',   label: 'Amazon Partnered Carrier (UPS)' },
+  { value: 'non_partnered',   label: 'Non-Partnered Carrier' },
+]
+const LABEL_PREPS = [
+  { value: 'SELLER_LABEL',       label: 'Seller Labels (I will label)' },
+  { value: 'AMAZON_LABEL_ONLY',  label: 'Amazon Labels (fee applies)' },
+  { value: 'NO_LABEL',           label: 'No Label Required' },
+]
+const BOX_CONTENTS = [
+  { value: 'INDIVIDUAL_ITEMS', label: 'Individual Items' },
+  { value: 'CASE_PACKED',      label: 'Case Packed' },
+]
 
+function nowLabel() {
+  return new Date().toLocaleString('en-US', {
+    weekday: 'long', year: 'numeric', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true,
+  })
+}
 const fmt$ = (v) => (v != null && v !== '') ? `$${Number(v).toFixed(2)}` : '—'
 
+// ─────────────────────────────────────────────────────────────────────────────
 export default function ShipToAmazon() {
-  const [step, setStep]           = useState(0)
-  const [loading, setLoading]     = useState(false)
-  const [error, setError]         = useState('')
-
-  // Step 0
-  const [asinInput, setAsinInput] = useState('')
-  const [product, setProduct]     = useState(null)
-  const [price, setPrice]         = useState('')
-  const [fees, setFees]           = useState(null)
-  const [feesError, setFeesError] = useState('')
-
-  // Step 1
-  const [qty, setQty]             = useState(1)
-  const [condition, setCondition] = useState('NewItem')
-  const [labelPrep, setLabelPrep] = useState('SELLER_LABEL')
-  const [shipFrom, setShipFrom]   = useState({
-    name: '', line1: '', line2: '', city: '', state: 'TX', zip: '', country: 'US',
-  })
-  const [packages, setPackages]   = useState([
-    { length_in: '', width_in: '', height_in: '', weight_lbs: '' },
-  ])
-
-  // Step 2
-  const [plan, setPlan]                   = useState(null)
-  const [shipmentRecord, setShipmentRecord] = useState(null)
-
-  // Step 3
-  const [rate, setRate]           = useState(null)
-
-  // Step 4
-  const [labelUrl, setLabelUrl]   = useState('')
-
-  const setErr = (msg) => { setError(msg); setLoading(false) }
-
-  // ── Step 0: ASIN lookup ──────────────────────────────────────────────────────
-  async function handleLookup() {
-    const asin = asinInput.trim().toUpperCase()
-    if (!asin) return
-    setError(''); setLoading(true); setProduct(null); setFees(null); setFeesError('')
-    try {
-      const p = await api.fbaLookup(asin)
-      setProduct(p)
-    } catch (e) { setErr(e.message) }
-    finally { setLoading(false) }
-  }
-
-  async function handleEstimateFees() {
-    if (!product || !price) return
-    setFeesError(''); setLoading(true)
-    try {
-      const f = await api.fbaFees(product.asin, parseFloat(price))
-      setFees(f)
-    } catch (e) {
-      setFeesError('Fee estimate unavailable for this ASIN — you can still create the shipment.')
-    }
-    finally { setLoading(false) }
-  }
-
-  // ── Step 1 → 2: create plan + shipment ──────────────────────────────────────
-  async function handleCreateShipment() {
-    setError(''); setLoading(true)
-    const items = [{ sku: product.asin, asin: product.asin, qty, condition }]
-    const from = {
-      name: shipFrom.name,
-      addressLine1: shipFrom.line1,
-      ...(shipFrom.line2 ? { addressLine2: shipFrom.line2 } : {}),
-      city: shipFrom.city,
-      stateOrProvinceCode: shipFrom.state,
-      postalCode: shipFrom.zip,
-      countryCode: shipFrom.country,
-    }
-    try {
-      const plans = await api.fbaPlan(items, from, labelPrep)
-      if (!plans?.length) { setErr('No shipment plan returned — check ASIN and address'); return }
-      const thePlan = plans[0]
-      setPlan(thePlan)
-      const rec = await api.fbaCreateShipment({
-        plan:          thePlan,
-        shipment_name: `FBA-${product.asin}-${Date.now()}`,
-        from_address:  from,
-        items,
-        asin:          product.asin,
-        seller_sku:    product.asin,
-        title:         product.title,
-        quantity:      qty,
-        referral_fee:  fees?.referral_fee,
-        fba_fee:       fees?.fba_fee,
-      })
-      setShipmentRecord(rec)
-      setStep(2)
-    } catch (e) { setErr(e.message) }
-    finally { setLoading(false) }
-  }
-
-  // ── Step 2 → 3: set transport ────────────────────────────────────────────────
-  async function handleSetTransport() {
-    setError(''); setLoading(true)
-    const pkgs = packages.map(p => ({
-      length_in:  parseFloat(p.length_in),
-      width_in:   parseFloat(p.width_in),
-      height_in:  parseFloat(p.height_in),
-      weight_lbs: parseFloat(p.weight_lbs),
-    }))
-    try {
-      const r = await api.fbaSetTransport(shipmentRecord.id, pkgs, true)
-      setRate(r)
-      setStep(3)
-    } catch (e) { setErr(e.message) }
-    finally { setLoading(false) }
-  }
-
-  // ── Step 3: confirm / void ───────────────────────────────────────────────────
-  async function handleConfirm() {
-    setError(''); setLoading(true)
-    try {
-      await api.fbaConfirmTransport(shipmentRecord.id)
-      setStep(4)
-    } catch (e) { setErr(e.message) }
-    finally { setLoading(false) }
-  }
-
-  async function handleVoid() {
-    if (!window.confirm('Void this shipping rate? This cannot be undone.')) return
-    setError(''); setLoading(true)
-    try {
-      await api.fbaVoidTransport(shipmentRecord.id)
-      setRate(null); setStep(2)
-    } catch (e) { setErr(e.message) }
-    finally { setLoading(false) }
-  }
-
-  // ── Step 4: labels ───────────────────────────────────────────────────────────
-  async function handleGetLabels() {
-    setError(''); setLoading(true)
-    try {
-      const res = await api.fbaGetLabels(shipmentRecord.id)
-      setLabelUrl(res.label_url)
-    } catch (e) { setErr(e.message) }
-    finally { setLoading(false) }
-  }
-
-  // ── package helpers ──────────────────────────────────────────────────────────
-  function updatePkg(i, field, val) {
-    setPackages(prev => prev.map((p, idx) => idx === i ? { ...p, [field]: val } : p))
-  }
-  const addPkg    = () => setPackages(prev => [...prev, { length_in: '', width_in: '', height_in: '', weight_lbs: '' }])
-  const removePkg = (i) => setPackages(prev => prev.filter((_, idx) => idx !== i))
-
-  function resetAll() {
-    setStep(0); setProduct(null); setFees(null); setFeesError(''); setAsinInput(''); setPrice('')
-    setPlan(null); setShipmentRecord(null); setRate(null); setLabelUrl(''); setError('')
-    setPackages([{ length_in: '', width_in: '', height_in: '', weight_lbs: '' }])
-  }
-
-  const pkgFields = [
-    ['L (in)', 'length_in'], ['W (in)', 'width_in'], ['H (in)', 'height_in'], ['Wt (lbs)', 'weight_lbs'],
-  ]
+  const [mode, setMode] = useState('fba') // 'fba' | 'fbm'
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">FBA Inbound</h1>
-        <p className="text-gray-500 text-sm mt-1">
-          Create inbound shipments with FC routing, UPS partnered rates, and box labels — right from your dashboard.
-        </p>
+    <div className="space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">FBA Inbound</h1>
+          <p className="text-gray-500 text-sm mt-0.5">
+            Send inventory to Amazon FBA or create Merchant Fulfilled listings.
+          </p>
+        </div>
       </div>
 
-      {/* Step indicator */}
-      <div className="flex items-center">
-        {STEPS.map((label, i) => (
-          <div key={i} className="flex items-center flex-1 min-w-0">
-            <div className="flex items-center gap-2 shrink-0">
-              <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold border-2
-                ${i < step  ? 'bg-blue-600 border-blue-600 text-white' :
-                  i === step ? 'border-blue-500 text-blue-600 bg-blue-50' :
-                               'border-gray-300 text-gray-400 bg-white'}`}>
-                {i < step ? '✓' : i + 1}
-              </div>
-              <span className={`text-xs font-medium hidden sm:block whitespace-nowrap
-                ${i === step ? 'text-blue-600' : i < step ? 'text-gray-700' : 'text-gray-400'}`}>
-                {label}
-              </span>
-            </div>
-            {i < STEPS.length - 1 && (
-              <div className={`flex-1 h-px mx-2 ${i < step ? 'bg-blue-500' : 'bg-gray-200'}`} />
-            )}
-          </div>
+      {/* Mode tabs */}
+      <div className="flex border-b border-gray-200">
+        {[
+          { key: 'fba', label: 'Create FBA Shipment' },
+          { key: 'fbm', label: 'Create FBM Listing' },
+        ].map(({ key, label }) => (
+          <button
+            key={key}
+            onClick={() => setMode(key)}
+            className={`px-5 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+              mode === key
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {label}
+          </button>
         ))}
       </div>
 
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">
-          {error}
-        </div>
-      )}
-
-      {/* ── STEP 0 ── */}
-      {step === 0 && (
-        <div className="space-y-4">
-          <div className="card p-5">
-            <h2 className="text-sm font-semibold text-gray-700 mb-3">Search by ASIN</h2>
-            <div className="flex gap-3">
-              <input
-                className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                placeholder="e.g. B08N5WRWNW"
-                value={asinInput}
-                onChange={e => setAsinInput(e.target.value.toUpperCase())}
-                onKeyDown={e => e.key === 'Enter' && handleLookup()}
-              />
-              <Btn onClick={handleLookup} loading={loading}>Look Up</Btn>
-            </div>
-          </div>
-
-          {product && (
-            <>
-              <div className="card p-5">
-                <h2 className="text-sm font-semibold text-gray-700 mb-3">Product</h2>
-                <div className="flex gap-4">
-                  {product.image_url && (
-                    <img
-                      src={product.image_url}
-                      alt=""
-                      className="w-20 h-20 object-contain rounded border border-gray-200 bg-gray-50 p-1 shrink-0"
-                    />
-                  )}
-                  <div className="min-w-0 space-y-1">
-                    <p className="text-gray-900 text-sm font-medium leading-snug line-clamp-2">
-                      {product.title}
-                    </p>
-                    <p className="text-gray-500 text-xs">{product.brand} · ASIN: {product.asin}</p>
-                    {product.bsr > 0 && (
-                      <p className="text-gray-500 text-xs">
-                        BSR #{product.bsr.toLocaleString()} in {product.category}
-                      </p>
-                    )}
-                    <div className="flex flex-wrap gap-3 pt-1">
-                      {[
-                        ['L', product.length_in, 'in'],
-                        ['W', product.width_in,  'in'],
-                        ['H', product.height_in, 'in'],
-                        ['Wt', product.weight_lbs,'lbs'],
-                      ].map(([lbl, val, unit]) => val ? (
-                        <span key={lbl} className="text-gray-600 text-xs bg-gray-100 px-2 py-0.5 rounded">
-                          {lbl}: {Number(val).toFixed(2)} {unit}
-                        </span>
-                      ) : null)}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="card p-5">
-                <h2 className="text-sm font-semibold text-gray-700 mb-3">Fee Estimate</h2>
-                <div className="flex gap-3 items-end">
-                  <div className="flex-1">
-                    <label className="block text-xs text-gray-500 mb-1">Your Sale Price ($)</label>
-                    <input
-                      type="number" min="0" step="0.01"
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                      value={price}
-                      onChange={e => setPrice(e.target.value)}
-                      onKeyDown={e => e.key === 'Enter' && handleEstimateFees()}
-                    />
-                  </div>
-                  <Btn onClick={handleEstimateFees} loading={loading} disabled={!price}>Estimate</Btn>
-                </div>
-
-                {feesError && (
-                  <p className="text-amber-600 text-xs mt-2 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-                    ⚠ {feesError}
-                  </p>
-                )}
-
-                {fees && (
-                  <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
-                    {[
-                      ['Referral Fee',  fees.referral_fee,  false],
-                      ['FBA Fee',       fees.fba_fee,       false],
-                      ['Total Fees',    fees.total_fee,     false],
-                      ['Net Proceeds',  fees.net_proceeds,  true],
-                    ].map(([label, val, highlight]) => (
-                      <div key={label} className={`rounded-lg p-3 border ${highlight ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200'}`}>
-                        <p className="text-gray-500 text-xs">{label}</p>
-                        <p className={`text-lg font-bold mt-0.5 ${highlight ? 'text-green-700' : 'text-gray-900'}`}>
-                          {fmt$(val)}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="flex justify-end">
-                <Btn onClick={() => setStep(1)}>Continue to Shipment Details →</Btn>
-              </div>
-            </>
-          )}
-        </div>
-      )}
-
-      {/* ── STEP 1 ── */}
-      {step === 1 && (
-        <div className="space-y-4">
-          <div className="card p-5">
-            <h2 className="text-sm font-semibold text-gray-700 mb-3">Units &amp; Condition</h2>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Quantity</label>
-                <input
-                  type="number" min="1"
-                  className={inp}
-                  value={qty}
-                  onChange={e => setQty(parseInt(e.target.value) || 1)}
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Condition</label>
-                <select className={inp} value={condition} onChange={e => setCondition(e.target.value)}>
-                  {CONDITIONS.map(c => <option key={c} value={c}>{c}</option>)}
-                </select>
-              </div>
-            </div>
-            <div className="mt-3">
-              <label className="block text-xs text-gray-500 mb-1">Label Prep</label>
-              <select className={inp} value={labelPrep} onChange={e => setLabelPrep(e.target.value)}>
-                <option value="SELLER_LABEL">Seller Labels (I will label)</option>
-                <option value="AMAZON_LABEL_ONLY">Amazon Labels (fee applies)</option>
-                <option value="NO_LABEL">No Label Required</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="card p-5">
-            <h2 className="text-sm font-semibold text-gray-700 mb-3">Ship From Address</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="sm:col-span-2">
-                <label className="block text-xs text-gray-500 mb-1">Name / Company</label>
-                <input className={inp} value={shipFrom.name} onChange={e => setShipFrom(s => ({ ...s, name: e.target.value }))} />
-              </div>
-              <div className="sm:col-span-2">
-                <label className="block text-xs text-gray-500 mb-1">Address Line 1</label>
-                <input className={inp} value={shipFrom.line1} onChange={e => setShipFrom(s => ({ ...s, line1: e.target.value }))} />
-              </div>
-              <div className="sm:col-span-2">
-                <label className="block text-xs text-gray-500 mb-1">Address Line 2 (optional)</label>
-                <input className={inp} value={shipFrom.line2} onChange={e => setShipFrom(s => ({ ...s, line2: e.target.value }))} />
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">City</label>
-                <input className={inp} value={shipFrom.city} onChange={e => setShipFrom(s => ({ ...s, city: e.target.value }))} />
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">State</label>
-                <select className={inp} value={shipFrom.state} onChange={e => setShipFrom(s => ({ ...s, state: e.target.value }))}>
-                  {US_STATES.map(st => <option key={st} value={st}>{st}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">ZIP Code</label>
-                <input className={inp} value={shipFrom.zip} onChange={e => setShipFrom(s => ({ ...s, zip: e.target.value }))} />
-              </div>
-            </div>
-          </div>
-
-          <div className="card p-5">
-            <h2 className="text-sm font-semibold text-gray-700 mb-1">Box Dimensions</h2>
-            <p className="text-gray-500 text-xs mb-3">One row per box you will send.</p>
-            {packages.map((pkg, i) => (
-              <div key={i} className="flex gap-2 items-end mb-2">
-                {pkgFields.map(([label, field]) => (
-                  <div key={field} className="flex-1 min-w-0">
-                    <label className="block text-xs text-gray-400 mb-1">{label}</label>
-                    <input
-                      type="number" min="0" step="0.1"
-                      className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                      value={pkg[field]}
-                      onChange={e => updatePkg(i, field, e.target.value)}
-                    />
-                  </div>
-                ))}
-                <button
-                  onClick={() => removePkg(i)}
-                  disabled={packages.length === 1}
-                  className="text-gray-400 hover:text-red-500 text-xl pb-1 disabled:opacity-30"
-                >×</button>
-              </div>
-            ))}
-            <button onClick={addPkg} className="text-blue-600 hover:text-blue-700 text-sm mt-1 font-medium">
-              + Add box
-            </button>
-          </div>
-
-          <div className="flex justify-between">
-            <Btn variant="secondary" onClick={() => setStep(0)}>← Back</Btn>
-            <Btn
-              onClick={handleCreateShipment}
-              loading={loading}
-              disabled={!shipFrom.name || !shipFrom.line1 || !shipFrom.city || !shipFrom.zip}
-            >
-              Create Shipment →
-            </Btn>
-          </div>
-        </div>
-      )}
-
-      {/* ── STEP 2 ── */}
-      {step === 2 && plan && (
-        <div className="space-y-4">
-          <div className="card p-5">
-            <h2 className="text-sm font-semibold text-gray-700 mb-3">Fulfillment Center Assignment</h2>
-            <dl className="space-y-2">
-              <Row label="Amazon Shipment ID" value={shipmentRecord?.amazon_shipment_id} mono />
-              <Row label="Destination FC"     value={plan.destination_fc} />
-              {plan.ship_to_address && (
-                <Row
-                  label="Ship To"
-                  value={[
-                    plan.ship_to_address.addressLine1,
-                    plan.ship_to_address.city,
-                    plan.ship_to_address.stateOrProvinceCode,
-                    plan.ship_to_address.postalCode,
-                  ].filter(Boolean).join(', ')}
-                />
-              )}
-              {shipmentRecord?.optimized_eligible != null && (
-                <Row
-                  label="Amazon Optimized Shipping"
-                  value={shipmentRecord.optimized_eligible ? '✓ Eligible' : 'Not available for this shipment'}
-                  valueClass={shipmentRecord.optimized_eligible ? 'text-green-600 font-medium' : 'text-gray-500'}
-                />
-              )}
-            </dl>
-          </div>
-
-          <div className="card p-5">
-            <h2 className="text-sm font-semibold text-gray-700 mb-1">Confirm Box Dimensions</h2>
-            <p className="text-gray-500 text-xs mb-3">Submitted to Amazon for the UPS partnered carrier rate.</p>
-            {packages.map((pkg, i) => (
-              <div key={i} className="flex gap-2 items-end mb-2">
-                {pkgFields.map(([label, field]) => (
-                  <div key={field} className="flex-1 min-w-0">
-                    <label className="block text-xs text-gray-400 mb-1">{label}</label>
-                    <input
-                      type="number" min="0" step="0.1"
-                      className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500"
-                      value={pkg[field]}
-                      onChange={e => updatePkg(i, field, e.target.value)}
-                    />
-                  </div>
-                ))}
-                <button onClick={() => removePkg(i)} disabled={packages.length === 1} className="text-gray-400 hover:text-red-500 text-xl pb-1 disabled:opacity-30">×</button>
-              </div>
-            ))}
-            <button onClick={addPkg} className="text-blue-600 hover:text-blue-700 text-sm mt-1 font-medium">+ Add box</button>
-          </div>
-
-          <div className="flex justify-between">
-            <Btn variant="secondary" onClick={() => setStep(1)}>← Back</Btn>
-            <Btn onClick={handleSetTransport} loading={loading}>Get Shipping Rate →</Btn>
-          </div>
-        </div>
-      )}
-
-      {/* ── STEP 3 ── */}
-      {step === 3 && rate && (
-        <div className="space-y-4">
-          <div className="card p-5">
-            <h2 className="text-sm font-semibold text-gray-700 mb-3">UPS Partnered Carrier Rate</h2>
-            <dl className="space-y-2 mb-4">
-              <Row label="Status"         value={rate.status} />
-              <Row
-                label="Estimated Cost"
-                value={`${fmt$(rate.estimated_cost)} ${rate.currency || 'USD'}`}
-                valueClass="text-2xl font-bold text-green-700"
-              />
-            </dl>
-            {rate.status !== 'ESTIMATED' && (
-              <p className="text-amber-700 text-xs bg-amber-50 border border-amber-200 rounded px-3 py-2">
-                Amazon is still calculating the rate. The confirmation will proceed with the final rate.
-              </p>
-            )}
-          </div>
-
-          {(fees?.referral_fee || fees?.fba_fee || rate?.estimated_cost) && (
-            <div className="card p-5">
-              <h2 className="text-sm font-semibold text-gray-700 mb-3">Cost Summary</h2>
-              <div className="grid grid-cols-3 gap-3">
-                {[
-                  ['Referral Fee',  fees?.referral_fee],
-                  ['FBA Fee',       fees?.fba_fee],
-                  ['Shipping Cost', rate.estimated_cost],
-                ].map(([label, val]) => (
-                  <div key={label} className="bg-gray-50 border border-gray-200 rounded-lg p-3">
-                    <p className="text-gray-500 text-xs">{label}</p>
-                    <p className="text-gray-900 font-semibold mt-0.5">{fmt$(val)}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
-            <strong>Before confirming:</strong> The UPS rate will be charged to your Amazon account. You have a 24-hour void window after confirmation.
-          </div>
-
-          <div className="flex justify-between gap-3">
-            <Btn variant="secondary" onClick={() => setStep(2)}>← Back</Btn>
-            <div className="flex gap-3">
-              <Btn variant="danger" onClick={handleVoid} loading={loading}>Void Rate</Btn>
-              <Btn onClick={handleConfirm} loading={loading}>Confirm &amp; Pay →</Btn>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── STEP 4 ── */}
-      {step === 4 && (
-        <div className="space-y-4">
-          <div className="card p-5">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 bg-green-100 border-2 border-green-500 rounded-full flex items-center justify-center text-green-700 font-bold text-lg">✓</div>
-              <div>
-                <p className="text-gray-900 font-semibold">Transport confirmed!</p>
-                <p className="text-gray-500 text-sm">Your UPS partnered carrier rate is locked in.</p>
-              </div>
-            </div>
-            <dl className="space-y-2">
-              <Row label="Amazon Shipment ID" value={shipmentRecord?.amazon_shipment_id} mono />
-              <Row label="Destination FC"     value={plan?.destination_fc} />
-              <Row label="Shipping Cost"      value={fmt$(rate?.estimated_cost)} valueClass="text-green-700 font-semibold" />
-            </dl>
-          </div>
-
-          <div className="card p-5">
-            <h2 className="text-sm font-semibold text-gray-700 mb-2">Box Labels</h2>
-            <p className="text-gray-500 text-sm mb-4">
-              Print and attach labels to each box before dropping off at UPS.
-            </p>
-            {!labelUrl ? (
-              <Btn onClick={handleGetLabels} loading={loading}>Download Labels (PDF)</Btn>
-            ) : (
-              <a
-                href={labelUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white font-medium px-5 py-2.5 rounded-lg text-sm transition-colors"
-              >
-                <DownloadIcon className="w-4 h-4" /> Open Labels PDF
-              </a>
-            )}
-          </div>
-
-          <div className="flex justify-between">
-            <button
-              onClick={resetAll}
-              className="text-blue-600 hover:text-blue-700 text-sm font-medium"
-            >
-              ← Start New Shipment
-            </button>
-          </div>
-        </div>
-      )}
+      {mode === 'fba' ? <FBAShipmentForm /> : <FBMListingForm />}
     </div>
   )
 }
 
-// ── Sub-components ────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// FBA SHIPMENT — matches Boxem's "Create New Shipment" layout
+// ─────────────────────────────────────────────────────────────────────────────
+function FBAShipmentForm() {
+  // Shipment creation phase vs. products phase
+  const [phase, setPhase] = useState('form') // 'form' | 'products' | 'rate' | 'done'
 
-function Btn({ children, onClick, loading, disabled, variant = 'primary' }) {
-  const base = 'inline-flex items-center gap-2 font-medium px-4 py-2 rounded-lg text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed'
-  const styles = {
-    primary:   'bg-blue-600 hover:bg-blue-700 text-white',
-    secondary: 'bg-white border border-gray-300 hover:bg-gray-50 text-gray-700',
-    danger:    'bg-red-600 hover:bg-red-700 text-white',
+  // Credentials / ship-from
+  const [creds, setCreds]         = useState(null)
+  const [editingAddr, setEditingAddr] = useState(false)
+  const [addrForm, setAddrForm]   = useState({
+    name: '', line1: '', line2: '', city: '', state: 'TX', zip: '', country: 'US',
+  })
+
+  // Form fields (Details)
+  const [shipmentName, setShipmentName] = useState(nowLabel)
+  const [fulfillmentType] = useState('Amazon FBA')
+
+  // Shipping & Origin
+  const [shipMethod, setShipMethod] = useState('partnered_ups')
+
+  // Packaging & Labeling
+  const [boxContents, setBoxContents]   = useState('INDIVIDUAL_ITEMS')
+  const [labelPrep, setLabelPrep]       = useState('SELLER_LABEL')
+  const [autoPrice, setAutoPrice]       = useState(false)
+  const [autoPrintFnsku, setAutoPrint]  = useState(false)
+  const [fnSkuOnAssign, setFnOnAssign]  = useState(false)
+  const [fnSkuOnQty, setFnOnQty]        = useState(false)
+
+  // Meta Data toggles
+  const [showBuyCost, setShowBuyCost]   = useState(true)
+  const [showSupplier, setShowSupplier] = useState(false)
+  const [showDatePurchased, setShowDate]= useState(false)
+
+  // Products phase
+  const [asinInput, setAsinInput]   = useState('')
+  const [products, setProducts]     = useState([]) // [{asin, title, image_url, bsr, qty, condition, fees, feesLoading}]
+  const [asinLoading, setAsinLoading] = useState(false)
+  const [asinError, setAsinError]   = useState('')
+  const [packages, setPackages]     = useState([{ length_in:'', width_in:'', height_in:'', weight_lbs:'' }])
+
+  // Result
+  const [creating, setCreating]     = useState(false)
+  const [shipmentRecord, setShipmentRecord] = useState(null)
+  const [plan, setPlan]             = useState(null)
+  const [rate, setRate]             = useState(null)
+  const [confirming, setConfirming] = useState(false)
+  const [labelUrl, setLabelUrl]     = useState('')
+  const [error, setError]           = useState('')
+
+  useEffect(() => {
+    api.getAmazonCredentials().then(c => {
+      setCreds(c)
+      if (c?.ship_from) {
+        const sf = c.ship_from
+        setAddrForm({
+          name:    sf.name    || c.store_name || '',
+          line1:   sf.addressLine1 || '',
+          line2:   sf.addressLine2 || '',
+          city:    sf.city    || '',
+          state:   sf.stateOrProvinceCode || 'TX',
+          zip:     sf.postalCode || '',
+          country: sf.countryCode || 'US',
+        })
+      } else if (c?.store_name) {
+        setAddrForm(a => ({ ...a, name: c.store_name }))
+      }
+    }).catch(() => {})
+  }, [])
+
+  const shipFromFilled = addrForm.name && addrForm.line1 && addrForm.city && addrForm.zip
+
+  async function handleSaveAddress() {
+    const payload = {
+      name: addrForm.name,
+      addressLine1: addrForm.line1,
+      ...(addrForm.line2 ? { addressLine2: addrForm.line2 } : {}),
+      city: addrForm.city,
+      stateOrProvinceCode: addrForm.state,
+      postalCode: addrForm.zip,
+      countryCode: addrForm.country,
+    }
+    await api.saveShipFrom(payload).catch(() => {})
+    setEditingAddr(false)
   }
+
+  async function handleAsinLookup() {
+    const asin = asinInput.trim().toUpperCase()
+    if (!asin) return
+    setAsinError(''); setAsinLoading(true)
+    try {
+      const p = await api.fbaLookup(asin)
+      const entry = { ...p, qty: 1, condition: 'NewItem', fees: null, feesLoading: true }
+      setProducts(prev => {
+        if (prev.find(x => x.asin === p.asin)) return prev
+        return [...prev, entry]
+      })
+      setAsinInput('')
+      // Auto-estimate fees at a default price
+      api.fbaFees(p.asin, p.buy_box || 19.99).then(f => {
+        setProducts(prev => prev.map(x => x.asin === p.asin ? { ...x, fees: f, feesLoading: false } : x))
+      }).catch(() => {
+        setProducts(prev => prev.map(x => x.asin === p.asin ? { ...x, feesLoading: false } : x))
+      })
+    } catch (e) { setAsinError(e.message) }
+    finally { setAsinLoading(false) }
+  }
+
+  function removeProduct(asin) { setProducts(prev => prev.filter(p => p.asin !== asin)) }
+  function updateProduct(asin, field, val) {
+    setProducts(prev => prev.map(p => p.asin === asin ? { ...p, [field]: val } : p))
+  }
+  function updatePkg(i, field, val) {
+    setPackages(prev => prev.map((p, idx) => idx === i ? { ...p, [field]: val } : p))
+  }
+
+  async function handleCreateShipment() {
+    if (!shipFromFilled) { setError('Please complete your ship-from address first.'); return }
+    if (!products.length) { setError('Add at least one product.'); return }
+    setError(''); setCreating(true)
+    const from = {
+      name: addrForm.name,
+      addressLine1: addrForm.line1,
+      ...(addrForm.line2 ? { addressLine2: addrForm.line2 } : {}),
+      city: addrForm.city,
+      stateOrProvinceCode: addrForm.state,
+      postalCode: addrForm.zip,
+      countryCode: addrForm.country,
+    }
+    const items = products.map(p => ({ sku: p.asin, asin: p.asin, qty: p.qty, condition: p.condition }))
+    try {
+      const plans = await api.fbaPlan(items, from, labelPrep)
+      if (!plans?.length) { setError('No shipment plan returned — check address and ASINs'); setCreating(false); return }
+      const thePlan = plans[0]; setPlan(thePlan)
+      const p0 = products[0]
+      const rec = await api.fbaCreateShipment({
+        plan: thePlan,
+        shipment_name: shipmentName,
+        from_address: from,
+        items,
+        asin:         p0.asin,
+        seller_sku:   p0.asin,
+        title:        p0.title,
+        quantity:     products.reduce((s, p) => s + (p.qty || 1), 0),
+        referral_fee: p0.fees?.referral_fee,
+        fba_fee:      p0.fees?.fba_fee,
+      })
+      setShipmentRecord(rec)
+      setPhase('rate')
+    } catch (e) { setError(e.message) }
+    finally { setCreating(false) }
+  }
+
+  async function handleSetTransport() {
+    if (!shipmentRecord) return
+    setError(''); setCreating(true)
+    const pkgs = packages.map(p => ({
+      length_in: parseFloat(p.length_in), width_in: parseFloat(p.width_in),
+      height_in: parseFloat(p.height_in), weight_lbs: parseFloat(p.weight_lbs),
+    }))
+    try {
+      const r = await api.fbaSetTransport(shipmentRecord.id, pkgs, shipMethod === 'partnered_ups')
+      setRate(r)
+    } catch (e) { setError(e.message) }
+    finally { setCreating(false) }
+  }
+
+  async function handleConfirm() {
+    setError(''); setConfirming(true)
+    try {
+      await api.fbaConfirmTransport(shipmentRecord.id)
+      setPhase('done')
+    } catch (e) { setError(e.message) }
+    finally { setConfirming(false) }
+  }
+
+  async function handleGetLabels() {
+    setError('')
+    try {
+      const res = await api.fbaGetLabels(shipmentRecord.id)
+      setLabelUrl(res.label_url)
+    } catch (e) { setError(e.message) }
+  }
+
+  function resetAll() {
+    setPhase('form'); setProducts([]); setPackages([{ length_in:'', width_in:'', height_in:'', weight_lbs:'' }])
+    setShipmentRecord(null); setPlan(null); setRate(null); setLabelUrl('')
+    setError(''); setShipmentName(nowLabel())
+  }
+
+  if (phase === 'done') {
+    return (
+      <div className="max-w-2xl space-y-4">
+        <div className="card p-6 text-center">
+          <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-3">
+            <span className="text-green-600 text-2xl font-bold">✓</span>
+          </div>
+          <h2 className="text-lg font-bold text-gray-900">Shipment Confirmed!</h2>
+          <p className="text-gray-500 text-sm mt-1">Your UPS rate is locked in and the shipment is on its way.</p>
+          <div className="mt-4 bg-gray-50 rounded-lg p-4 text-left space-y-2">
+            <InfoRow label="Shipment ID"    value={shipmentRecord?.amazon_shipment_id} mono />
+            <InfoRow label="Destination FC" value={plan?.destination_fc} />
+            <InfoRow label="Shipping Cost"  value={fmt$(rate?.estimated_cost)} valueClass="text-green-700 font-semibold" />
+          </div>
+          <div className="mt-5 flex gap-3 justify-center">
+            {!labelUrl ? (
+              <button onClick={handleGetLabels}
+                className="btn-primary text-sm">Download Box Labels (PDF)</button>
+            ) : (
+              <a href={labelUrl} target="_blank" rel="noopener noreferrer"
+                className="btn-primary text-sm flex items-center gap-2">
+                <DownloadIcon className="w-4 h-4" /> Open Labels PDF
+              </a>
+            )}
+            <button onClick={resetAll} className="btn-secondary text-sm">Create Another Shipment</button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (phase === 'rate') {
+    return (
+      <div className="max-w-2xl space-y-4">
+        {error && <ErrorBanner msg={error} />}
+        <div className="card p-6">
+          <h2 className="text-base font-semibold text-gray-800 mb-4">Shipment Created</h2>
+          <div className="space-y-2 mb-5">
+            <InfoRow label="Amazon Shipment ID" value={shipmentRecord?.amazon_shipment_id} mono />
+            <InfoRow label="Destination FC"     value={plan?.destination_fc} />
+            {plan?.ship_to_address && (
+              <InfoRow label="Ship To" value={[
+                plan.ship_to_address.addressLine1, plan.ship_to_address.city,
+                plan.ship_to_address.stateOrProvinceCode, plan.ship_to_address.postalCode,
+              ].filter(Boolean).join(', ')} />
+            )}
+            {shipmentRecord?.optimized_eligible != null && (
+              <InfoRow
+                label="Amazon Optimized"
+                value={shipmentRecord.optimized_eligible ? '✓ Eligible' : 'Not available'}
+                valueClass={shipmentRecord.optimized_eligible ? 'text-green-600' : 'text-gray-400'}
+              />
+            )}
+          </div>
+
+          <SectionHeader title="Box Dimensions" />
+          <p className="text-gray-500 text-xs mb-3">Provide dims for each box. Required for the UPS partnered rate.</p>
+          {packages.map((pkg, i) => (
+            <div key={i} className="flex gap-2 items-end mb-2">
+              {[['L (in)', 'length_in'],['W (in)', 'width_in'],['H (in)', 'height_in'],['Wt (lbs)', 'weight_lbs']].map(([lbl, fld]) => (
+                <div key={fld} className="flex-1 min-w-0">
+                  <label className="block text-xs text-gray-400 mb-1">{lbl}</label>
+                  <input type="number" min="0" step="0.1" className={inpSm}
+                    value={pkg[fld]} onChange={e => updatePkg(i, fld, e.target.value)} />
+                </div>
+              ))}
+              <button onClick={() => setPackages(p => p.filter((_, j) => j !== i))}
+                disabled={packages.length === 1}
+                className="text-gray-400 hover:text-red-500 text-xl pb-1 disabled:opacity-30">×</button>
+            </div>
+          ))}
+          <button onClick={() => setPackages(p => [...p, { length_in:'', width_in:'', height_in:'', weight_lbs:'' }])}
+            className="text-blue-600 hover:text-blue-700 text-sm font-medium mt-1">+ Add box</button>
+
+          {rate && (
+            <div className="mt-4 bg-green-50 border border-green-200 rounded-lg px-4 py-3 flex items-center justify-between">
+              <span className="text-green-800 text-sm font-medium">Estimated Shipping Cost</span>
+              <span className="text-green-700 text-xl font-bold">{fmt$(rate.estimated_cost)} {rate.currency || 'USD'}</span>
+            </div>
+          )}
+
+          <div className="mt-5 flex gap-3">
+            {!rate ? (
+              <button onClick={handleSetTransport} disabled={creating}
+                className="btn-primary text-sm flex items-center gap-2">
+                {creating && <SpinIcon className="w-4 h-4 animate-spin" />}
+                Get Shipping Rate
+              </button>
+            ) : (
+              <>
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800 flex-1">
+                  <strong>Confirm to pay:</strong> The UPS rate is charged to your Amazon account. You have 24h to void.
+                </div>
+                <button onClick={handleConfirm} disabled={confirming}
+                  className="btn-primary text-sm flex items-center gap-2 shrink-0">
+                  {confirming && <SpinIcon className="w-4 h-4 animate-spin" />}
+                  Confirm &amp; Pay
+                </button>
+                <button onClick={async () => { await api.fbaVoidTransport(shipmentRecord.id); setRate(null) }}
+                  className="btn-secondary text-sm text-red-600 shrink-0">Void</button>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // ── phase === 'form' ──
   return (
-    <button className={`${base} ${styles[variant]}`} onClick={onClick} disabled={loading || disabled}>
-      {loading && <SpinIcon className="w-4 h-4 animate-spin" />}
-      {children}
-    </button>
+    <div className="max-w-2xl space-y-0">
+      {error && <div className="mb-4"><ErrorBanner msg={error} /></div>}
+
+      <div className="card overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-100">
+          <h2 className="text-base font-semibold text-gray-900">Create New Shipment</h2>
+        </div>
+
+        {/* ── DETAILS ── */}
+        <Section title="Details">
+          <FormRow label="Shipment Name">
+            <input className={inp} value={shipmentName} onChange={e => setShipmentName(e.target.value)} />
+          </FormRow>
+          <FormRow label="Fulfillment Type">
+            <input className={`${inp} bg-gray-50 text-gray-500`} value={fulfillmentType} readOnly />
+          </FormRow>
+        </Section>
+
+        {/* ── SHIPPING & ORIGIN ── */}
+        <Section title="Shipping & Origin">
+          <FormRow label="Ship From">
+            {editingAddr ? (
+              <div className="space-y-2 w-full">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="col-span-2">
+                    <label className="block text-xs text-gray-400 mb-1">Name / Company</label>
+                    <input className={inp} value={addrForm.name} onChange={e => setAddrForm(a => ({ ...a, name: e.target.value }))} />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="block text-xs text-gray-400 mb-1">Address Line 1</label>
+                    <input className={inp} value={addrForm.line1} onChange={e => setAddrForm(a => ({ ...a, line1: e.target.value }))} />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="block text-xs text-gray-400 mb-1">Address Line 2 (optional)</label>
+                    <input className={inp} value={addrForm.line2} onChange={e => setAddrForm(a => ({ ...a, line2: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">City</label>
+                    <input className={inp} value={addrForm.city} onChange={e => setAddrForm(a => ({ ...a, city: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">State</label>
+                    <select className={inp} value={addrForm.state} onChange={e => setAddrForm(a => ({ ...a, state: e.target.value }))}>
+                      {US_STATES.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">ZIP</label>
+                    <input className={inp} value={addrForm.zip} onChange={e => setAddrForm(a => ({ ...a, zip: e.target.value }))} />
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={handleSaveAddress} className="btn-primary text-xs py-1.5 px-3">Save Address</button>
+                  <button onClick={() => setEditingAddr(false)} className="btn-secondary text-xs py-1.5 px-3">Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <div className="w-full border border-gray-200 rounded-lg p-3 bg-gray-50">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-semibold text-gray-800 uppercase tracking-wide">
+                      {addrForm.name || creds?.store_name || <span className="text-gray-400 normal-case font-normal">Not set</span>}
+                    </p>
+                    {shipFromFilled ? (
+                      <p className="text-gray-500 text-xs mt-0.5">
+                        {addrForm.line1}{addrForm.line2 ? `, ${addrForm.line2}` : ''},{' '}
+                        {addrForm.city} {addrForm.state} {addrForm.zip}
+                      </p>
+                    ) : (
+                      <p className="text-amber-600 text-xs mt-0.5">Address not set — click Edit Address</p>
+                    )}
+                  </div>
+                  <button onClick={() => setEditingAddr(true)}
+                    className="text-blue-600 hover:text-blue-700 text-xs font-medium shrink-0">
+                    Edit Address
+                  </button>
+                </div>
+              </div>
+            )}
+          </FormRow>
+          <FormRow label="Ship Method">
+            <select className={inp} value={shipMethod} onChange={e => setShipMethod(e.target.value)}>
+              {SHIP_METHODS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+            </select>
+          </FormRow>
+        </Section>
+
+        {/* ── PACKAGING & LABELING ── */}
+        <Section title="Packaging & Labeling">
+          <FormRow label="Box Contents">
+            <select className={inp} value={boxContents} onChange={e => setBoxContents(e.target.value)}>
+              {BOX_CONTENTS.map(b => <option key={b.value} value={b.value}>{b.label}</option>)}
+            </select>
+          </FormRow>
+          <FormRow label="Label Prep">
+            <select className={inp} value={labelPrep} onChange={e => setLabelPrep(e.target.value)}>
+              {LABEL_PREPS.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
+            </select>
+          </FormRow>
+          <FormRow label="Auto Pricing">
+            <Toggle value={autoPrice} onChange={setAutoPrice} label="Auto-fill list price" />
+          </FormRow>
+          <FormRow label="Auto-Print FNSKU">
+            <div className="space-y-2 w-full">
+              <Toggle value={fnSkuOnAssign} onChange={setFnOnAssign} label="After assigning to boxes" />
+              <Toggle value={fnSkuOnQty}    onChange={setFnOnQty}    label="On quantity update" />
+            </div>
+          </FormRow>
+        </Section>
+
+        {/* ── META DATA ── */}
+        <Section title="Meta Data">
+          <FormRow label="">
+            <div className="space-y-2 w-full">
+              <Toggle value={showBuyCost}  onChange={setShowBuyCost}  label="Buy Cost Input" />
+              <Toggle value={showSupplier} onChange={setShowSupplier} label="Supplier Input" />
+              <Toggle value={showDatePurchased} onChange={setShowDate} label="Date Purchased Input" />
+            </div>
+          </FormRow>
+        </Section>
+
+        {/* ── ADD PRODUCTS ── */}
+        <Section title="Add Products">
+          <div className="w-full space-y-3">
+            <div className="flex gap-2">
+              <input
+                className={`${inp} flex-1`}
+                placeholder="Enter ASIN (e.g. B08N5WRWNW)"
+                value={asinInput}
+                onChange={e => setAsinInput(e.target.value.toUpperCase())}
+                onKeyDown={e => e.key === 'Enter' && handleAsinLookup()}
+              />
+              <button onClick={handleAsinLookup} disabled={asinLoading}
+                className="btn-primary text-sm flex items-center gap-2 shrink-0">
+                {asinLoading && <SpinIcon className="w-3.5 h-3.5 animate-spin" />}
+                Add
+              </button>
+            </div>
+            {asinError && <p className="text-red-600 text-xs">{asinError}</p>}
+
+            {products.map(p => (
+              <div key={p.asin} className="border border-gray-200 rounded-lg p-3 flex gap-3">
+                {p.image_url && (
+                  <img src={p.image_url} alt="" className="w-14 h-14 object-contain rounded border border-gray-100 bg-gray-50 shrink-0" />
+                )}
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-900 line-clamp-1">{p.title}</p>
+                  <p className="text-xs text-gray-400 mt-0.5">{p.asin}</p>
+                  {p.bsr > 0 && <p className="text-xs text-gray-400">BSR #{p.bsr.toLocaleString()}</p>}
+                  <div className="flex items-center gap-3 mt-2 flex-wrap">
+                    <div>
+                      <label className="block text-xs text-gray-400">Qty</label>
+                      <input type="number" min="1" className="w-16 border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-blue-500"
+                        value={p.qty} onChange={e => updateProduct(p.asin, 'qty', parseInt(e.target.value) || 1)} />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400">Condition</label>
+                      <select className="border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-blue-500"
+                        value={p.condition} onChange={e => updateProduct(p.asin, 'condition', e.target.value)}>
+                        {CONDITIONS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                      </select>
+                    </div>
+                    {showBuyCost && (
+                      <div>
+                        <label className="block text-xs text-gray-400">Buy Cost</label>
+                        <input type="number" min="0" step="0.01" placeholder="$0.00"
+                          className="w-20 border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-blue-500"
+                          value={p.buyCost || ''} onChange={e => updateProduct(p.asin, 'buyCost', e.target.value)} />
+                      </div>
+                    )}
+                    {p.feesLoading && <span className="text-gray-400 text-xs">Loading fees…</span>}
+                    {p.fees && !p.feesLoading && (
+                      <div className="flex gap-2 text-xs">
+                        <span className="bg-gray-100 px-2 py-0.5 rounded text-gray-600">Ref: {fmt$(p.fees.referral_fee)}</span>
+                        <span className="bg-gray-100 px-2 py-0.5 rounded text-gray-600">FBA: {fmt$(p.fees.fba_fee)}</span>
+                        <span className="bg-green-100 px-2 py-0.5 rounded text-green-700 font-medium">Net: {fmt$(p.fees.net_proceeds)}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <button onClick={() => removeProduct(p.asin)} className="text-gray-300 hover:text-red-500 text-xl self-start shrink-0">×</button>
+              </div>
+            ))}
+          </div>
+        </Section>
+
+        {/* Footer */}
+        <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex items-center justify-between">
+          <p className="text-xs text-gray-400">{products.length} product{products.length !== 1 ? 's' : ''} added</p>
+          <button
+            onClick={handleCreateShipment}
+            disabled={creating || !products.length || !shipFromFilled}
+            className="btn-primary flex items-center gap-2"
+          >
+            {creating && <SpinIcon className="w-4 h-4 animate-spin" />}
+            Create Shipment →
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 
-function Row({ label, value, mono, valueClass }) {
+// ─────────────────────────────────────────────────────────────────────────────
+// FBM LISTING — Create a Merchant Fulfilled listing on Amazon
+// ─────────────────────────────────────────────────────────────────────────────
+function FBMListingForm() {
+  const [asinInput, setAsinInput] = useState('')
+  const [product, setProduct]     = useState(null)
+  const [loading, setLoading]     = useState(false)
+  const [error, setError]         = useState('')
+  const [success, setSuccess]     = useState('')
+
+  // Listing fields
+  const [sku, setSku]               = useState('')
+  const [price, setPrice]           = useState('')
+  const [qty, setQty]               = useState(1)
+  const [condition, setCondition]   = useState('NewItem')
+  const [handlingDays, setHandling] = useState('2')
+
+  async function handleLookup() {
+    const asin = asinInput.trim().toUpperCase()
+    if (!asin) return
+    setError(''); setLoading(true); setProduct(null)
+    try {
+      const p = await api.fbaLookup(asin)
+      setProduct(p)
+      setSku(`${asin}-FBM-${Date.now().toString().slice(-6)}`)
+    } catch (e) { setError(e.message) }
+    finally { setLoading(false) }
+  }
+
+  async function handleCreate() {
+    if (!product || !price || !sku) return
+    setError(''); setLoading(true); setSuccess('')
+    try {
+      // Use Listings Items API to create FBM listing
+      await api.fbaCreateFbmListing?.({
+        asin: product.asin,
+        sku, price: parseFloat(price), quantity: qty, condition,
+        handling_days: parseInt(handlingDays),
+      })
+      setSuccess(`FBM listing created for ${product.asin} with SKU ${sku}`)
+      setProduct(null); setAsinInput(''); setSku(''); setPrice('')
+    } catch (e) { setError(e.message || 'Listing creation not yet configured — connect Amazon account first.') }
+    finally { setLoading(false) }
+  }
+
+  return (
+    <div className="max-w-2xl">
+      {error   && <div className="mb-4"><ErrorBanner msg={error} /></div>}
+      {success && <div className="mb-4 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-700">{success}</div>}
+
+      <div className="card overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-100">
+          <h2 className="text-base font-semibold text-gray-900">Create FBM Listing</h2>
+          <p className="text-gray-500 text-xs mt-0.5">Create a Merchant Fulfilled listing — you ship directly to the customer.</p>
+        </div>
+
+        <Section title="Find Product">
+          <div className="w-full space-y-3">
+            <div className="flex gap-2">
+              <input className={`${inp} flex-1`} placeholder="Enter ASIN"
+                value={asinInput}
+                onChange={e => setAsinInput(e.target.value.toUpperCase())}
+                onKeyDown={e => e.key === 'Enter' && handleLookup()} />
+              <button onClick={handleLookup} disabled={loading}
+                className="btn-primary text-sm flex items-center gap-2 shrink-0">
+                {loading && <SpinIcon className="w-3.5 h-3.5 animate-spin" />}
+                Look Up
+              </button>
+            </div>
+            {product && (
+              <div className="flex gap-3 p-3 border border-gray-200 rounded-lg bg-gray-50">
+                {product.image_url && (
+                  <img src={product.image_url} alt="" className="w-14 h-14 object-contain rounded border border-gray-100 bg-white shrink-0" />
+                )}
+                <div>
+                  <p className="text-sm font-medium text-gray-900 line-clamp-2">{product.title}</p>
+                  <p className="text-xs text-gray-400 mt-0.5">{product.brand} · {product.asin}</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </Section>
+
+        {product && (
+          <>
+            <Section title="Listing Details">
+              <FormRow label="Seller SKU">
+                <input className={inp} value={sku} onChange={e => setSku(e.target.value)} />
+              </FormRow>
+              <FormRow label="List Price ($)">
+                <input type="number" min="0" step="0.01" className={inp} value={price} onChange={e => setPrice(e.target.value)} />
+              </FormRow>
+              <FormRow label="Quantity">
+                <input type="number" min="1" className={inp} value={qty} onChange={e => setQty(parseInt(e.target.value) || 1)} />
+              </FormRow>
+              <FormRow label="Condition">
+                <select className={inp} value={condition} onChange={e => setCondition(e.target.value)}>
+                  {CONDITIONS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                </select>
+              </FormRow>
+              <FormRow label="Handling Days">
+                <select className={inp} value={handlingDays} onChange={e => setHandling(e.target.value)}>
+                  {['1','2','3','5','7','14'].map(d => <option key={d} value={d}>{d} day{d !== '1' ? 's' : ''}</option>)}
+                </select>
+              </FormRow>
+            </Section>
+
+            <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex justify-end">
+              <button onClick={handleCreate} disabled={loading || !price || !sku}
+                className="btn-primary flex items-center gap-2">
+                {loading && <SpinIcon className="w-4 h-4 animate-spin" />}
+                Create FBM Listing →
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared sub-components
+// ─────────────────────────────────────────────────────────────────────────────
+
+function Section({ title, children }) {
+  return (
+    <div className="border-t border-gray-100 first:border-t-0">
+      <div className="px-6 py-3 bg-gray-50 border-b border-gray-100">
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">{title}</p>
+      </div>
+      <div className="px-6 py-4 space-y-4">{children}</div>
+    </div>
+  )
+}
+
+function SectionHeader({ title }) {
+  return (
+    <div className="-mx-6 px-6 py-2 bg-gray-50 border-y border-gray-100 mb-3">
+      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">{title}</p>
+    </div>
+  )
+}
+
+function FormRow({ label, children }) {
+  return (
+    <div className="flex items-start gap-4">
+      {label && (
+        <label className="text-sm text-gray-600 font-medium w-36 shrink-0 pt-2">{label}</label>
+      )}
+      <div className="flex-1 min-w-0">{children}</div>
+    </div>
+  )
+}
+
+function Toggle({ value, onChange, label }) {
+  return (
+    <label className="flex items-center gap-3 cursor-pointer select-none">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={value}
+        onClick={() => onChange(!value)}
+        className={`relative w-9 h-5 rounded-full transition-colors focus:outline-none ${
+          value ? 'bg-blue-600' : 'bg-gray-300'
+        }`}
+      >
+        <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+          value ? 'translate-x-4' : 'translate-x-0'
+        }`} />
+      </button>
+      <span className="text-sm text-gray-700">{label}</span>
+    </label>
+  )
+}
+
+function InfoRow({ label, value, mono, valueClass }) {
   return (
     <div className="flex justify-between items-baseline gap-4 py-0.5">
       <dt className="text-gray-500 text-sm shrink-0">{label}</dt>
@@ -613,7 +770,11 @@ function Row({ label, value, mono, valueClass }) {
   )
 }
 
-const inp = 'w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500'
+function ErrorBanner({ msg }) {
+  return (
+    <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">{msg}</div>
+  )
+}
 
 function SpinIcon({ className }) {
   return (
@@ -631,3 +792,6 @@ function DownloadIcon({ className }) {
     </svg>
   )
 }
+
+const inp   = 'w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500'
+const inpSm = 'w-full border border-gray-300 rounded px-2 py-1.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500'

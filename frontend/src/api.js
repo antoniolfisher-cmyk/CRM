@@ -247,6 +247,10 @@ export const api = {
   },
   deleteUngateInvoice: (id) => req('DELETE', `/ungate/requests/${id}/invoice`),
 
+  // Ship-from address
+  getShipFrom: () => req('GET', '/amazon/ship-from'),
+  saveShipFrom: (data) => req('PUT', '/amazon/ship-from', data),
+
   // FBA Inbound Shipments
   fbaLookup: (asin) => req('POST', '/fba/lookup', { asin }),
   fbaFees: (asin, price) => req('POST', '/fba/fees', { asin, price }),
