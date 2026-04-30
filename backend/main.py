@@ -885,13 +885,25 @@ def _run_alembic_migrations():
         from sqlalchemy import create_engine as _ce, text as _text
         _eng = _ce(db_url)
         with _eng.begin() as _conn:
+            # users — auth-critical columns
             _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_count INTEGER DEFAULT 0"))
             _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ"))
             _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ"))
+            _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_email BOOLEAN DEFAULT true"))
+            _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT false"))
             _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS dashboard_sections TEXT"))
             _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS page_permissions TEXT"))
+            # tenants — auth + subscription-critical columns
             _conn.execute(_text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ"))
             _conn.execute(_text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS is_beta BOOLEAN DEFAULT false"))
+            _conn.execute(_text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_price_id TEXT"))
+            _conn.execute(_text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_status TEXT"))
+            _conn.execute(_text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS trial_ends_at TIMESTAMPTZ"))
+            _conn.execute(_text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT"))
+            _conn.execute(_text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT"))
+            # accounts — pipeline columns used on every list view
+            _conn.execute(_text("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS pipeline_stage VARCHAR DEFAULT 'new'"))
+            _conn.execute(_text("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS pipeline_updated_at TIMESTAMPTZ"))
         _eng.dispose()
         log.info("Emergency column safety-net applied")
     except Exception as _e:
