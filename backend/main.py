@@ -832,10 +832,11 @@ def _audit(db, action: str, *, request: Request = None, current: dict = None,
 
 def _ensure_products_table():
     """Create the products table if it doesn't exist — no FK constraints, always safe."""
-    if database.is_sqlite:
+    from database import engine as _engine, is_sqlite as _is_sqlite
+    if _is_sqlite:
         return
     try:
-        with database.engine.begin() as _c:
+        with _engine.begin() as _c:
             _c.execute(text("""
                 CREATE TABLE IF NOT EXISTS products (
                     id SERIAL PRIMARY KEY, tenant_id INTEGER, created_by VARCHAR,
@@ -4269,7 +4270,7 @@ def fix_products_table(current: dict = Depends(require_superadmin)):
     """Manually create products table if missing — superadmin only."""
     _ensure_products_table()
     try:
-        with database.engine.connect() as _c:
+        with engine.connect() as _c:
             result = _c.execute(text("SELECT COUNT(*) FROM products"))
             count = result.scalar()
         return {"status": "ok", "products_count": count}
