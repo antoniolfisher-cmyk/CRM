@@ -57,6 +57,77 @@ def run_migrations():
         except Exception as e:
             log.warning("Column safety-net skipped: %s", e)
 
+    # Table safety net: create products table directly if it still doesn't exist
+    if not is_sqlite:
+        try:
+            from sqlalchemy import create_engine as _ce, text
+            _eng = _ce(db_url)
+            with _eng.begin() as conn:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS products (
+                        id                      SERIAL PRIMARY KEY,
+                        tenant_id               INTEGER,
+                        created_by              VARCHAR,
+                        asin                    VARCHAR,
+                        product_name            VARCHAR,
+                        amazon_url              VARCHAR,
+                        purchase_link           VARCHAR,
+                        date_found              TIMESTAMPTZ,
+                        va_finder               VARCHAR,
+                        date_purchased          TIMESTAMPTZ,
+                        order_number            VARCHAR,
+                        quantity                FLOAT DEFAULT 0,
+                        buy_cost                FLOAT DEFAULT 0,
+                        money_spent             FLOAT DEFAULT 0,
+                        arrived_at_prep         TIMESTAMPTZ,
+                        date_sent_to_amazon     TIMESTAMPTZ,
+                        amazon_tracking_number  VARCHAR,
+                        ungated                 BOOLEAN DEFAULT FALSE,
+                        ungating_quantity       FLOAT DEFAULT 0,
+                        total_bought            FLOAT DEFAULT 0,
+                        replenish               BOOLEAN DEFAULT FALSE,
+                        amazon_fee              FLOAT DEFAULT 0,
+                        total_cost              FLOAT DEFAULT 0,
+                        buy_box                 FLOAT DEFAULT 0,
+                        profit                  FLOAT DEFAULT 0,
+                        profit_margin           FLOAT DEFAULT 0,
+                        roi                     FLOAT DEFAULT 0,
+                        estimated_sales         FLOAT DEFAULT 0,
+                        num_sellers             INTEGER DEFAULT 0,
+                        notes                   TEXT,
+                        created_at              TIMESTAMPTZ DEFAULT NOW(),
+                        updated_at              TIMESTAMPTZ,
+                        keepa_bsr               INTEGER,
+                        keepa_category          VARCHAR,
+                        keepa_last_synced       TIMESTAMPTZ,
+                        price_90_high           FLOAT,
+                        price_90_low            FLOAT,
+                        price_90_median         FLOAT,
+                        fba_low                 FLOAT,
+                        fba_high                FLOAT,
+                        fba_median              FLOAT,
+                        fbm_low                 FLOAT,
+                        fbm_high                FLOAT,
+                        fbm_median              FLOAT,
+                        status                  VARCHAR DEFAULT 'sourcing',
+                        seller_sku              VARCHAR,
+                        aria_suggested_price    FLOAT,
+                        aria_suggested_at       TIMESTAMPTZ,
+                        aria_reasoning          TEXT,
+                        aria_last_buy_box       FLOAT,
+                        aria_strategy_id        INTEGER,
+                        aria_live_price         FLOAT,
+                        aria_live_pushed_at     TIMESTAMPTZ,
+                        buy_box_winner          BOOLEAN,
+                        buy_box_checked_at      TIMESTAMPTZ,
+                        fulfillment_channel     VARCHAR
+                    )
+                """))
+            _eng.dispose()
+            log.info("Products table safety-net applied")
+        except Exception as e:
+            log.warning("Products table safety-net failed: %s", e)
+
 
 def seed():
     try:

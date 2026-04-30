@@ -830,6 +830,45 @@ def _audit(db, action: str, *, request: Request = None, current: dict = None,
         log.warning("Audit log write failed: %s", _e)
 
 
+def _ensure_products_table():
+    """Create the products table if it doesn't exist — no FK constraints, always safe."""
+    if database.is_sqlite:
+        return
+    try:
+        with database.engine.begin() as _c:
+            _c.execute(text("""
+                CREATE TABLE IF NOT EXISTS products (
+                    id SERIAL PRIMARY KEY, tenant_id INTEGER, created_by VARCHAR,
+                    asin VARCHAR, product_name VARCHAR, amazon_url VARCHAR,
+                    purchase_link VARCHAR, date_found TIMESTAMPTZ, va_finder VARCHAR,
+                    date_purchased TIMESTAMPTZ, order_number VARCHAR,
+                    quantity FLOAT DEFAULT 0, buy_cost FLOAT DEFAULT 0,
+                    money_spent FLOAT DEFAULT 0, arrived_at_prep TIMESTAMPTZ,
+                    date_sent_to_amazon TIMESTAMPTZ, amazon_tracking_number VARCHAR,
+                    ungated BOOLEAN DEFAULT FALSE, ungating_quantity FLOAT DEFAULT 0,
+                    total_bought FLOAT DEFAULT 0, replenish BOOLEAN DEFAULT FALSE,
+                    amazon_fee FLOAT DEFAULT 0, total_cost FLOAT DEFAULT 0,
+                    buy_box FLOAT DEFAULT 0, profit FLOAT DEFAULT 0,
+                    profit_margin FLOAT DEFAULT 0, roi FLOAT DEFAULT 0,
+                    estimated_sales FLOAT DEFAULT 0, num_sellers INTEGER DEFAULT 0,
+                    notes TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ,
+                    keepa_bsr INTEGER, keepa_category VARCHAR, keepa_last_synced TIMESTAMPTZ,
+                    price_90_high FLOAT, price_90_low FLOAT, price_90_median FLOAT,
+                    fba_low FLOAT, fba_high FLOAT, fba_median FLOAT,
+                    fbm_low FLOAT, fbm_high FLOAT, fbm_median FLOAT,
+                    status VARCHAR DEFAULT 'sourcing', seller_sku VARCHAR,
+                    aria_suggested_price FLOAT, aria_suggested_at TIMESTAMPTZ,
+                    aria_reasoning TEXT, aria_last_buy_box FLOAT, aria_strategy_id INTEGER,
+                    aria_live_price FLOAT, aria_live_pushed_at TIMESTAMPTZ,
+                    buy_box_winner BOOLEAN, buy_box_checked_at TIMESTAMPTZ,
+                    fulfillment_channel VARCHAR
+                )
+            """))
+        log.info("products table ensured")
+    except Exception as _e:
+        log.warning("products table ensure failed: %s", _e)
+
+
 @app.on_event("startup")
 def startup():
     _check_production_config()
@@ -837,6 +876,8 @@ def startup():
     # Fall back to running them if somehow prestart was not executed (local dev).
     if not os.getenv("PRESTART_DONE"):
         _run_alembic_migrations()
+    # Always ensure products table exists regardless of migration outcome
+    _ensure_products_table()
     if os.getenv("DISABLE_SCHEDULER", "").lower() in ("1", "true", "yes"):
         log.info("Scheduler disabled (DISABLE_SCHEDULER=true) — web-only mode")
     else:
@@ -4221,6 +4262,19 @@ def approve_all_sourcing(db: Session = Depends(get_db), current: dict = Depends(
     updated = q.update({"status": "approved"}, synchronize_session=False)
     db.commit()
     return {"approved": updated}
+
+
+@app.post("/api/admin/fix-products-table")
+def fix_products_table(current: dict = Depends(require_superadmin)):
+    """Manually create products table if missing — superadmin only."""
+    _ensure_products_table()
+    try:
+        with database.engine.connect() as _c:
+            result = _c.execute(text("SELECT COUNT(*) FROM products"))
+            count = result.scalar()
+        return {"status": "ok", "products_count": count}
+    except Exception as _e:
+        raise HTTPException(status_code=500, detail=f"Still failing: {_e}")
 
 
 @app.post("/api/admin/purge-system-products")
