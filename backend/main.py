@@ -891,6 +891,7 @@ def _run_alembic_migrations():
             _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS dashboard_sections TEXT"))
             _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS page_permissions TEXT"))
             _conn.execute(_text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ"))
+            _conn.execute(_text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS is_beta BOOLEAN DEFAULT false"))
         _eng.dispose()
         log.info("Emergency column safety-net applied")
     except Exception as _e:
