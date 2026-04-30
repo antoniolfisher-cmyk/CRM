@@ -13,7 +13,7 @@ const nav = [
   { to: '/timeclock',  label: 'Time Clock',       icon: ClockIcon,     permKey: 'timeclock' },
   { to: '/upc-scanner',label: 'UPC Scanner',      icon: BarcodeIcon,   permKey: 'upc_scanner' },
   { to: '/ungate',          label: 'Ungate Requests',  icon: UnlockIcon,    permKey: 'ungate' },
-  { to: '/ship-to-amazon',  label: 'Ship to Amazon',   icon: ShipIcon,      permKey: 'ship_to_amazon' },
+  { to: '/ship-to-amazon',  label: 'FBA Inbound',      icon: ShipIcon,      permKey: 'ship_to_amazon' },
   { to: '/support',         label: 'Support',          icon: SupportIcon,   permKey: 'support' },
 ]
 

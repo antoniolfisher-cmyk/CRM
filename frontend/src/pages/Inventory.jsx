@@ -519,9 +519,11 @@ export default function Inventory() {
   const [fbmUploadResult, setFbmUploadResult] = useState(null)
   const [strategyMap, setStrategyMap] = useState({})
   const [selectedProduct, setSelectedProduct] = useState(null)
+  const [loadError, setLoadError] = useState('')
 
   const load = useCallback(() => {
     setLoading(true)
+    setLoadError('')
     const params = { status: 'approved' }
     if (search) params.search = search
     api.getProducts(params).then(prods => {
@@ -529,6 +531,8 @@ export default function Inventory() {
       const m = {}
       prods.forEach(p => { m[p.id] = p.aria_strategy_id ?? '' })
       setStrategyMap(m)
+    }).catch(e => {
+      setLoadError(e.message || 'Failed to load inventory')
     }).finally(() => setLoading(false))
   }, [search])
 
@@ -665,6 +669,12 @@ export default function Inventory() {
         <h1 className="text-2xl font-bold text-gray-900">Current Inventory</h1>
         <p className="text-gray-500 text-sm mt-1">All approved products — auto-synced from Amazon FBA hourly</p>
       </div>
+
+      {loadError && (
+        <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700">
+          <strong>Failed to load inventory:</strong> {loadError} — try refreshing or contact support.
+        </div>
+      )}
 
       <AmazonSyncCard status={amazonSyncStatus} onSync={handleAmazonSync} syncing={amazonSyncing} onPurge={handleAmazonPurge} purging={amazonPurging} isAdmin={isAdmin} onFbmUpload={handleFbmUpload} fbmUploading={fbmUploading} fbmUploadResult={fbmUploadResult} />
       <KeepaStatusCard status={keepaStatus} onBulkSync={handleBulkSync} bulkLoading={bulkLoading} bulkResult={bulkResult} isAdmin={isAdmin} />

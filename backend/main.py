@@ -154,24 +154,42 @@ try:
                     pass
     except Exception:
         pass
-    # Keepa + Aria columns on products — each in its own connection so one failure
-    # doesn't block the rest (PostgreSQL DDL is transactional).
+    # Products table — ALL columns that might be missing on older DBs.
+    # Each ALTER runs in its own connection so one failure never blocks the rest.
     try:
         _cols = [c["name"] for c in _inspector.get_columns("products")]
         for _col, _ddl in [
-            ("keepa_bsr",           "INTEGER"),
-            ("keepa_category",      "VARCHAR"),
-            ("keepa_last_synced",   "TIMESTAMP WITH TIME ZONE"),
-            ("aria_suggested_price","DOUBLE PRECISION"),
-            ("aria_suggested_at",   "TIMESTAMP WITH TIME ZONE"),
-            ("aria_reasoning",      "TEXT"),
-            ("aria_last_buy_box",   "DOUBLE PRECISION"),
-            ("aria_strategy_id",    "INTEGER"),
+            # Keepa
+            ("keepa_bsr",            "INTEGER"),
+            ("keepa_category",       "VARCHAR"),
+            ("keepa_last_synced",    "TIMESTAMP WITH TIME ZONE"),
+            ("price_90_high",        "DOUBLE PRECISION"),
+            ("price_90_low",         "DOUBLE PRECISION"),
+            ("price_90_median",      "DOUBLE PRECISION"),
+            ("fba_low",              "DOUBLE PRECISION"),
+            ("fba_high",             "DOUBLE PRECISION"),
+            ("fba_median",           "DOUBLE PRECISION"),
+            ("fbm_low",              "DOUBLE PRECISION"),
+            ("fbm_high",             "DOUBLE PRECISION"),
+            ("fbm_median",           "DOUBLE PRECISION"),
+            # Aria repricer
+            ("seller_sku",           "VARCHAR"),
+            ("aria_suggested_price", "DOUBLE PRECISION"),
+            ("aria_suggested_at",    "TIMESTAMP WITH TIME ZONE"),
+            ("aria_reasoning",       "TEXT"),
+            ("aria_last_buy_box",    "DOUBLE PRECISION"),
+            ("aria_strategy_id",     "INTEGER"),
+            ("aria_live_price",      "DOUBLE PRECISION"),
+            ("aria_live_pushed_at",  "TIMESTAMP WITH TIME ZONE"),
+            # Buy Box & fulfillment
+            ("buy_box_winner",       "BOOLEAN"),
+            ("buy_box_checked_at",   "TIMESTAMP WITH TIME ZONE"),
+            ("fulfillment_channel",  "VARCHAR"),
         ]:
             if _col not in _cols:
                 try:
                     with engine.connect() as _conn:
-                        _conn.execute(text(f"ALTER TABLE products ADD COLUMN {_col} {_ddl}"))
+                        _conn.execute(text(f"ALTER TABLE products ADD COLUMN IF NOT EXISTS {_col} {_ddl}"))
                         _conn.commit()
                 except Exception as _ce:
                     print(f"[migration] products.{_col}: {_ce}", flush=True)
@@ -179,7 +197,7 @@ try:
         if "status" not in _cols:
             try:
                 with engine.connect() as _conn:
-                    _conn.execute(text("ALTER TABLE products ADD COLUMN status TEXT DEFAULT 'sourcing'"))
+                    _conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'sourcing'"))
                     _conn.execute(text("UPDATE products SET status = 'approved' WHERE status IS NULL"))
                     _conn.commit()
             except Exception:
@@ -187,7 +205,13 @@ try:
         else:
             try:
                 with engine.connect() as _conn:
+                    # Fix NULL statuses
                     _conn.execute(text("UPDATE products SET status = 'approved' WHERE status IS NULL"))
+                    # FBA/FBM products from Amazon sync are always approved
+                    _conn.execute(text(
+                        "UPDATE products SET status = 'approved' "
+                        "WHERE fulfillment_channel IN ('FBA', 'FBM') AND status != 'approved'"
+                    ))
                     _conn.commit()
             except Exception:
                 pass
