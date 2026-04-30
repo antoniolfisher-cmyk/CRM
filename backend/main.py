@@ -119,10 +119,56 @@ def _send_email_bg(to: str, subject: str, html: str, **kwargs):
             log.warning("Background email failed to=%s subject=%r: %s", to, subject, _e)
     _email_pool.submit(_run)
 
+# Create tables one-by-one so a single failure doesn't block the rest
+for _tbl in models.Base.metadata.sorted_tables:
+    try:
+        _tbl.create(bind=engine, checkfirst=True)
+    except Exception as _tbl_err:
+        print(f"[startup] create table {_tbl.name} failed: {_tbl_err}", flush=True)
+
+# Hard fallback: ensure products table always exists with minimum viable schema
 try:
-    models.Base.metadata.create_all(bind=engine)
-except Exception as _create_all_err:
-    print(f"[startup] create_all warning: {_create_all_err}", flush=True)
+    with engine.connect() as _conn:
+        _conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS products (
+                id SERIAL PRIMARY KEY,
+                tenant_id INTEGER REFERENCES tenants(id),
+                created_by VARCHAR,
+                asin VARCHAR,
+                product_name VARCHAR,
+                amazon_url VARCHAR,
+                purchase_link VARCHAR,
+                date_found TIMESTAMPTZ,
+                va_finder VARCHAR,
+                date_purchased TIMESTAMPTZ,
+                order_number VARCHAR,
+                quantity FLOAT DEFAULT 0,
+                buy_cost FLOAT DEFAULT 0,
+                money_spent FLOAT DEFAULT 0,
+                arrived_at_prep TIMESTAMPTZ,
+                date_sent_to_amazon TIMESTAMPTZ,
+                amazon_tracking_number VARCHAR,
+                ungated BOOLEAN DEFAULT FALSE,
+                ungating_quantity FLOAT DEFAULT 0,
+                total_bought FLOAT DEFAULT 0,
+                replenish BOOLEAN DEFAULT FALSE,
+                amazon_fee FLOAT DEFAULT 0,
+                total_cost FLOAT DEFAULT 0,
+                buy_box FLOAT DEFAULT 0,
+                profit FLOAT DEFAULT 0,
+                profit_margin FLOAT DEFAULT 0,
+                roi FLOAT DEFAULT 0,
+                estimated_sales FLOAT DEFAULT 0,
+                num_sellers INTEGER DEFAULT 0,
+                notes TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ
+            )
+        """))
+        _conn.commit()
+        print("[startup] products table ensured", flush=True)
+except Exception as _pt_err:
+    print(f"[startup] products table fallback: {_pt_err}", flush=True)
 
 # ─── Migrations: add new columns to existing tables ───────────────────────────
 try:
