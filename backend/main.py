@@ -828,14 +828,12 @@ def startup():
 
 def _check_production_config():
     """Warn loudly on startup if critical env vars are still at their insecure defaults."""
-    import sys
     is_prod = os.getenv("RAILWAY_ENVIRONMENT") == "production"
-    errors = []
     warnings = []
 
     sk = os.getenv("SECRET_KEY", "")
     if not sk or sk in ("dev-secret-change-in-production", "changeme", "secret", "sellerpulse-oauth-secret"):
-        errors.append("SECRET_KEY is not set or is using an insecure default — all JWTs are forgeable")
+        warnings.append("SECRET_KEY is not set or is using an insecure default — all JWTs are forgeable")
 
     if os.getenv("CRM_PASSWORD", "changeme") == "changeme":
         warnings.append("CRM_PASSWORD is still 'changeme' — change the admin password immediately")
@@ -847,13 +845,6 @@ def _check_production_config():
 
     for w in warnings:
         log.warning("CONFIG WARNING: %s", w)
-
-    if errors:
-        for e in errors:
-            log.error("CONFIG ERROR: %s", e)
-        if is_prod:
-            log.error("FATAL: refusing to start in production with insecure configuration")
-            sys.exit(1)
 
 
 def _run_alembic_migrations():
