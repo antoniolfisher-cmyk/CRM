@@ -50,6 +50,7 @@ else:
         task_soft_time_limit=300,      # 5 min soft limit
         task_time_limit=600,           # 10 min hard limit
         result_expires=3600,
+        broker_connection_retry_on_startup=True,
         beat_schedule={
             "daily-digest": {
                 "task": "tasks.run_daily_digests",
@@ -70,6 +71,10 @@ else:
             "trial-reminders": {
                 "task": "tasks.run_trial_reminders",
                 "schedule": crontab(hour=9, minute=0),
+            },
+            "keepa-refresh": {
+                "task": "tasks.run_keepa_refresh",
+                "schedule": crontab(minute=30, hour="*/6"),  # every 6 hours at :30
             },
         },
     )

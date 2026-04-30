@@ -90,3 +90,14 @@ def sync_tenant_amazon(self, tenant_id: int):
     except Exception as e:
         log.error("[celery] amazon sync failed for tenant %d: %s", tenant_id, e)
         raise
+
+
+@celery.task(name="tasks.run_keepa_refresh", bind=True, **_RETRY_KWARGS)
+def run_keepa_refresh(self):
+    try:
+        from keepa_scheduler import scheduled_keepa_refresh
+        log.info("[celery] running Keepa bulk refresh")
+        scheduled_keepa_refresh()
+    except Exception as e:
+        log.error("[celery] Keepa refresh failed: %s", e)
+        raise
