@@ -810,7 +810,7 @@ function FBAListingsForm() {
   const [error, setError]       = useState('')
 
   useEffect(() => {
-    api.getProducts({ limit: 500 })
+    api.getProducts({ limit: 500, status: 'approved' })
       .then(data => setInventory(Array.isArray(data) ? data : (data?.items || [])))
       .catch(e => setError(e.message))
       .finally(() => setLoadingInv(false))
@@ -819,9 +819,9 @@ function FBAListingsForm() {
   const filtered = inventory.filter(p => {
     if (!search.trim()) return true
     const q = search.toLowerCase()
-    return (p.title || '').toLowerCase().includes(q) ||
+    return (p.product_name || '').toLowerCase().includes(q) ||
            (p.asin  || '').toLowerCase().includes(q) ||
-           (p.brand || '').toLowerCase().includes(q)
+           (p.va_finder || '').toLowerCase().includes(q)
   })
 
   const isSelected = (asin) => selected.some(s => s.product.asin === asin)
@@ -1004,7 +1004,7 @@ function FBAListingsForm() {
                       <div className="w-10 h-10 bg-gray-100 rounded shrink-0" />
                     )}
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-900 truncate">{p.title || p.asin}</p>
+                      <p className="text-sm font-medium text-gray-900 truncate">{p.product_name || p.asin}</p>
                       <p className="text-xs text-gray-400 font-mono mt-0.5">{p.asin}
                         {p.seller_sku && <span className="ml-2 text-gray-400">· SKU: {p.seller_sku}</span>}
                       </p>
@@ -1036,7 +1036,7 @@ function FBAListingsForm() {
                   <div className="w-12 h-12 bg-gray-100 rounded shrink-0" />
                 )}
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-gray-900 line-clamp-1">{s.product.title}</p>
+                  <p className="text-sm font-medium text-gray-900 line-clamp-1">{s.product.product_name || s.product.asin}</p>
                   <p className="text-xs text-gray-400 font-mono">{s.product.asin}</p>
                   <div className="mt-2 flex gap-3 flex-wrap">
                     <div>
