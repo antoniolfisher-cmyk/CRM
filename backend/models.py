@@ -524,3 +524,48 @@ class WaitlistEntry(Base):
     source       = Column(String, nullable=True)   # utm_source or referral
     notes        = Column(Text, nullable=True)
     created_at   = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+# ─── FBA Inbound Shipments ────────────────────────────────────────────────────
+
+class FBAShipment(Base):
+    __tablename__ = "fba_shipments"
+
+    id                   = Column(Integer, primary_key=True, index=True)
+    tenant_id            = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    user_id              = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    # Product info
+    asin                 = Column(String, nullable=False)
+    seller_sku           = Column(String, nullable=True)
+    title                = Column(String, nullable=True)
+    quantity             = Column(Integer, nullable=False, default=1)
+
+    # Shipment plan
+    shipment_name        = Column(String, nullable=True)
+    amazon_shipment_id   = Column(String, nullable=True, index=True)
+    destination_fc       = Column(String, nullable=True)
+    ship_to_address      = Column(Text, nullable=True)   # JSON
+
+    # Transport
+    transport_status     = Column(String, nullable=True)  # WORKING|ESTIMATING|ESTIMATED|CONFIRMING|CONFIRMED|VOIDED|ERROR
+    estimated_cost       = Column(Float, nullable=True)
+    transport_currency   = Column(String, nullable=True)
+
+    # Amazon fees
+    referral_fee         = Column(Float, nullable=True)
+    fba_fee              = Column(Float, nullable=True)
+
+    # Optimized shipping
+    optimized_eligible   = Column(Boolean, nullable=True)
+
+    # Status lifecycle
+    status               = Column(String, default="planning")  # planning|submitted|transport_pending|transport_confirmed|labeled|voided
+    label_url            = Column(Text, nullable=True)
+
+    # Addresses + packages stored as JSON
+    from_address         = Column(Text, nullable=True)
+    packages_json        = Column(Text, nullable=True)
+
+    created_at           = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at           = Column(DateTime(timezone=True), onupdate=func.now())

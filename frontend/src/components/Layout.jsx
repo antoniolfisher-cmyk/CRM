@@ -12,8 +12,9 @@ const nav = [
   { to: '/inventory',  label: 'Current Inventory',icon: InventoryIcon, permKey: 'inventory' },
   { to: '/timeclock',  label: 'Time Clock',       icon: ClockIcon,     permKey: 'timeclock' },
   { to: '/upc-scanner',label: 'UPC Scanner',      icon: BarcodeIcon,   permKey: 'upc_scanner' },
-  { to: '/ungate',     label: 'Ungate Requests',  icon: UnlockIcon,    permKey: 'ungate' },
-  { to: '/support',    label: 'Support',          icon: SupportIcon,   permKey: 'support' },
+  { to: '/ungate',          label: 'Ungate Requests',  icon: UnlockIcon,    permKey: 'ungate' },
+  { to: '/ship-to-amazon',  label: 'Ship to Amazon',   icon: ShipIcon,      permKey: 'ship_to_amazon' },
+  { to: '/support',         label: 'Support',          icon: SupportIcon,   permKey: 'support' },
 ]
 
 export default function Layout({ children }) {
@@ -332,6 +333,15 @@ function AuditIcon({ className }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+    </svg>
+  )
+}
+function ShipIcon({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M20 7H4a2 2 0 00-2 2v6a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 12v.01" />
     </svg>
   )
 }

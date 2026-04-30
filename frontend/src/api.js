@@ -247,6 +247,22 @@ export const api = {
   },
   deleteUngateInvoice: (id) => req('DELETE', `/ungate/requests/${id}/invoice`),
 
+  // FBA Inbound Shipments
+  fbaLookup: (asin) => req('POST', '/fba/lookup', { asin }),
+  fbaFees: (asin, price) => req('POST', '/fba/fees', { asin, price }),
+  fbaPlan: (items, from_address, label_prep = 'SELLER_LABEL') =>
+    req('POST', '/fba/plan', { items, from_address, label_prep }),
+  fbaCreateShipment: (data) => req('POST', '/fba/shipments', data),
+  fbaListShipments: () => req('GET', '/fba/shipments'),
+  fbaGetShipment: (id) => req('GET', `/fba/shipments/${id}`),
+  fbaSetTransport: (id, packages, is_partnered = true) =>
+    req('POST', `/fba/shipments/${id}/transport`, { packages, is_partnered }),
+  fbaGetTransport: (id) => req('GET', `/fba/shipments/${id}/transport`),
+  fbaConfirmTransport: (id) => req('POST', `/fba/shipments/${id}/transport/confirm`, {}),
+  fbaVoidTransport: (id) => req('POST', `/fba/shipments/${id}/transport/void`, {}),
+  fbaGetLabels: (id, label_type = 'UNIQUE', page_type = 'PackageLabel_Letter_2') =>
+    req('GET', `/fba/shipments/${id}/labels?label_type=${label_type}&page_type=${page_type}`),
+
   // Orders
   getOrders: (params = {}) => {
     const merged = { limit: 500, ...params }

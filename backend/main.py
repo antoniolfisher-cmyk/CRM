@@ -7228,6 +7228,312 @@ def timeclock_export(
     )
 
 
+# ─── FBA Inbound Shipments ────────────────────────────────────────────────────
+
+@app.post("/api/fba/lookup")
+async def fba_lookup(body: dict = Body(...), current: dict = Depends(require_auth)):
+    """Catalog Items API: title, dims, weight, BSR for an ASIN."""
+    import fba_shipping
+    asin = (body.get("asin") or "").strip().upper()
+    if not asin:
+        raise HTTPException(400, "asin required")
+    try:
+        return await fba_shipping.lookup_asin(asin, tenant_id=current["tenant_id"])
+    except Exception as e:
+        raise HTTPException(502, str(e))
+
+
+@app.post("/api/fba/fees")
+async def fba_fees(body: dict = Body(...), current: dict = Depends(require_auth)):
+    """Product Fees API: referral + FBA fulfillment fee estimate."""
+    import fba_shipping
+    asin  = (body.get("asin") or "").strip().upper()
+    price = float(body.get("price") or 0)
+    if not asin or price <= 0:
+        raise HTTPException(400, "asin and price required")
+    try:
+        return await fba_shipping.estimate_fees(asin, price, tenant_id=current["tenant_id"])
+    except Exception as e:
+        raise HTTPException(502, str(e))
+
+
+@app.post("/api/fba/plan")
+async def fba_plan(body: dict = Body(...), current: dict = Depends(require_auth)):
+    """FBA Inbound v0: create shipment plan — returns FC assignment."""
+    import fba_shipping
+    items        = body.get("items") or []
+    from_address = body.get("from_address") or {}
+    label_prep   = body.get("label_prep", "SELLER_LABEL")
+    if not items or not from_address:
+        raise HTTPException(400, "items and from_address required")
+    try:
+        return await fba_shipping.create_plan(items, from_address,
+                                              tenant_id=current["tenant_id"],
+                                              label_prep=label_prep)
+    except Exception as e:
+        raise HTTPException(502, str(e))
+
+
+@app.post("/api/fba/shipments")
+async def fba_create_shipment(body: dict = Body(...), current: dict = Depends(require_auth),
+                               db: Session = Depends(get_db)):
+    """Create FBA shipment record in Amazon + persist to DB."""
+    import fba_shipping, json as _json
+    plan          = body.get("plan") or {}
+    shipment_name = body.get("shipment_name", "")
+    from_address  = body.get("from_address") or {}
+    items         = body.get("items") or []
+    asin          = (body.get("asin") or "").strip().upper()
+    seller_sku    = body.get("seller_sku", "")
+    title         = body.get("title", "")
+    quantity      = int(body.get("quantity") or 1)
+    referral_fee  = body.get("referral_fee")
+    fba_fee       = body.get("fba_fee")
+
+    if not plan or not from_address or not items:
+        raise HTTPException(400, "plan, from_address and items required")
+
+    try:
+        amazon_id = await fba_shipping.create_shipment(
+            plan, shipment_name, from_address, items,
+            tenant_id=current["tenant_id"]
+        )
+    except Exception as e:
+        raise HTTPException(502, str(e))
+
+    try:
+        optimized = await fba_shipping.check_optimized_eligible(
+            amazon_id, tenant_id=current["tenant_id"]
+        )
+    except Exception:
+        optimized = None
+
+    shipment = models.FBAShipment(
+        tenant_id          = current["tenant_id"],
+        user_id            = current.get("user_id"),
+        asin               = asin,
+        seller_sku         = seller_sku,
+        title              = title,
+        quantity           = quantity,
+        shipment_name      = shipment_name,
+        amazon_shipment_id = amazon_id,
+        destination_fc     = plan.get("destination_fc"),
+        ship_to_address    = _json.dumps(plan.get("ship_to_address") or {}),
+        referral_fee       = referral_fee,
+        fba_fee            = fba_fee,
+        optimized_eligible = optimized,
+        from_address       = _json.dumps(from_address),
+        status             = "submitted",
+    )
+    db.add(shipment)
+    db.commit()
+    db.refresh(shipment)
+
+    return {
+        "id":                  shipment.id,
+        "amazon_shipment_id":  amazon_id,
+        "destination_fc":      plan.get("destination_fc"),
+        "optimized_eligible":  optimized,
+        "status":              shipment.status,
+    }
+
+
+@app.get("/api/fba/shipments")
+async def fba_list_shipments(current: dict = Depends(require_auth),
+                              db: Session = Depends(get_db)):
+    """List all FBA shipments for this tenant."""
+    rows = (db.query(models.FBAShipment)
+            .filter(models.FBAShipment.tenant_id == current["tenant_id"])
+            .order_by(models.FBAShipment.created_at.desc())
+            .limit(200)
+            .all())
+    return [
+        {
+            "id":                  r.id,
+            "asin":                r.asin,
+            "seller_sku":          r.seller_sku,
+            "title":               r.title,
+            "quantity":            r.quantity,
+            "shipment_name":       r.shipment_name,
+            "amazon_shipment_id":  r.amazon_shipment_id,
+            "destination_fc":      r.destination_fc,
+            "transport_status":    r.transport_status,
+            "estimated_cost":      r.estimated_cost,
+            "status":              r.status,
+            "optimized_eligible":  r.optimized_eligible,
+            "created_at":          r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+
+
+@app.get("/api/fba/shipments/{shipment_id}")
+async def fba_get_shipment(shipment_id: int, current: dict = Depends(require_auth),
+                            db: Session = Depends(get_db)):
+    row = (db.query(models.FBAShipment)
+           .filter(models.FBAShipment.id == shipment_id,
+                   models.FBAShipment.tenant_id == current["tenant_id"])
+           .first())
+    if not row:
+        raise HTTPException(404, "Shipment not found")
+    import json as _json
+    return {
+        "id":                  row.id,
+        "asin":                row.asin,
+        "seller_sku":          row.seller_sku,
+        "title":               row.title,
+        "quantity":            row.quantity,
+        "shipment_name":       row.shipment_name,
+        "amazon_shipment_id":  row.amazon_shipment_id,
+        "destination_fc":      row.destination_fc,
+        "ship_to_address":     _json.loads(row.ship_to_address or "{}"),
+        "from_address":        _json.loads(row.from_address or "{}"),
+        "packages_json":       _json.loads(row.packages_json or "[]"),
+        "transport_status":    row.transport_status,
+        "estimated_cost":      row.estimated_cost,
+        "transport_currency":  row.transport_currency,
+        "referral_fee":        row.referral_fee,
+        "fba_fee":             row.fba_fee,
+        "optimized_eligible":  row.optimized_eligible,
+        "status":              row.status,
+        "label_url":           row.label_url,
+        "created_at":          row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+@app.post("/api/fba/shipments/{shipment_id}/transport")
+async def fba_set_transport(shipment_id: int, body: dict = Body(...),
+                             current: dict = Depends(require_auth),
+                             db: Session = Depends(get_db)):
+    """Submit box dims/weight to Amazon and poll for rate estimate."""
+    import fba_shipping, json as _json
+    row = (db.query(models.FBAShipment)
+           .filter(models.FBAShipment.id == shipment_id,
+                   models.FBAShipment.tenant_id == current["tenant_id"])
+           .first())
+    if not row:
+        raise HTTPException(404, "Shipment not found")
+    if not row.amazon_shipment_id:
+        raise HTTPException(400, "No Amazon shipment ID on record")
+
+    packages     = body.get("packages") or []
+    is_partnered = body.get("is_partnered", True)
+    if not packages:
+        raise HTTPException(400, "packages required")
+
+    try:
+        await fba_shipping.set_transport(row.amazon_shipment_id, packages,
+                                         tenant_id=current["tenant_id"],
+                                         is_partnered=is_partnered)
+        rate = await fba_shipping.get_transport(row.amazon_shipment_id,
+                                                tenant_id=current["tenant_id"])
+    except Exception as e:
+        raise HTTPException(502, str(e))
+
+    row.packages_json      = _json.dumps(packages)
+    row.transport_status   = rate.get("status")
+    row.estimated_cost     = rate.get("estimated_cost")
+    row.transport_currency = rate.get("currency")
+    row.status             = "transport_pending"
+    db.commit()
+
+    return rate
+
+
+@app.get("/api/fba/shipments/{shipment_id}/transport")
+async def fba_get_transport(shipment_id: int, current: dict = Depends(require_auth),
+                             db: Session = Depends(get_db)):
+    """Poll Amazon for current transport rate status."""
+    import fba_shipping
+    row = (db.query(models.FBAShipment)
+           .filter(models.FBAShipment.id == shipment_id,
+                   models.FBAShipment.tenant_id == current["tenant_id"])
+           .first())
+    if not row:
+        raise HTTPException(404, "Shipment not found")
+    try:
+        rate = await fba_shipping.get_transport(row.amazon_shipment_id,
+                                                tenant_id=current["tenant_id"],
+                                                max_polls=1)
+    except Exception as e:
+        raise HTTPException(502, str(e))
+    row.transport_status   = rate.get("status")
+    row.estimated_cost     = rate.get("estimated_cost")
+    row.transport_currency = rate.get("currency")
+    db.commit()
+    return rate
+
+
+@app.post("/api/fba/shipments/{shipment_id}/transport/confirm")
+async def fba_confirm_transport(shipment_id: int, current: dict = Depends(require_auth),
+                                 db: Session = Depends(get_db)):
+    """Confirm (pay for) the partnered carrier rate."""
+    import fba_shipping
+    row = (db.query(models.FBAShipment)
+           .filter(models.FBAShipment.id == shipment_id,
+                   models.FBAShipment.tenant_id == current["tenant_id"])
+           .first())
+    if not row:
+        raise HTTPException(404, "Shipment not found")
+    try:
+        await fba_shipping.confirm_transport(row.amazon_shipment_id,
+                                             tenant_id=current["tenant_id"])
+    except Exception as e:
+        raise HTTPException(502, str(e))
+    row.transport_status = "CONFIRMED"
+    row.status           = "transport_confirmed"
+    db.commit()
+    return {"ok": True, "status": "CONFIRMED"}
+
+
+@app.post("/api/fba/shipments/{shipment_id}/transport/void")
+async def fba_void_transport(shipment_id: int, current: dict = Depends(require_auth),
+                              db: Session = Depends(get_db)):
+    """Void the partnered carrier rate (before it ships)."""
+    import fba_shipping
+    row = (db.query(models.FBAShipment)
+           .filter(models.FBAShipment.id == shipment_id,
+                   models.FBAShipment.tenant_id == current["tenant_id"])
+           .first())
+    if not row:
+        raise HTTPException(404, "Shipment not found")
+    try:
+        await fba_shipping.void_transport(row.amazon_shipment_id,
+                                          tenant_id=current["tenant_id"])
+    except Exception as e:
+        raise HTTPException(502, str(e))
+    row.transport_status = "VOIDED"
+    row.status           = "voided"
+    db.commit()
+    return {"ok": True, "status": "VOIDED"}
+
+
+@app.get("/api/fba/shipments/{shipment_id}/labels")
+async def fba_get_labels(shipment_id: int, current: dict = Depends(require_auth),
+                          db: Session = Depends(get_db),
+                          label_type: str = "UNIQUE",
+                          page_type: str = "PackageLabel_Letter_2"):
+    """Fetch box label download URL from Amazon."""
+    import fba_shipping
+    row = (db.query(models.FBAShipment)
+           .filter(models.FBAShipment.id == shipment_id,
+                   models.FBAShipment.tenant_id == current["tenant_id"])
+           .first())
+    if not row:
+        raise HTTPException(404, "Shipment not found")
+    try:
+        url = await fba_shipping.get_labels(row.amazon_shipment_id,
+                                            tenant_id=current["tenant_id"],
+                                            label_type=label_type,
+                                            page_type=page_type)
+    except Exception as e:
+        raise HTTPException(502, str(e))
+    row.label_url = url
+    row.status    = "labeled"
+    db.commit()
+    return {"label_url": url}
+
+
 @app.get("/api/health")
 def health(db: Session = Depends(get_db)):
     """Healthcheck — verifies process is alive and DB is reachable."""

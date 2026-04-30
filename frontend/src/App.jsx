@@ -25,6 +25,7 @@ import Ungate from './pages/Ungate'
 import Profile from './pages/Profile'
 import Wholesale from './pages/Wholesale'
 import AuditLog from './pages/AuditLog'
+import ShipToAmazon from './pages/ShipToAmazon'
 import Terms from './pages/Terms'
 import Privacy from './pages/Privacy'
 import Waitlist from './pages/Waitlist'
@@ -92,6 +93,7 @@ function PrivateRoute() {
         <Route path="/support"     element={guard('support',     <Support />)} />
         <Route path="/upc-scanner" element={guard('upc_scanner', <UpcScanner />)} />
         <Route path="/ungate"      element={guard('ungate',      <Ungate />)} />
+        <Route path="/ship-to-amazon" element={guard('ship_to_amazon', <ShipToAmazon />)} />
         <Route path="/billing"        element={<Billing />} />
         <Route path="/approvals"      element={isAdmin ? <Approvals />    : <Navigate to="/" replace />} />
         <Route path="/repricer"       element={isAdmin ? <Repricer />     : <Navigate to="/" replace />} />
