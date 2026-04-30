@@ -61,10 +61,10 @@ def run_migrations():
     if not is_sqlite:
         try:
             from sqlalchemy import create_engine as _ce, text
-            _eng = _ce(db_url)
+            _eng = _ce(db_url, connect_args={"options": "-csearch_path=public"})
             with _eng.begin() as conn:
                 conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS products (
+                    CREATE TABLE IF NOT EXISTS public.products (
                         id                      SERIAL PRIMARY KEY,
                         tenant_id               INTEGER,
                         created_by              VARCHAR,

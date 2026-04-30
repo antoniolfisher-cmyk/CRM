@@ -10,7 +10,7 @@ if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 is_sqlite = DATABASE_URL.startswith("sqlite")
-connect_args = {"check_same_thread": False} if is_sqlite else {}
+connect_args = {"check_same_thread": False} if is_sqlite else {"options": "-csearch_path=public"}
 
 _PG_POOL = dict(pool_size=10, max_overflow=20, pool_recycle=1800, pool_timeout=30, pool_pre_ping=True)
 

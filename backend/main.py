@@ -837,8 +837,9 @@ def _ensure_products_table():
         return
     try:
         with _engine.begin() as _c:
+            _c.execute(text("SET search_path = public"))
             _c.execute(text("""
-                CREATE TABLE IF NOT EXISTS products (
+                CREATE TABLE IF NOT EXISTS public.products (
                     id SERIAL PRIMARY KEY, tenant_id INTEGER, created_by VARCHAR,
                     asin VARCHAR, product_name VARCHAR, amazon_url VARCHAR,
                     purchase_link VARCHAR, date_found TIMESTAMPTZ, va_finder VARCHAR,
