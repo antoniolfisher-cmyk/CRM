@@ -266,6 +266,7 @@ export const api = {
   fbaVoidTransport: (id) => req('POST', `/fba/shipments/${id}/transport/void`, {}),
   fbaGetLabels: (id, label_type = 'UNIQUE', page_type = 'PackageLabel_Letter_2') =>
     req('GET', `/fba/shipments/${id}/labels?label_type=${label_type}&page_type=${page_type}`),
+  createFbaListings: (listings) => req('POST', '/amazon/fba-listings', { listings }),
 
   // Orders
   getOrders: (params = {}) => {

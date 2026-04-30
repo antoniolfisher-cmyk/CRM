@@ -7581,6 +7581,100 @@ async def fba_get_labels(shipment_id: int, current: dict = Depends(require_auth)
     return {"label_url": url}
 
 
+@app.post("/api/amazon/fba-listings")
+async def create_fba_listings(
+    body: dict,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_auth),
+):
+    """Create FBA offer-only listings on Amazon via Listings Items API."""
+    import httpx as _httpx
+
+    tenant_id = current.get("tenant_id")
+    cred = _get_tenant_amazon_creds(tenant_id, db)
+    if not cred or not cred.sp_refresh_token:
+        raise HTTPException(400, "Amazon account not connected")
+
+    seller_id = cred.seller_id or os.getenv("AMAZON_SELLER_ID", "")
+    if not seller_id:
+        raise HTTPException(400, "AMAZON_SELLER_ID not configured — add it in Amazon Settings")
+
+    marketplace_id = cred.marketplace_id or os.getenv("AMAZON_MARKETPLACE_ID", "ATVPDKIKX0DER")
+    access_token = await _get_tenant_access_token(cred)
+    sp_base = _sp_base(cred.is_sandbox)
+
+    condition_map = {
+        "NewItem":       "new_new",
+        "UsedLikeNew":   "used_like_new",
+        "UsedVeryGood":  "used_very_good",
+        "UsedGood":      "used_good",
+        "UsedAcceptable": "used_acceptable",
+    }
+
+    listings = body.get("listings", [])
+    if not listings:
+        raise HTTPException(400, "No listings provided")
+
+    results = []
+    async with _httpx.AsyncClient(timeout=30) as client:
+        for item in listings:
+            asin      = (item.get("asin") or "").strip().upper()
+            sku       = (item.get("sku") or "").strip()
+            price     = float(item.get("price") or 0)
+            condition = item.get("condition", "NewItem")
+
+            if not asin or not sku or not price:
+                results.append({"asin": asin, "sku": sku, "success": False,
+                                 "error": "Missing asin, sku, or price"})
+                continue
+
+            payload = {
+                "productType": "PRODUCT",
+                "requirements": "LISTING_OFFER_ONLY",
+                "attributes": {
+                    "condition_type": [{"value": condition_map.get(condition, "new_new"),
+                                        "marketplace_id": marketplace_id}],
+                    "merchant_suggested_asin": [{"value": asin, "marketplace_id": marketplace_id}],
+                    "fulfillment_availability": [{
+                        "fulfillment_channel_code": "AMAZON_NA",
+                        "marketplace_id": marketplace_id,
+                    }],
+                    "purchasable_offer": [{
+                        "currency": "USD",
+                        "marketplace_id": marketplace_id,
+                        "our_price": [{"schedule": [{"value_with_tax": price}]}],
+                    }],
+                },
+            }
+
+            try:
+                resp = await client.put(
+                    f"{sp_base}/listings/2021-08-01/items/{seller_id}/{sku}",
+                    params={"marketplaceIds": marketplace_id},
+                    json=payload,
+                    headers={"x-amz-access-token": access_token,
+                             "Content-Type": "application/json"},
+                )
+                if resp.status_code in (200, 201, 202):
+                    rd = resp.json()
+                    results.append({
+                        "asin": asin, "sku": sku, "success": True,
+                        "status": rd.get("status", "ACCEPTED"),
+                        "submission_id": rd.get("submissionId"),
+                    })
+                else:
+                    try:
+                        rd = resp.json()
+                        msg = (rd.get("errors") or [{}])[0].get("message", f"HTTP {resp.status_code}")
+                    except Exception:
+                        msg = resp.text[:200]
+                    results.append({"asin": asin, "sku": sku, "success": False, "error": msg})
+            except Exception as _e:
+                results.append({"asin": asin, "sku": sku, "success": False, "error": str(_e)})
+
+    return {"results": results, "submitted": len(listings), "succeeded": sum(1 for r in results if r["success"])}
+
+
 @app.get("/api/health")
 def health(db: Session = Depends(get_db)):
     """Healthcheck — verifies process is alive and DB is reachable."""

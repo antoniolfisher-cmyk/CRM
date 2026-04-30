@@ -42,7 +42,7 @@ const fmt$ = (v) => (v != null && v !== '') ? `$${Number(v).toFixed(2)}` : '—'
 
 // ─────────────────────────────────────────────────────────────────────────────
 export default function ShipToAmazon() {
-  const [mode, setMode] = useState('fba') // 'fba' | 'fbm'
+  const [mode, setMode] = useState('fba') // 'fba' | 'listings' | 'fbm'
 
   return (
     <div className="space-y-5">
@@ -58,8 +58,9 @@ export default function ShipToAmazon() {
       {/* Mode tabs */}
       <div className="flex border-b border-gray-200">
         {[
-          { key: 'fba', label: 'Create FBA Shipment' },
-          { key: 'fbm', label: 'Create FBM Listing' },
+          { key: 'fba',      label: 'Create FBA Shipment' },
+          { key: 'listings', label: 'Create FBA Listings' },
+          { key: 'fbm',      label: 'Create FBM Listing' },
         ].map(({ key, label }) => (
           <button
             key={key}
@@ -75,7 +76,9 @@ export default function ShipToAmazon() {
         ))}
       </div>
 
-      {mode === 'fba' ? <FBAShipmentForm /> : <FBMListingForm />}
+      {mode === 'fba'      && <FBAShipmentForm />}
+      {mode === 'listings' && <FBAListingsForm />}
+      {mode === 'fbm'      && <FBMListingForm />}
     </div>
   )
 }
@@ -790,6 +793,292 @@ function DownloadIcon({ className }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
     </svg>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FBA LISTINGS — search inventory, set price/condition, submit to Amazon
+// ─────────────────────────────────────────────────────────────────────────────
+function FBAListingsForm() {
+  const [step, setStep]         = useState(1) // 1=select, 2=review
+  const [inventory, setInventory] = useState([])
+  const [loadingInv, setLoadingInv] = useState(true)
+  const [search, setSearch]     = useState('')
+  const [selected, setSelected] = useState([]) // [{product, sku, price, condition}]
+  const [submitting, setSubmitting] = useState(false)
+  const [results, setResults]   = useState(null)
+  const [error, setError]       = useState('')
+
+  useEffect(() => {
+    api.getProducts({ limit: 500 })
+      .then(data => setInventory(Array.isArray(data) ? data : (data?.items || [])))
+      .catch(e => setError(e.message))
+      .finally(() => setLoadingInv(false))
+  }, [])
+
+  const filtered = inventory.filter(p => {
+    if (!search.trim()) return true
+    const q = search.toLowerCase()
+    return (p.title || '').toLowerCase().includes(q) ||
+           (p.asin  || '').toLowerCase().includes(q) ||
+           (p.brand || '').toLowerCase().includes(q)
+  })
+
+  const isSelected = (asin) => selected.some(s => s.product.asin === asin)
+
+  function toggleSelect(product) {
+    if (isSelected(product.asin)) {
+      setSelected(prev => prev.filter(s => s.product.asin !== product.asin))
+    } else {
+      setSelected(prev => [...prev, {
+        product,
+        sku:       product.seller_sku || `${product.asin}-FBA`,
+        price:     product.aria_live_price || product.aria_suggested_price || '',
+        condition: 'NewItem',
+      }])
+    }
+  }
+
+  function updateSelected(asin, field, val) {
+    setSelected(prev => prev.map(s => s.product.asin === asin ? { ...s, [field]: val } : s))
+  }
+
+  async function handleSubmit() {
+    const invalid = selected.filter(s => !s.price || !s.sku)
+    if (invalid.length) { setError('All listings need a price and SKU.'); return }
+    setError(''); setSubmitting(true)
+    try {
+      const res = await api.createFbaListings(
+        selected.map(s => ({
+          asin:      s.product.asin,
+          sku:       s.sku,
+          price:     parseFloat(s.price),
+          condition: s.condition,
+        }))
+      )
+      setResults(res.results)
+    } catch (e) { setError(e.message) }
+    finally { setSubmitting(false) }
+  }
+
+  // ── Results view ─────────────────────────────────────────────────────────
+  if (results) {
+    const ok  = results.filter(r => r.success)
+    const bad = results.filter(r => !r.success)
+    return (
+      <div className="max-w-2xl space-y-4">
+        <div className="card p-5">
+          <h2 className="text-base font-semibold text-gray-900 mb-1">Submission Complete</h2>
+          <p className="text-sm text-gray-500 mb-4">
+            {ok.length} listing{ok.length !== 1 ? 's' : ''} submitted successfully
+            {bad.length > 0 && `, ${bad.length} failed`}.
+          </p>
+          <div className="space-y-2">
+            {results.map(r => (
+              <div key={r.sku} className={`flex items-start gap-3 px-3 py-2 rounded-lg text-sm ${
+                r.success ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'
+              }`}>
+                <span className={`mt-0.5 font-bold ${r.success ? 'text-green-600' : 'text-red-500'}`}>
+                  {r.success ? '✓' : '✗'}
+                </span>
+                <div>
+                  <span className="font-mono text-xs text-gray-600">{r.asin}</span>
+                  <span className="mx-2 text-gray-300">·</span>
+                  <span className="text-gray-700">{r.sku}</span>
+                  {r.success && r.status && (
+                    <span className="ml-2 text-xs text-green-600">{r.status}</span>
+                  )}
+                  {!r.success && (
+                    <p className="text-xs text-red-600 mt-0.5">{r.error}</p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+          <button onClick={() => { setResults(null); setSelected([]); setStep(1) }}
+            className="btn-secondary text-sm mt-4">
+            Submit More Listings
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      {error && <ErrorBanner msg={error} />}
+
+      {/* Step header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          {[
+            { n: 1, label: 'Create FBA Listings' },
+            { n: 2, label: 'Review FBA Listings' },
+          ].map(({ n, label }, i) => (
+            <div key={n} className="flex items-center gap-2">
+              <button
+                onClick={() => n < step ? setStep(n) : undefined}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
+                  step === n ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-500'
+                }`}
+              >
+                <span className={`w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold ${
+                  step === n ? 'bg-white text-blue-600' : 'bg-gray-300 text-gray-500'
+                }`}>{n}</span>
+                {label}
+              </button>
+              {i === 0 && <span className="text-gray-300">→</span>}
+            </div>
+          ))}
+        </div>
+
+        {step === 1 && (
+          <button
+            onClick={() => { if (!selected.length) { setError('Select at least one product.'); return } setError(''); setStep(2) }}
+            className="btn-primary text-sm"
+          >
+            Review ({selected.length}) →
+          </button>
+        )}
+        {step === 2 && (
+          <button onClick={handleSubmit} disabled={submitting}
+            className="btn-primary text-sm flex items-center gap-2">
+            {submitting && <SpinIcon className="w-4 h-4 animate-spin" />}
+            Submit FBA Listings
+          </button>
+        )}
+      </div>
+
+      {/* ── STEP 1: Select products ── */}
+      {step === 1 && (
+        <div className="card overflow-hidden">
+          {/* Search bar */}
+          <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
+            <svg className="w-4 h-4 text-gray-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input
+              className="flex-1 text-sm text-gray-900 placeholder-gray-400 focus:outline-none bg-transparent"
+              placeholder="Search by typing a search query above."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              autoFocus
+            />
+            {search && (
+              <button onClick={() => setSearch('')} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
+            )}
+          </div>
+
+          {/* Stats bar */}
+          <div className="px-4 py-2 bg-gray-50 border-b border-gray-100 flex items-center gap-3 text-xs text-gray-500">
+            <span className="font-semibold text-gray-700">{inventory.length}</span> products in inventory
+            {selected.length > 0 && (
+              <span className="ml-auto text-blue-600 font-medium">{selected.length} selected</span>
+            )}
+          </div>
+
+          {/* Product list */}
+          {loadingInv ? (
+            <div className="px-4 py-10 text-center text-gray-400 text-sm">Loading inventory…</div>
+          ) : filtered.length === 0 ? (
+            <div className="px-4 py-10 text-center text-gray-400 text-sm">
+              {search ? 'No products match your search.' : 'No products found.'}
+            </div>
+          ) : (
+            <div className="divide-y divide-gray-100 max-h-[60vh] overflow-y-auto">
+              {filtered.map(p => {
+                const sel = isSelected(p.asin)
+                return (
+                  <div
+                    key={p.asin}
+                    onClick={() => toggleSelect(p)}
+                    className={`flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors ${
+                      sel ? 'bg-blue-50' : 'hover:bg-gray-50'
+                    }`}
+                  >
+                    <input type="checkbox" readOnly checked={sel}
+                      className="rounded border-gray-300 text-blue-600 shrink-0" />
+                    {p.image_url ? (
+                      <img src={p.image_url} alt="" className="w-10 h-10 object-contain rounded border border-gray-100 bg-gray-50 shrink-0" />
+                    ) : (
+                      <div className="w-10 h-10 bg-gray-100 rounded shrink-0" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-900 truncate">{p.title || p.asin}</p>
+                      <p className="text-xs text-gray-400 font-mono mt-0.5">{p.asin}
+                        {p.seller_sku && <span className="ml-2 text-gray-400">· SKU: {p.seller_sku}</span>}
+                      </p>
+                    </div>
+                    {p.aria_live_price && (
+                      <span className="text-sm font-semibold text-gray-700 shrink-0">${Number(p.aria_live_price).toFixed(2)}</span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── STEP 2: Review & edit listings ── */}
+      {step === 2 && (
+        <div className="card overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-100">
+            <p className="text-sm font-semibold text-gray-800">{selected.length} listing{selected.length !== 1 ? 's' : ''} ready to submit</p>
+            <p className="text-xs text-gray-400 mt-0.5">Review SKU, price, and condition before submitting to Amazon.</p>
+          </div>
+          <div className="divide-y divide-gray-100">
+            {selected.map(s => (
+              <div key={s.product.asin} className="px-4 py-4 flex gap-3 items-start">
+                {s.product.image_url ? (
+                  <img src={s.product.image_url} alt="" className="w-12 h-12 object-contain rounded border border-gray-100 bg-gray-50 shrink-0" />
+                ) : (
+                  <div className="w-12 h-12 bg-gray-100 rounded shrink-0" />
+                )}
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-900 line-clamp-1">{s.product.title}</p>
+                  <p className="text-xs text-gray-400 font-mono">{s.product.asin}</p>
+                  <div className="mt-2 flex gap-3 flex-wrap">
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Seller SKU</label>
+                      <input
+                        className="border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-blue-500 w-44"
+                        value={s.sku}
+                        onChange={e => updateSelected(s.product.asin, 'sku', e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">List Price ($)</label>
+                      <input
+                        type="number" min="0" step="0.01"
+                        className="border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-blue-500 w-24"
+                        value={s.price}
+                        onChange={e => updateSelected(s.product.asin, 'price', e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Condition</label>
+                      <select
+                        className="border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-blue-500"
+                        value={s.condition}
+                        onChange={e => updateSelected(s.product.asin, 'condition', e.target.value)}
+                      >
+                        {CONDITIONS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+                <button onClick={() => setSelected(prev => prev.filter(x => x.product.asin !== s.product.asin))}
+                  className="text-gray-300 hover:text-red-500 text-xl shrink-0">×</button>
+              </div>
+            ))}
+          </div>
+          <div className="px-4 py-3 bg-gray-50 border-t border-gray-100 flex items-center gap-3">
+            <button onClick={() => setStep(1)} className="btn-secondary text-sm">← Back</button>
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 
