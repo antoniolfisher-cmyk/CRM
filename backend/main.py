@@ -3031,25 +3031,70 @@ async def get_dashboard_amazon_sales(
     }
 
 
+# Per-tenant cache for FBA live inventory — keyed by tenant_id
+# {tenant_id: {"payload": dict, "fetched_at": datetime}}
+_fba_live_cache: dict = {}
+_FBA_LIVE_CACHE_TTL = 90  # seconds
+
+
 @app.get("/api/dashboard/amazon-live")
 async def get_dashboard_amazon_live(db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     """
     Real-time Amazon FBA inventory snapshot for the Dashboard.
-    Hits Amazon SP-API directly; returns 503 if not configured.
+    Serves a 90-second per-tenant cache to avoid hammering Amazon at scale.
+    On any Amazon error, returns the last cached payload (or zeros) — never 502s the client.
     """
+    from datetime import timezone as _tz_live
+    import httpx as _httpx
+
     tenant_id = current.get("tenant_id", 1)
+    now = datetime.now(_tz_live.utc)
+
+    # ── Buy-box stats come from DB — always fresh, no Amazon call needed ──────
+    approved_products = db.query(models.Product).filter(
+        models.Product.status == "approved"
+    ).all()
+    approved_with_bb = [p for p in approved_products if p.buy_box and p.buy_box > 0]
+    competitive = sum(
+        1 for p in approved_with_bb
+        if p.aria_suggested_price and p.aria_suggested_price <= p.buy_box
+    )
+    buy_box_pct = round(competitive / len(approved_with_bb) * 100, 1) if approved_with_bb else 0.0
+
+    # ── Serve cache if still fresh ────────────────────────────────────────────
+    _cached = _fba_live_cache.get(tenant_id)
+    if _cached and (now - _cached["fetched_at"]).total_seconds() < _FBA_LIVE_CACHE_TTL:
+        payload = dict(_cached["payload"])
+        payload["buy_box_pct"] = buy_box_pct
+        payload["approved_skus"] = len(approved_products)
+        payload["from_cache"] = True
+        return payload
+
+    # ── Credentials check ─────────────────────────────────────────────────────
     cred = _get_tenant_amazon_creds(tenant_id, db)
     if not cred or not cred.sp_refresh_token:
-        raise HTTPException(503, "Amazon SP-API credentials are not configured")
+        # Return zeros — don't crash the dashboard
+        return {
+            "fetched_at":        now.isoformat(),
+            "total_skus":        0,
+            "total_units":       0,
+            "total_fulfillable": 0,
+            "total_inbound":     0,
+            "total_reserved":    0,
+            "buy_box_pct":       buy_box_pct,
+            "approved_skus":     len(approved_products),
+            "top_items":         [],
+            "error":             "Amazon SP-API credentials are not configured",
+        }
 
-    import httpx as _httpx
-    access_token = await _get_tenant_access_token(cred)
-    mkt_id = cred.marketplace_id or _AMAZON_MKT_ID
-
+    # ── Fetch from Amazon ─────────────────────────────────────────────────────
+    amazon_error = None
     items = []
-    next_token = None
     try:
-        async with _httpx.AsyncClient(timeout=30) as client:
+        access_token = await _get_tenant_access_token(cred)
+        mkt_id = cred.marketplace_id or _AMAZON_MKT_ID
+        next_token = None
+        async with _httpx.AsyncClient(timeout=25) as client:
             while True:
                 params = {
                     "granularityType": "Marketplace",
@@ -3065,77 +3110,108 @@ async def get_dashboard_amazon_live(db: Session = Depends(get_db), current: dict
                     params=params,
                     headers={"x-amz-access-token": access_token},
                 )
-                if resp.status_code == 403:
-                    raise HTTPException(403, "Amazon SP-API access denied — check Seller Central permissions include FBA Inventory")
                 if resp.status_code == 429:
-                    print("[amazon-live] FBA inventory rate-limited (429) — returning partial results", flush=True)
+                    print(f"[amazon-live] tenant={tenant_id} rate-limited (429) — serving cache/partial", flush=True)
+                    amazon_error = "Amazon rate-limited — showing latest available data"
+                    break
+                if resp.status_code == 403:
+                    amazon_error = "Amazon SP-API access denied — check FBA Inventory permission in Seller Central"
                     break
                 if resp.status_code != 200:
-                    raise HTTPException(502, f"Amazon SP-API error {resp.status_code}: {resp.text[:300]}")
+                    amazon_error = f"Amazon SP-API returned {resp.status_code}"
+                    print(f"[amazon-live] tenant={tenant_id} SP-API {resp.status_code}: {resp.text[:200]}", flush=True)
+                    break
 
                 body = resp.json().get("payload", {})
                 for s in body.get("inventorySummaries", []):
                     details = s.get("inventoryDetails") or {}
-                    fulfillable = details.get("fulfillableQuantity") or 0
-                    inbound_shipped = details.get("inboundShippedQuantity") or 0
+                    fulfillable      = details.get("fulfillableQuantity") or 0
+                    inbound_shipped  = details.get("inboundShippedQuantity") or 0
                     inbound_receiving = details.get("inboundReceivingQuantity") or 0
-                    inbound_working = details.get("inboundWorkingQuantity") or 0
-                    reserved = (details.get("reservedQuantity") or {})
+                    inbound_working  = details.get("inboundWorkingQuantity") or 0
+                    reserved_obj     = details.get("reservedQuantity") or {}
                     reserved_qty = (
-                        (reserved.get("pendingCustomerOrderQuantity") or 0)
-                        + (reserved.get("pendingTransshipmentQuantity") or 0)
-                        + (reserved.get("fcProcessingQuantity") or 0)
+                        (reserved_obj.get("pendingCustomerOrderQuantity") or 0)
+                        + (reserved_obj.get("pendingTransshipmentQuantity") or 0)
+                        + (reserved_obj.get("fcProcessingQuantity") or 0)
                     )
                     total = fulfillable + inbound_shipped + inbound_receiving + inbound_working
                     asin = (s.get("asin") or "").upper()
                     items.append({
-                        "asin":              asin,
-                        "product_name":      s.get("productName") or s.get("sellerSku") or asin,
-                        "seller_sku":        s.get("sellerSku", ""),
-                        "fulfillable":       fulfillable,
-                        "inbound":           inbound_shipped + inbound_receiving + inbound_working,
-                        "reserved":          reserved_qty,
-                        "total":             total,
+                        "asin":         asin,
+                        "product_name": s.get("productName") or s.get("sellerSku") or asin,
+                        "seller_sku":   s.get("sellerSku", ""),
+                        "fulfillable":  fulfillable,
+                        "inbound":      inbound_shipped + inbound_receiving + inbound_working,
+                        "reserved":     reserved_qty,
+                        "total":        total,
                     })
 
                 next_token = body.get("nextToken")
                 if not next_token:
                     break
+
     except _httpx.TimeoutException:
-        raise HTTPException(502, "Amazon FBA Inventory API request timed out — try again in a moment")
+        amazon_error = "Amazon API timed out — showing latest available data"
+        print(f"[amazon-live] tenant={tenant_id} timeout", flush=True)
     except _httpx.RequestError as exc:
-        raise HTTPException(502, f"Amazon FBA Inventory API network error: {exc}")
+        amazon_error = f"Amazon API network error — showing latest available data"
+        print(f"[amazon-live] tenant={tenant_id} network error: {exc}", flush=True)
+    except HTTPException as exc:
+        amazon_error = exc.detail
+        print(f"[amazon-live] tenant={tenant_id} token error: {exc.detail}", flush=True)
+    except Exception as exc:
+        amazon_error = "Unexpected error fetching FBA inventory"
+        print(f"[amazon-live] tenant={tenant_id} unexpected: {exc}", flush=True)
 
-    total_skus = len(items)
-    total_fulfillable = sum(i["fulfillable"] for i in items)
-    total_inbound = sum(i["inbound"] for i in items)
-    total_reserved = sum(i["reserved"] for i in items)
-    total_units = sum(i["total"] for i in items)
+    # ── If Amazon call failed, serve stale cache rather than erroring ─────────
+    if amazon_error and not items:
+        if _cached:
+            payload = dict(_cached["payload"])
+            payload["buy_box_pct"]   = buy_box_pct
+            payload["approved_skus"] = len(approved_products)
+            payload["from_cache"]    = True
+            payload["error"]         = amazon_error
+            return payload
+        # No cache at all — return zeros with error message (never 502)
+        return {
+            "fetched_at":        now.isoformat(),
+            "total_skus":        0,
+            "total_units":       0,
+            "total_fulfillable": 0,
+            "total_inbound":     0,
+            "total_reserved":    0,
+            "buy_box_pct":       buy_box_pct,
+            "approved_skus":     len(approved_products),
+            "top_items":         [],
+            "error":             amazon_error,
+        }
 
-    # Top 10 SKUs by total quantity
+    # ── Build response and update cache ──────────────────────────────────────
     top_items = sorted(items, key=lambda x: x["total"], reverse=True)[:10]
-
-    # Pull buy-box stats from DB for approved products
-    approved_products = db.query(models.Product).filter(
-        models.Product.status == "approved"
-    ).all()
-    approved_with_bb = [p for p in approved_products if p.buy_box and p.buy_box > 0]
-    competitive = sum(
-        1 for p in approved_with_bb
-        if p.aria_suggested_price and p.aria_suggested_price <= p.buy_box
-    )
-    buy_box_pct = round(competitive / len(approved_with_bb) * 100, 1) if approved_with_bb else 0.0
-
-    from datetime import timezone
-    fetched_at = datetime.now(timezone.utc).isoformat()
+    result = {
+        "fetched_at":        now.isoformat(),
+        "total_skus":        len(items),
+        "total_units":       sum(i["total"] for i in items),
+        "total_fulfillable": sum(i["fulfillable"] for i in items),
+        "total_inbound":     sum(i["inbound"] for i in items),
+        "total_reserved":    sum(i["reserved"] for i in items),
+        "buy_box_pct":       buy_box_pct,
+        "approved_skus":     len(approved_products),
+        "top_items":         top_items,
+    }
+    if amazon_error:
+        result["error"] = amazon_error
+    else:
+        _fba_live_cache[tenant_id] = {"payload": result, "fetched_at": now}
 
     return {
-        "fetched_at":        fetched_at,
-        "total_skus":        total_skus,
-        "total_units":       total_units,
-        "total_fulfillable": total_fulfillable,
-        "total_inbound":     total_inbound,
-        "total_reserved":    total_reserved,
+        "fetched_at":        now.isoformat(),
+        "total_skus":        len(items),
+        "total_units":       sum(i["total"] for i in items),
+        "total_fulfillable": sum(i["fulfillable"] for i in items),
+        "total_inbound":     sum(i["inbound"] for i in items),
+        "total_reserved":    sum(i["reserved"] for i in items),
         "buy_box_pct":       buy_box_pct,
         "approved_skus":     len(approved_products),
         "top_items":         top_items,

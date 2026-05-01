@@ -552,6 +552,10 @@ function AmazonLivePanel() {
     try {
       const result = await api.getDashboardAmazonLive()
       setData(result)
+      // Surface a soft warning if the server returned data but flagged an Amazon error
+      if (result?.error && !result?.total_skus) {
+        setError(result.error)
+      }
     } catch (e) {
       setError(e.message)
     } finally {
