@@ -7630,21 +7630,23 @@ async def fba_create_shipment(body: dict = Body(...), current: dict = Depends(re
         optimized = None
 
     shipment = models.FBAShipment(
-        tenant_id          = current["tenant_id"],
-        user_id            = current.get("user_id"),
-        asin               = asin,
-        seller_sku         = seller_sku,
-        title              = title,
-        quantity           = quantity,
-        shipment_name      = shipment_name,
-        amazon_shipment_id = amazon_id,
-        destination_fc     = plan.get("destination_fc"),
-        ship_to_address    = _json.dumps(plan.get("ship_to_address") or {}),
-        referral_fee       = referral_fee,
-        fba_fee            = fba_fee,
-        optimized_eligible = optimized,
-        from_address       = _json.dumps(from_address),
-        status             = "submitted",
+        tenant_id           = current["tenant_id"],
+        user_id             = current.get("user_id"),
+        asin                = asin,
+        seller_sku          = seller_sku,
+        title               = title,
+        quantity            = quantity,
+        shipment_name       = shipment_name,
+        amazon_shipment_id  = amazon_id,
+        inbound_plan_id     = plan.get("inbound_plan_id"),
+        placement_option_id = plan.get("placement_option_id"),
+        destination_fc      = plan.get("destination_fc"),
+        ship_to_address     = _json.dumps(plan.get("ship_to_address") or {}),
+        referral_fee        = referral_fee,
+        fba_fee             = fba_fee,
+        optimized_eligible  = optimized,
+        from_address        = _json.dumps(from_address),
+        status              = "submitted",
     )
     db.add(shipment)
     db.commit()
@@ -7746,9 +7748,11 @@ async def fba_set_transport(shipment_id: int, body: dict = Body(...),
         import fba_shipping
         await fba_shipping.set_transport(row.amazon_shipment_id, packages,
                                          tenant_id=current["tenant_id"],
-                                         is_partnered=is_partnered)
+                                         is_partnered=is_partnered,
+                                         inbound_plan_id=row.inbound_plan_id)
         rate = await fba_shipping.get_transport(row.amazon_shipment_id,
-                                                tenant_id=current["tenant_id"])
+                                                tenant_id=current["tenant_id"],
+                                                inbound_plan_id=row.inbound_plan_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -7779,7 +7783,8 @@ async def fba_get_transport(shipment_id: int, current: dict = Depends(require_au
         import fba_shipping
         rate = await fba_shipping.get_transport(row.amazon_shipment_id,
                                                 tenant_id=current["tenant_id"],
-                                                max_polls=1)
+                                                max_polls=1,
+                                                inbound_plan_id=row.inbound_plan_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -7804,7 +7809,8 @@ async def fba_confirm_transport(shipment_id: int, current: dict = Depends(requir
     try:
         import fba_shipping
         await fba_shipping.confirm_transport(row.amazon_shipment_id,
-                                             tenant_id=current["tenant_id"])
+                                             tenant_id=current["tenant_id"],
+                                             inbound_plan_id=row.inbound_plan_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -7828,7 +7834,8 @@ async def fba_void_transport(shipment_id: int, current: dict = Depends(require_a
     try:
         import fba_shipping
         await fba_shipping.void_transport(row.amazon_shipment_id,
-                                          tenant_id=current["tenant_id"])
+                                          tenant_id=current["tenant_id"],
+                                          inbound_plan_id=row.inbound_plan_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -7857,7 +7864,8 @@ async def fba_get_labels(shipment_id: int, current: dict = Depends(require_auth)
         url = await fba_shipping.get_labels(row.amazon_shipment_id,
                                             tenant_id=current["tenant_id"],
                                             label_type=label_type,
-                                            page_type=page_type)
+                                            page_type=page_type,
+                                            inbound_plan_id=row.inbound_plan_id)
     except HTTPException:
         raise
     except Exception as e:

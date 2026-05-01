@@ -1,15 +1,15 @@
 """
-FBA Inbound Shipment workflow for SellerPulse.
+FBA Inbound Shipment workflow — Fulfillment Inbound API v2024-03-20.
 
 Flow:
-  1. lookup_asin()       – Catalog API: title, dims, weight
-  2. estimate_fees()     – Fees API: referral + FBA fulfillment fee
-  3. create_plan()       – FBA Inbound v0: which FC(s) to ship to
-  4. create_shipment()   – FBA Inbound v0: create shipment record
-  5. set_transport()     – Transport API: box dims/weight, UPS partnered
-  6. get_transport()     – Transport API: poll for rate estimate
-  7. confirm_transport() – Transport API: lock rate + pay
-  8. get_labels()        – Labels API: PDF/PNG box labels
+  1. lookup_asin()       – Catalog API 2022-04-01: title, dims, weight
+  2. estimate_fees()     – Product Fees API v0/items/{Asin}: referral + FBA fee
+  3. create_plan()       – v2024: create plan → packing options → placement options
+  4. create_shipment()   – v2024: confirm placement → return shipmentId
+  5. set_transport()     – v2024: generate + confirm transportation option
+  6. get_transport()     – v2024: poll for transportation status/cost
+  7. confirm_transport() – v2024: no-op (confirmation is in set_transport for v2024)
+  8. get_labels()        – v2024: fetch box label PDF URL
 """
 
 import asyncio
@@ -20,20 +20,50 @@ import httpx
 
 log = logging.getLogger(__name__)
 
-# ── re-use auth helper from amazon_sync ───────────────────────────────────────
 from amazon_sync import _get_access_token_for_tenant
+
+_V2 = "/inbound/fba/2024-03-20"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. ASIN Lookup via Catalog Items API
+# Async operation poller (all v2024 mutating calls are async)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _poll_op(base: str, token: str, operation_id: str, max_polls: int = 25) -> None:
+    """Poll GET /operations/{operationId} until SUCCESS or raise on FAILED/timeout."""
+    for _ in range(max_polls):
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{base}{_V2}/operations/{operation_id}",
+                headers={"x-amz-access-token": token},
+            )
+        if resp.status_code != 200:
+            raise RuntimeError(f"Operation poll {resp.status_code}: {resp.text[:200]}")
+        data   = resp.json()
+        status = data.get("operationStatus", "IN_PROGRESS")
+        if status == "SUCCESS":
+            return
+        if status == "FAILED":
+            problems = data.get("operationProblems", [])
+            msg = "; ".join(p.get("message", "") for p in problems) or "Unknown failure"
+            raise RuntimeError(f"FBA operation failed: {msg}")
+        await asyncio.sleep(3)
+    raise RuntimeError("FBA operation timed out after polling — try again")
+
+
+def _fmt_403() -> str:
+    return (
+        "Amazon denied access to FBA Inbound Shipments (403 Unauthorized). "
+        "In Seller Central → Apps & Services → Develop Apps, open your SP-API app, "
+        "add the 'FBA Inbound Shipment' role, save, then re-authorize to get a new refresh token."
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. ASIN Lookup
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def lookup_asin(asin: str, tenant_id: Optional[int] = None) -> dict:
-    """
-    Fetch product title, dimensions, weight, and images from the SP-API
-    Catalog Items API (2022-04-01).
-    Returns a dict suitable for the frontend product card.
-    """
     token, mkt_id, base = await _get_access_token_for_tenant(tenant_id)
     asin = asin.strip().upper()
 
@@ -54,10 +84,8 @@ async def lookup_asin(asin: str, tenant_id: Optional[int] = None) -> dict:
 
     data = resp.json()
 
-    # Title
     title = ""
-    summaries = data.get("summaries") or []
-    for s in summaries:
+    for s in (data.get("summaries") or []):
         if s.get("itemName"):
             title = s["itemName"]
             break
@@ -67,17 +95,13 @@ async def lookup_asin(asin: str, tenant_id: Optional[int] = None) -> dict:
         if title_attr:
             title = title_attr[0].get("value", "")
 
-    # Brand
     brand = ""
-    attrs = data.get("attributes", {})
-    brand_attr = attrs.get("brand") or []
+    brand_attr = (data.get("attributes", {}).get("brand") or [])
     if brand_attr:
         brand = brand_attr[0].get("value", "")
 
-    # Dimensions (prefer package dims for shipping)
     dims = {}
-    dim_list = data.get("dimensions") or []
-    for d in dim_list:
+    for d in (data.get("dimensions") or []):
         pkg = d.get("package") or d.get("item") or {}
         if pkg:
             dims = pkg
@@ -85,15 +109,15 @@ async def lookup_asin(asin: str, tenant_id: Optional[int] = None) -> dict:
 
     def _dim_in(key):
         v = dims.get(key, {})
-        val = float(v.get("value", 0) or 0)
+        val  = float(v.get("value", 0) or 0)
         unit = (v.get("unit") or "inches").lower()
         if "centimeter" in unit or unit == "cm":
             val = round(val / 2.54, 2)
         return val
 
     def _weight_lbs():
-        w = dims.get("weight", {})
-        val = float(w.get("value", 0) or 0)
+        w    = dims.get("weight", {})
+        val  = float(w.get("value", 0) or 0)
         unit = (w.get("unit") or "pounds").lower()
         if "kilogram" in unit or unit == "kg":
             val = round(val * 2.205, 3)
@@ -103,15 +127,8 @@ async def lookup_asin(asin: str, tenant_id: Optional[int] = None) -> dict:
             val = round(val / 16, 3)
         return val
 
-    length = _dim_in("length")
-    width  = _dim_in("width")
-    height = _dim_in("height")
-    weight = _weight_lbs()
-
-    # Image
     image_url = ""
-    images = data.get("images") or []
-    for img_set in images:
+    for img_set in (data.get("images") or []):
         for img in (img_set.get("images") or []):
             if img.get("variant") == "MAIN" and img.get("link"):
                 image_url = img["link"]
@@ -119,44 +136,36 @@ async def lookup_asin(asin: str, tenant_id: Optional[int] = None) -> dict:
         if image_url:
             break
 
-    # BSR / category
     bsr = 0
     category = ""
-    ranks = data.get("salesRanks") or []
-    for r in ranks:
-        cr = r.get("classificationRanks") or []
-        dr = r.get("displayGroupRanks") or []
-        for rank_entry in (cr + dr):
+    for r in (data.get("salesRanks") or []):
+        for rank_entry in (r.get("classificationRanks") or []) + (r.get("displayGroupRanks") or []):
             if rank_entry.get("rank"):
-                bsr = rank_entry["rank"]
+                bsr      = rank_entry["rank"]
                 category = rank_entry.get("title") or rank_entry.get("displayGroupName") or ""
                 break
         if bsr:
             break
 
     return {
-        "asin":      asin,
-        "title":     title or asin,
-        "brand":     brand,
-        "image_url": image_url,
-        "bsr":       bsr,
-        "category":  category,
-        "length_in": length,
-        "width_in":  width,
-        "height_in": height,
-        "weight_lbs": weight,
+        "asin":       asin,
+        "title":      title or asin,
+        "brand":      brand,
+        "image_url":  image_url,
+        "bsr":        bsr,
+        "category":   category,
+        "length_in":  _dim_in("length"),
+        "width_in":   _dim_in("width"),
+        "height_in":  _dim_in("height"),
+        "weight_lbs": _weight_lbs(),
     }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. Fee Estimation
+# 2. Fee Estimation (Fees API v0 per-ASIN — still active)
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def estimate_fees(asin: str, price: float, tenant_id: Optional[int] = None) -> dict:
-    """
-    Returns {"referral_fee": X, "fba_fee": X, "total_fee": X, "net_proceeds": X}
-    using the SP-API Product Fees v0 per-ASIN endpoint.
-    """
     token, mkt_id, base = await _get_access_token_for_tenant(tenant_id)
     asin = asin.strip().upper()
 
@@ -185,16 +194,14 @@ async def estimate_fees(asin: str, price: float, tenant_id: Optional[int] = None
 
     payload = resp.json().get("payload", {})
     result  = payload.get("FeesEstimateResult", {})
-    status  = result.get("Status", "")
-    if status != "Success":
+    if result.get("Status") != "Success":
         err = (result.get("Error") or {}).get("Message", "Unknown error")
         raise RuntimeError(f"Fee estimate failed: {err}")
 
     estimate   = result.get("FeesEstimate", {})
     fee_detail = estimate.get("FeeDetailList", [])
-
     referral_fee = 0.0
-    fba_fee = 0.0
+    fba_fee      = 0.0
     for f in fee_detail:
         fee_type = (f.get("FeeType") or "").lower()
         amt = float((f.get("FinalFee") or {}).get("Amount", 0) or 0)
@@ -216,7 +223,7 @@ async def estimate_fees(asin: str, price: float, tenant_id: Optional[int] = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. Create Inbound Shipment Plan
+# 3. Create Inbound Plan (v2024-03-20)
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def create_plan(
@@ -226,88 +233,155 @@ async def create_plan(
     label_prep: str = "SELLER_LABEL",
 ) -> list[dict]:
     """
-    POST /fba/inbound/v0/plans
-
-    items: [{"sku": str, "asin": str, "qty": int, "condition": str}]
-    from_address: {"name", "address1", "city", "state", "postal_code", "country"}
-
-    Returns list of plan dicts:
-      {"shipment_id", "destination_fc", "ship_to_address", "items": [...]}
+    Full v2024-03-20 plan flow:
+      create plan → poll → packing options → poll → confirm → poll
+      → placement options → poll → list → return to frontend.
     """
     token, mkt_id, base = await _get_access_token_for_tenant(tenant_id)
+    label_owner = "AMAZON" if label_prep == "AMAZON_LABEL" else "SELLER"
 
-    body = {
-        "ShipFromAddress": {
-            "Name":                  from_address.get("name", "Seller"),
-            "AddressLine1":          from_address.get("address1", ""),
-            "City":                  from_address.get("city", ""),
-            "StateOrProvinceCode":   from_address.get("state", ""),
-            "PostalCode":            from_address.get("postal_code", ""),
-            "CountryCode":           from_address.get("country", "US"),
-        },
-        "AreItemsHazmat": False,
-        "LabelPrepPreference": label_prep,
-        "ShipToCountryCode": "US",
-        "Items": [
+    # 1. Create inbound plan
+    plan_body = {
+        "items": [
             {
-                "SellerSKU": it["sku"],
-                "ASIN": it["asin"].strip().upper(),
-                "Condition": it.get("condition", "NewItem"),
-                "Quantity": int(it["qty"]),
+                "labelOwner":  label_owner,
+                "msku":        it["sku"],
+                "prepOwner":   "SELLER",
+                "quantity":    int(it["qty"]),
             }
             for it in items
         ],
+        "marketplaceId": mkt_id,
+        "name":          f"Plan-{int(asyncio.get_event_loop().time())}",
+        "sourceAddress": {
+            "addressLine1":       from_address.get("address1", ""),
+            "city":               from_address.get("city", ""),
+            "companyName":        from_address.get("name", "Seller"),
+            "countryCode":        from_address.get("country", "US"),
+            "name":               from_address.get("name", "Seller"),
+            "postalCode":         from_address.get("postal_code", ""),
+            "stateOrProvinceCode": from_address.get("state", ""),
+        },
     }
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
-            f"{base}/fba/inbound/v0/plans",
+            f"{base}{_V2}/inboundPlans",
             headers={"x-amz-access-token": token, "Content-Type": "application/json"},
-            json=body,
+            json=plan_body,
         )
-
     if resp.status_code == 403:
-        raise RuntimeError(
-            "Amazon denied access to FBA Inbound Shipments (403 Unauthorized). "
-            "In Seller Central → Apps & Services → Develop Apps, open your SP-API app "
-            "and add the 'FBA Inbound Shipment' role, then re-authorize the app."
+        raise RuntimeError(_fmt_403())
+    if resp.status_code not in (200, 202):
+        raise RuntimeError(f"Create Plan API {resp.status_code}: {resp.text[:400]}")
+
+    data    = resp.json()
+    plan_id = data["inboundPlanId"]
+    await _poll_op(base, token, data["operationId"])
+
+    # 2. Generate packing options
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{base}{_V2}/inboundPlans/{plan_id}/packingOptions",
+            headers={"x-amz-access-token": token},
+        )
+    if resp.status_code not in (200, 202):
+        raise RuntimeError(f"Generate packing options {resp.status_code}: {resp.text[:300]}")
+    await _poll_op(base, token, resp.json()["operationId"])
+
+    # 3. List packing options → confirm first
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{base}{_V2}/inboundPlans/{plan_id}/packingOptions",
+            headers={"x-amz-access-token": token},
         )
     if resp.status_code != 200:
-        raise RuntimeError(f"Inbound Plan API {resp.status_code}: {resp.text[:400]}")
+        raise RuntimeError(f"List packing options {resp.status_code}: {resp.text[:300]}")
+    packing_opts = resp.json().get("packingOptions", [])
+    if not packing_opts:
+        raise RuntimeError("Amazon returned no packing options — check SKU/ASIN mappings")
+    packing_option_id = packing_opts[0]["packingOptionId"]
 
-    plans = resp.json().get("payload", {}).get("InboundShipmentPlans", [])
-    if not plans:
-        raise RuntimeError("Amazon returned no shipment plans — check ship-from address and SKU/ASIN")
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{base}{_V2}/inboundPlans/{plan_id}/packingOptions/{packing_option_id}/confirmation",
+            headers={"x-amz-access-token": token},
+        )
+    if resp.status_code not in (200, 202):
+        raise RuntimeError(f"Confirm packing option {resp.status_code}: {resp.text[:300]}")
+    await _poll_op(base, token, resp.json()["operationId"])
 
+    # 4. Generate placement options
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{base}{_V2}/inboundPlans/{plan_id}/placementOptions",
+            headers={"x-amz-access-token": token},
+        )
+    if resp.status_code not in (200, 202):
+        raise RuntimeError(f"Generate placement options {resp.status_code}: {resp.text[:300]}")
+    await _poll_op(base, token, resp.json()["operationId"])
+
+    # 5. List placement options
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{base}{_V2}/inboundPlans/{plan_id}/placementOptions",
+            headers={"x-amz-access-token": token},
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"List placement options {resp.status_code}: {resp.text[:300]}")
+    placement_opts = resp.json().get("placementOptions", [])
+    if not placement_opts:
+        raise RuntimeError("Amazon returned no placement options")
+
+    # 6. Get shipments already generated for the plan
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{base}{_V2}/inboundPlans/{plan_id}/shipments",
+            headers={"x-amz-access-token": token},
+        )
+    shipments = resp.json().get("shipments", []) if resp.status_code == 200 else []
+
+    # Build result — one entry per placement option (frontend picks one)
     result = []
-    for p in plans:
-        addr = p.get("ShipToAddress", {})
+    for opt in placement_opts:
+        placement_id = opt["placementOptionId"]
+        fee = 0.0
+        for f in (opt.get("fees") or []):
+            fee += float((f.get("amount") or {}).get("amount", 0) or 0)
+
+        # Find shipment(s) associated with this option (may be empty until confirmed)
+        opt_ships = [s for s in shipments if s.get("placementOptionId") == placement_id]
+        if not opt_ships:
+            opt_ships = shipments  # fall back to all shipments
+
+        shipment = opt_ships[0] if opt_ships else {}
+        dest_addr = (shipment.get("destination") or {}).get("address") or {}
+
         result.append({
-            "shipment_id":    p.get("ShipmentId", ""),
-            "destination_fc": p.get("DestinationFulfillmentCenterId", ""),
+            "shipment_id":               shipment.get("shipmentId", ""),
+            "destination_fc":            shipment.get("fulfillmentCenterId", ""),
             "ship_to_address": {
-                "name":         addr.get("Name", ""),
-                "address1":     addr.get("AddressLine1", ""),
-                "address2":     addr.get("AddressLine2", ""),
-                "city":         addr.get("City", ""),
-                "state":        addr.get("StateOrProvinceCode", ""),
-                "postal_code":  addr.get("PostalCode", ""),
-                "country":      addr.get("CountryCode", "US"),
+                "name":        dest_addr.get("name", ""),
+                "address1":    dest_addr.get("addressLine1", ""),
+                "address2":    dest_addr.get("addressLine2", ""),
+                "city":        dest_addr.get("city", ""),
+                "state":       dest_addr.get("stateOrProvinceCode", ""),
+                "postal_code": dest_addr.get("postalCode", ""),
+                "country":     dest_addr.get("countryCode", "US"),
             },
-            "items": [
-                {"sku": i.get("SellerSKU"), "qty": i.get("Quantity")}
-                for i in p.get("Items", [])
-            ],
-            "label_prep_type": p.get("LabelPrepType", "NO_LABEL"),
-            "estimated_box_contents_fee": float(
-                (p.get("EstimatedBoxContentsFee") or {}).get("TotalFee", {}).get("Amount", 0) or 0
-            ),
+            "items":                     [{"sku": i["sku"], "qty": i["qty"]} for i in items],
+            "label_prep_type":           "SELLER_LABEL",
+            "estimated_box_contents_fee": fee,
+            # Passed back to create_shipment so it can confirm the chosen option
+            "inbound_plan_id":           plan_id,
+            "placement_option_id":       placement_id,
         })
+
     return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. Create Inbound Shipment (from plan)
+# 4. Create Shipment — confirm selected placement option (v2024-03-20)
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def create_shipment(
@@ -319,61 +393,55 @@ async def create_shipment(
     label_prep: str = "SELLER_LABEL",
 ) -> str:
     """
-    POST /fba/inbound/v0/shipments
-    Creates the actual shipment from a plan.  Returns the ShipmentId.
+    Confirms the chosen placement option, then returns the Amazon ShipmentId.
+    `plan` must contain inbound_plan_id and placement_option_id from create_plan().
     """
     token, mkt_id, base = await _get_access_token_for_tenant(tenant_id)
 
-    body = {
-        "InboundShipmentHeader": {
-            "ShipmentName":                shipment_name,
-            "ShipFromAddress": {
-                "Name":               from_address.get("name", "Seller"),
-                "AddressLine1":       from_address.get("address1", ""),
-                "City":               from_address.get("city", ""),
-                "StateOrProvinceCode": from_address.get("state", ""),
-                "PostalCode":         from_address.get("postal_code", ""),
-                "CountryCode":        from_address.get("country", "US"),
-            },
-            "DestinationFulfillmentCenterId": plan["destination_fc"],
-            "AreCasesRequired":    False,
-            "ShipmentStatus":      "WORKING",
-            "LabelPrepPreference": label_prep,
-            "IntendedBoxContentsSource": "NONE",
-        },
-        "InboundShipmentItems": [
-            {
-                "SellerSKU":  it["sku"],
-                "QuantityShipped": int(it["qty"]),
-            }
-            for it in items
-        ],
-        "MarketplaceId": mkt_id,
-    }
+    plan_id      = plan.get("inbound_plan_id")
+    placement_id = plan.get("placement_option_id")
 
+    if not plan_id or not placement_id:
+        raise RuntimeError(
+            "Plan is missing inbound_plan_id or placement_option_id — "
+            "please re-run the plan step before creating a shipment."
+        )
+
+    # Confirm placement option
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
-            f"{base}/fba/inbound/v0/shipments",
-            headers={"x-amz-access-token": token, "Content-Type": "application/json"},
-            json=body,
+            f"{base}{_V2}/inboundPlans/{plan_id}/placementOptions/{placement_id}/confirmation",
+            headers={"x-amz-access-token": token},
         )
-
     if resp.status_code == 403:
-        raise RuntimeError(
-            "Amazon denied access to FBA Inbound Shipments (403 Unauthorized). "
-            "Add the 'FBA Inbound Shipment' role to your SP-API app in Seller Central."
+        raise RuntimeError(_fmt_403())
+    if resp.status_code not in (200, 202):
+        raise RuntimeError(f"Confirm placement {resp.status_code}: {resp.text[:400]}")
+    await _poll_op(base, token, resp.json()["operationId"])
+
+    # Fetch shipments for this plan
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{base}{_V2}/inboundPlans/{plan_id}/shipments",
+            headers={"x-amz-access-token": token},
         )
     if resp.status_code != 200:
-        raise RuntimeError(f"Create Shipment API {resp.status_code}: {resp.text[:400]}")
+        raise RuntimeError(f"Get shipments {resp.status_code}: {resp.text[:300]}")
 
-    shipment_id = resp.json().get("payload", {}).get("ShipmentId", "")
-    if not shipment_id:
-        raise RuntimeError("Amazon did not return a ShipmentId")
-    return shipment_id
+    shipments = resp.json().get("shipments", [])
+    if not shipments:
+        raise RuntimeError("No shipments found after confirming placement — check plan status in Seller Central")
+
+    # Prefer the shipment we already know about (from plan step), else take first
+    known_id = plan.get("shipment_id", "")
+    for s in shipments:
+        if s.get("shipmentId") == known_id:
+            return known_id
+    return shipments[0]["shipmentId"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5 & 6. Transport: set details + get estimate
+# 5. Transport (v2024-03-20)
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def set_transport(
@@ -381,151 +449,121 @@ async def set_transport(
     packages: list[dict],
     tenant_id: Optional[int] = None,
     is_partnered: bool = True,
+    inbound_plan_id: Optional[str] = None,
 ) -> None:
     """
-    PUT /fba/inbound/v0/shipments/{ShipmentId}/transport
-
-    packages: [{"length_in", "width_in", "height_in", "weight_lbs"}]
+    Generate + confirm a transportation option for the shipment.
+    inbound_plan_id is required for v2024; amazon_shipment_id is the shipmentId.
     """
     token, mkt_id, base = await _get_access_token_for_tenant(tenant_id)
 
-    pkg_list = [
-        {
-            "Dimensions": {
-                "Length": round(float(p.get("length_in", 12)), 2),
-                "Width":  round(float(p.get("width_in", 12)), 2),
-                "Height": round(float(p.get("height_in", 12)), 2),
-                "Unit":   "inches",
-            },
-            "Weight": {
-                "Value": round(float(p.get("weight_lbs", 10)), 2),
-                "Unit":  "pounds",
-            },
-        }
-        for p in packages
-    ]
-
-    if is_partnered:
-        transport_details = {
-            "PartneredSmallParcelData": {
-                "CarrierName": "UNITED_PARCEL_SERVICE_INC",
-                "PackageList": pkg_list,
-            }
-        }
-    else:
-        transport_details = {
-            "NonPartneredSmallParcelData": {
-                "CarrierName": "OTHER",
-                "PackageList": [{"TrackingId": "UNKNOWN"} for _ in pkg_list],
-            }
-        }
-
-    body = {
-        "IsPartnered":        is_partnered,
-        "ShipmentType":       "SP",
-        "TransportDetails":   transport_details,
-    }
-
-    async with httpx.AsyncClient(timeout=20) as client:
-        resp = await client.put(
-            f"{base}/fba/inbound/v0/shipments/{amazon_shipment_id}/transport",
-            headers={"x-amz-access-token": token, "Content-Type": "application/json"},
-            json=body,
+    if not inbound_plan_id:
+        raise RuntimeError(
+            "inbound_plan_id is required for transportation — "
+            "this shipment was created with the old API. Please create a new shipment."
         )
 
+    # Generate transportation options
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{base}{_V2}/inboundPlans/{inbound_plan_id}/transportationOptions",
+            headers={"x-amz-access-token": token, "Content-Type": "application/json"},
+            json={"shipmentIds": [amazon_shipment_id]},
+        )
+    if resp.status_code not in (200, 202):
+        raise RuntimeError(f"Generate transport options {resp.status_code}: {resp.text[:300]}")
+    await _poll_op(base, token, resp.json()["operationId"])
+
+    # List options
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{base}{_V2}/inboundPlans/{inbound_plan_id}/transportationOptions",
+            headers={"x-amz-access-token": token},
+            params={"shipmentId": amazon_shipment_id},
+        )
     if resp.status_code != 200:
-        raise RuntimeError(f"Set Transport API {resp.status_code}: {resp.text[:400]}")
+        raise RuntimeError(f"List transport options {resp.status_code}: {resp.text[:300]}")
+
+    transport_opts = resp.json().get("transportationOptions", [])
+    if not transport_opts:
+        raise RuntimeError("No transportation options returned by Amazon")
+
+    # Pick UPS partnered carrier if available, else first
+    chosen = next(
+        (t for t in transport_opts if "UPS" in (t.get("carrier", {}).get("name") or "").upper()),
+        transport_opts[0],
+    )
+    transport_option_id = chosen["transportationOptionId"]
+
+    # Confirm transportation option
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{base}{_V2}/inboundPlans/{inbound_plan_id}/transportationOptions/{transport_option_id}/confirmation",
+            headers={"x-amz-access-token": token},
+        )
+    if resp.status_code not in (200, 202):
+        raise RuntimeError(f"Confirm transport option {resp.status_code}: {resp.text[:300]}")
+    await _poll_op(base, token, resp.json()["operationId"])
 
 
 async def get_transport(
     amazon_shipment_id: str,
     tenant_id: Optional[int] = None,
     max_polls: int = 8,
+    inbound_plan_id: Optional[str] = None,
 ) -> dict:
     """
-    GET /fba/inbound/v0/shipments/{ShipmentId}/transport
-    Polls until status is ESTIMATED (or WORKING/ERROR).
-    Returns {"status", "estimated_cost", "currency", "carrier", "tracking_id"}
+    Get confirmed transportation details for a shipment.
     """
     token, mkt_id, base = await _get_access_token_for_tenant(tenant_id)
 
-    for _ in range(max_polls):
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                f"{base}/fba/inbound/v0/shipments/{amazon_shipment_id}/transport",
-                headers={"x-amz-access-token": token},
-            )
-        if resp.status_code != 200:
-            raise RuntimeError(f"Get Transport API {resp.status_code}: {resp.text[:300]}")
-
-        td = resp.json().get("payload", {}).get("TransportContent", {})
-        header = td.get("TransportHeader", {})
-        result = td.get("TransportResult", {})
-        details = td.get("TransportDetails", {})
-        status = result.get("TransportStatus", "WORKING")
-
-        if status in ("ESTIMATED", "CONFIRMED"):
-            # Extract rate
-            ppd = details.get("PartneredSmallParcelData", {})
-            pkg_list = ppd.get("PackageList") or []
-            total_cost = 0.0
-            currency = "USD"
-            for pkg in pkg_list:
-                rate = pkg.get("PackageStatus", {})
-                carrier_pkg = pkg.get("TrackingId", "")
-                charge = pkg.get("Charge") or {}
-                total_cost += float(charge.get("Amount", 0) or 0)
-                currency = charge.get("CurrencyCode", "USD")
-
-            return {
-                "status":         status,
-                "estimated_cost": round(total_cost, 2),
-                "currency":       currency,
-            }
-
-        if status in ("ERROR", "VOIDED"):
-            raise RuntimeError(f"Transport estimate failed with status: {status}")
-
-        await asyncio.sleep(3)
-
-    return {"status": "WORKING", "estimated_cost": None, "currency": "USD"}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 7. Confirm Transport
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def confirm_transport(amazon_shipment_id: str, tenant_id: Optional[int] = None) -> None:
-    """
-    POST /fba/inbound/v0/shipments/{ShipmentId}/transport/confirm
-    Locks the rate and charges the Amazon account.
-    """
-    token, mkt_id, base = await _get_access_token_for_tenant(tenant_id)
+    if not inbound_plan_id:
+        return {"status": "UNKNOWN", "estimated_cost": None, "currency": "USD"}
 
     async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.post(
-            f"{base}/fba/inbound/v0/shipments/{amazon_shipment_id}/transport/confirm",
+        resp = await client.get(
+            f"{base}{_V2}/inboundPlans/{inbound_plan_id}/transportationOptions",
+            headers={"x-amz-access-token": token},
+            params={"shipmentId": amazon_shipment_id},
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Get transport options {resp.status_code}: {resp.text[:300]}")
+
+    opts = resp.json().get("transportationOptions", [])
+    if not opts:
+        return {"status": "WORKING", "estimated_cost": None, "currency": "USD"}
+
+    # Find confirmed option
+    confirmed = next((o for o in opts if o.get("quote", {}).get("cost")), opts[0])
+    cost_info = confirmed.get("quote", {}).get("cost") or {}
+    return {
+        "status":         "ESTIMATED",
+        "estimated_cost": float(cost_info.get("amount", 0) or 0),
+        "currency":       cost_info.get("currencyCode", "USD"),
+    }
+
+
+async def confirm_transport(amazon_shipment_id: str, tenant_id: Optional[int] = None,
+                             inbound_plan_id: Optional[str] = None) -> None:
+    """No-op for v2024 — transport confirmation happens in set_transport."""
+    pass
+
+
+async def void_transport(amazon_shipment_id: str, tenant_id: Optional[int] = None,
+                          inbound_plan_id: Optional[str] = None) -> None:
+    """Cancel transportation for this shipment (v2024 — cancel the inbound plan)."""
+    token, mkt_id, base = await _get_access_token_for_tenant(tenant_id)
+    if not inbound_plan_id:
+        return  # nothing to void if no plan ID
+    async with httpx.AsyncClient(timeout=15) as client:
+        await client.delete(
+            f"{base}{_V2}/inboundPlans/{inbound_plan_id}",
             headers={"x-amz-access-token": token},
         )
 
-    if resp.status_code != 200:
-        raise RuntimeError(f"Confirm Transport API {resp.status_code}: {resp.text[:300]}")
-
-
-async def void_transport(amazon_shipment_id: str, tenant_id: Optional[int] = None) -> None:
-    """POST /fba/inbound/v0/shipments/{ShipmentId}/transport/void"""
-    token, mkt_id, base = await _get_access_token_for_tenant(tenant_id)
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.post(
-            f"{base}/fba/inbound/v0/shipments/{amazon_shipment_id}/transport/void",
-            headers={"x-amz-access-token": token},
-        )
-    if resp.status_code != 200:
-        raise RuntimeError(f"Void Transport API {resp.status_code}: {resp.text[:200]}")
-
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 8. Labels
+# 6. Labels (v2024-03-20)
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def get_labels(
@@ -533,53 +571,51 @@ async def get_labels(
     tenant_id: Optional[int] = None,
     label_type: str = "UNIQUE",
     page_type: str = "PackageLabel_Letter_2",
+    inbound_plan_id: Optional[str] = None,
 ) -> str:
     """
-    GET /fba/inbound/v0/shipments/{ShipmentId}/labels
+    GET /inbound/fba/2024-03-20/inboundPlans/{planId}/shipments/{shipmentId}/labels
     Returns the URL to the label PDF.
     """
     token, mkt_id, base = await _get_access_token_for_tenant(tenant_id)
 
+    if not inbound_plan_id:
+        raise RuntimeError(
+            "inbound_plan_id is required to fetch labels. "
+            "This shipment was created with the old API — please create a new shipment."
+        )
+
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.get(
-            f"{base}/fba/inbound/v0/shipments/{amazon_shipment_id}/labels",
+            f"{base}{_V2}/inboundPlans/{inbound_plan_id}/shipments/{amazon_shipment_id}/labels",
             headers={"x-amz-access-token": token},
-            params={
-                "PageType":  page_type,
-                "LabelType": label_type,
-            },
+            params={"PageType": page_type, "LabelType": label_type},
         )
 
     if resp.status_code != 200:
         raise RuntimeError(f"Labels API {resp.status_code}: {resp.text[:300]}")
 
-    download_url = resp.json().get("payload", {}).get("DownloadURL", "")
+    download_url = resp.json().get("downloadURL", "")
     if not download_url:
         raise RuntimeError("Amazon returned no label download URL")
     return download_url
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Optimized Shipment eligibility check
+# Optimized shipment eligibility probe
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def check_optimized_eligible(
     amazon_shipment_id: str,
     tenant_id: Optional[int] = None,
 ) -> bool:
-    """
-    Re-create the plan with IntendedBoxContentsSource=AMAZON_OPTIMIZED to see
-    if the seller account supports it.  Returns True/False.
-    This is a read-only probe — it does NOT commit anything.
-    """
     try:
         token, mkt_id, base = await _get_access_token_for_tenant(tenant_id)
-        # Probe: try fetching the shipment; if it has AmazonPrepFeesDetails it's eligible
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
-                f"{base}/fba/inbound/v0/shipments",
+                f"{base}{_V2}/inboundPlans",
                 headers={"x-amz-access-token": token},
-                params={"ShipmentStatusList": "WORKING", "QueryType": "SHIPMENT"},
+                params={"status": "ACTIVE", "pageSize": 1},
             )
         return resp.status_code == 200
     except Exception:

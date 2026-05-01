@@ -587,3 +587,6 @@ class FBAShipment(Base):
 
     created_at           = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at           = Column(DateTime(timezone=True), onupdate=func.now())
+    # v2024-03-20 FBA Inbound API fields
+    inbound_plan_id      = Column(String, nullable=True, index=True)
+    placement_option_id  = Column(String, nullable=True)
