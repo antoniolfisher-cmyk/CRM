@@ -38,9 +38,8 @@ _DB_TIMEOUT_MS = int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "15000"))
 def get_db():
     db = SessionLocal()
     try:
-        # Per-session timeout: kills runaway queries without affecting migrations
-        # or background jobs (SET LOCAL only applies to this transaction).
         if not is_sqlite:
+            db.execute(text("SET search_path = public"))
             db.execute(text(f"SET LOCAL statement_timeout = {_DB_TIMEOUT_MS}"))
         yield db
     finally:
@@ -52,6 +51,7 @@ def get_read_db():
     db = _ReadSessionLocal()
     try:
         if not is_sqlite:
+            db.execute(text("SET search_path = public"))
             db.execute(text(f"SET LOCAL statement_timeout = {_DB_TIMEOUT_MS}"))
         yield db
     finally:

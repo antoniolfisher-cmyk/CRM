@@ -4142,6 +4142,7 @@ def list_products(
         if status is not None:
             q = q.filter(models.Product.status == status)
         result = q.order_by(models.Product.created_at.desc()).offset(offset).limit(min(limit, 1000)).all()
+        log.info("[products] tenant=%s status=%s returned=%d", tid, status, len(result))
         try:
             cache_set(ck, jsonable_encoder(result), ttl=30)
         except Exception:
