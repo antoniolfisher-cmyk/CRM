@@ -164,6 +164,9 @@ async def _fetch_fba_inventory(tenant_id: Optional[int] = None) -> list:
                     + (details.get("inboundShippedQuantity") or 0)
                     + (details.get("inboundReceivingQuantity") or 0)
                 )
+                # Fall back to totalQuantity if details sub-object returned empty
+                if qty == 0:
+                    qty = s.get("totalQuantity") or 0
                 items.append({
                     "asin":         s.get("asin", ""),
                     "product_name": s.get("productName", ""),
