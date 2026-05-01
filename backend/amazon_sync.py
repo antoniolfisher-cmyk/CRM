@@ -159,14 +159,20 @@ async def _fetch_fba_inventory(tenant_id: Optional[int] = None) -> list:
             data = resp.json()
             for s in data.get("payload", {}).get("inventorySummaries", []):
                 details = s.get("inventoryDetails") or {}
-                qty = (
-                    (details.get("fulfillableQuantity") or 0)
-                    + (details.get("inboundShippedQuantity") or 0)
-                    + (details.get("inboundReceivingQuantity") or 0)
-                )
-                # Fall back to totalQuantity if details sub-object returned empty
+                fulfillable  = details.get("fulfillableQuantity") or 0
+                inb_working  = details.get("inboundWorkingQuantity") or 0
+                inb_shipped  = details.get("inboundShippedQuantity") or 0
+                inb_recv     = details.get("inboundReceivingQuantity") or 0
+                reserved     = (details.get("reservedQuantity") or {}).get("totalReservedQuantity") or 0
+                total_api    = s.get("totalQuantity") or 0
+                qty = fulfillable + inb_working + inb_shipped + inb_recv + reserved
                 if qty == 0:
-                    qty = s.get("totalQuantity") or 0
+                    qty = total_api
+                import logging as _log
+                _log.getLogger("amazon_sync").info(
+                    "FBA item asin=%s sku=%s fulfillable=%s inb_work=%s inb_ship=%s inb_recv=%s reserved=%s total_api=%s → qty=%s",
+                    s.get("asin"), s.get("sellerSku"), fulfillable, inb_working, inb_shipped, inb_recv, reserved, total_api, qty
+                )
                 items.append({
                     "asin":         s.get("asin", ""),
                     "product_name": s.get("productName", ""),
