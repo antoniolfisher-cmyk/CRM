@@ -4307,6 +4307,30 @@ def fix_products_table(current: dict = Depends(require_superadmin)):
     return result
 
 
+@app.get("/api/admin/products-debug")
+def products_debug(current: dict = Depends(require_superadmin)):
+    """Raw SQL diagnostic: what's actually in public.products — superadmin only."""
+    try:
+        with engine.connect() as _c:
+            total = _c.execute(text("SELECT COUNT(*) FROM public.products")).scalar()
+            by_tenant = _c.execute(text(
+                "SELECT tenant_id, status, COUNT(*) as n, SUM(quantity) as qty "
+                "FROM public.products GROUP BY tenant_id, status ORDER BY tenant_id, status"
+            )).fetchall()
+            sample = _c.execute(text(
+                "SELECT id, tenant_id, asin, status, quantity, fulfillment_channel, created_by "
+                "FROM public.products ORDER BY id DESC LIMIT 5"
+            )).fetchall()
+        return {
+            "total_rows": total,
+            "by_tenant_status": [{"tenant_id": r[0], "status": r[1], "count": r[2], "total_qty": r[3]} for r in by_tenant],
+            "sample_rows": [{"id": r[0], "tenant_id": r[1], "asin": r[2], "status": r[3], "quantity": r[4], "channel": r[5], "created_by": r[6]} for r in sample],
+            "current_user_tenant_id": current.get("tenant_id"),
+        }
+    except Exception as e:
+        raise HTTPException(500, detail=str(e))
+
+
 @app.post("/api/admin/purge-system-products")
 async def purge_system_products(db: Session = Depends(get_db), current: dict = Depends(require_admin)):
     """
