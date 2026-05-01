@@ -100,8 +100,8 @@ export default function ShipToAmazon() {
 // FBA SHIPMENT
 // ─────────────────────────────────────────────────────────────────────────────
 function FBAShipmentForm() {
-  // 'pick' → 'placement' → 'done'
-  const [stage, setStage] = useState('pick')
+  // 'config' → 'pick' → 'placement' → 'done'
+  const [stage, setStage] = useState('config')
 
   const [addrForm, setAddrForm]       = useState({ name:'', line1:'', line2:'', city:'', state:'FL', zip:'', country:'US' })
   const [editingAddr, setEditingAddr] = useState(false)
@@ -115,6 +115,22 @@ function FBAShipmentForm() {
   const [shipmentName, setShipmentName] = useState(nowLabel)
   const [labelPrep, setLabelPrep]     = useState('SELLER_LABEL')
   const [shipMethod, setShipMethod]   = useState('spd')
+
+  // Auto Pricing config
+  const [autoPriceOpen, setAutoPriceOpen]       = useState(true)
+  const [autoFillPrice, setAutoFillPrice]       = useState(true)
+  const [priceMatchBasis, setPriceMatchBasis]   = useState('buy_box')
+  const [priceDirection, setPriceDirection]     = useState('increase')
+  const [priceBy, setPriceBy]                   = useState('25')
+  // Auto-Print FNSKU config
+  const [autoPrintOpen, setAutoPrintOpen]       = useState(true)
+  const [autoPrintOnBox, setAutoPrintOnBox]     = useState(false)
+  const [autoPrintOnQty, setAutoPrintOnQty]     = useState(false)
+  // Meta Data config
+  const [metaOpen, setMetaOpen]                 = useState(true)
+  const [buyCostInput, setBuyCostInput]         = useState(true)
+  const [supplierInput, setSupplierInput]       = useState(false)
+  const [datePurchInput, setDatePurchInput]     = useState(false)
 
   const [plans, setPlans]             = useState([])
   const [selectedPlan, setSelectedPlan] = useState(0)
@@ -147,12 +163,6 @@ function FBAShipmentForm() {
         setEditingAddr(true)
       }
     }).finally(() => setAddrLoading(false))
-
-    setInvLoading(true)
-    api.getProducts({ limit: 500 })
-      .then(d => setInventory(Array.isArray(d) ? d : (d?.items || [])))
-      .catch(() => {})
-      .finally(() => setInvLoading(false))
   }, [])
 
   const shipFromFilled = (addrForm.line1 || addrForm.line2) && addrForm.city && addrForm.zip
@@ -243,11 +253,24 @@ function FBAShipmentForm() {
     finally { setLoading(false) }
   }
 
+  function handleStartShipment() {
+    setError('')
+    setStage('pick')
+    if (!inventory.length) {
+      setInvLoading(true)
+      api.getProducts({ limit: 500 })
+        .then(d => setInventory(Array.isArray(d) ? d : (d?.items || [])))
+        .catch(() => {})
+        .finally(() => setInvLoading(false))
+    }
+  }
+
   function resetAll() {
-    setStage('pick'); setShipment([]); setPlans([]); setShipmentRecord(null)
+    setStage('config'); setShipment([]); setPlans([]); setShipmentRecord(null)
     setLabelUrl(''); setError(''); setShipmentName(nowLabel())
   }
 
+  const addrLine    = [addrForm.line1 || addrForm.line2, addrForm.city, addrForm.state, addrForm.zip].filter(Boolean).join(', ')
   const addrDisplay = shipFromFilled
     ? `${addrForm.name ? addrForm.name + ' · ' : ''}${addrForm.line1 || addrForm.line2}, ${addrForm.city} ${addrForm.state} ${addrForm.zip}`
     : null
@@ -294,6 +317,166 @@ function FBAShipmentForm() {
       </div>
     </div>
   )
+
+  // ── CONFIG ───────────────────────────────────────────────────────────────
+  if (stage === 'config') {
+    return (
+      <div className="bg-white rounded-xl border border-gray-200">
+        {addrModal}
+        <div className="px-6 py-4 border-b border-gray-100">
+          <h2 className="text-sm font-semibold text-gray-700">Create New Shipment</h2>
+        </div>
+
+        <div className="p-6 grid grid-cols-1 lg:grid-cols-2 gap-10">
+
+          {/* ── LEFT COLUMN ── */}
+          <div className="space-y-7">
+
+            {/* Details */}
+            <div>
+              <p className="text-sm font-semibold text-gray-800 mb-3">Details</p>
+              <div className="divide-y divide-gray-100">
+                <CfgRow label="Shipment Name:">
+                  <input className={inp} value={shipmentName} onChange={e => setShipmentName(e.target.value)} />
+                </CfgRow>
+                <CfgRow label="Fulfillment Type:">
+                  <select className={inp} defaultValue="fba">
+                    <option value="fba">FBA (Fulfillment By Amazon)</option>
+                  </select>
+                </CfgRow>
+              </div>
+            </div>
+
+            <hr className="border-gray-100" />
+
+            {/* Shipping & Origin */}
+            <div>
+              <p className="text-sm font-semibold text-gray-800 mb-3">Shipping &amp; Origin</p>
+              <div className="divide-y divide-gray-100">
+                <CfgRow label="Ship From:">
+                  <div>
+                    <div className="flex items-center gap-3">
+                      <select
+                        className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-blue-500 bg-white"
+                        value={addrForm.name}
+                        readOnly
+                      >
+                        {addrForm.name
+                          ? <option value={addrForm.name}>{addrForm.name.toUpperCase()}</option>
+                          : <option value="">— not set —</option>
+                        }
+                      </select>
+                      <button
+                        onClick={() => setEditingAddr(true)}
+                        className="text-sm font-medium text-orange-500 hover:text-orange-600 whitespace-nowrap shrink-0"
+                      >
+                        Edit Address
+                      </button>
+                    </div>
+                    {addrLoading
+                      ? <p className="text-xs text-gray-400 mt-1">Loading…</p>
+                      : addrLine
+                        ? <p className="text-xs text-gray-500 mt-1.5">{addrLine}</p>
+                        : <p className="text-xs text-amber-600 mt-1.5">⚠ No address saved — click Edit Address</p>
+                    }
+                  </div>
+                </CfgRow>
+                <CfgRow label="Ship Method:">
+                  <select className={inp} value={shipMethod} onChange={e => setShipMethod(e.target.value)}>
+                    {SHIP_METHODS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+                  </select>
+                </CfgRow>
+              </div>
+            </div>
+
+            <hr className="border-gray-100" />
+
+            {/* Packaging & Labeling */}
+            <div>
+              <p className="text-sm font-semibold text-gray-800 mb-3">Packaging &amp; Labeling</p>
+              <div className="divide-y divide-gray-100">
+                <CfgRow label="Box Contents:">
+                  <select className={inp} value={labelPrep} onChange={e => setLabelPrep(e.target.value)}>
+                    {LABEL_PREPS.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
+                  </select>
+                </CfgRow>
+              </div>
+            </div>
+          </div>
+
+          {/* ── RIGHT COLUMN ── */}
+          <div className="space-y-3">
+
+            {/* Auto Pricing */}
+            <FbaCfgCard title="Auto Pricing" open={autoPriceOpen} onToggle={() => setAutoPriceOpen(v => !v)}>
+              <div className="space-y-3">
+                <div className="flex items-start gap-3">
+                  <FbaToggle value={autoFillPrice} onChange={setAutoFillPrice} />
+                  <div>
+                    <p className="text-sm font-medium text-gray-800">Auto-fill list price</p>
+                    <p className="text-xs text-gray-500 mt-0.5">Enable to configure the list price default.</p>
+                  </div>
+                </div>
+                {autoFillPrice && (
+                  <div className="flex items-center gap-2 flex-wrap text-sm text-gray-600 pl-1">
+                    <span>Match list price with</span>
+                    <select
+                      className="border border-gray-300 rounded-md px-2 py-1 text-xs focus:outline-none focus:border-blue-500"
+                      value={priceMatchBasis} onChange={e => setPriceMatchBasis(e.target.value)}
+                    >
+                      {PRICE_MATCH_BASIS.map(b => <option key={b.value} value={b.value}>{b.label}</option>)}
+                    </select>
+                    <span>and</span>
+                    <select
+                      className="border border-gray-300 rounded-md px-2 py-1 text-xs focus:outline-none focus:border-blue-500"
+                      value={priceDirection} onChange={e => setPriceDirection(e.target.value)}
+                    >
+                      {PRICE_DIRECTION.map(d => <option key={d.value} value={d.value}>{d.label}</option>)}
+                    </select>
+                    <span>by</span>
+                    <input
+                      type="number" min="0"
+                      className="border border-gray-300 rounded-md px-2 py-1 text-xs w-16 text-right focus:outline-none focus:border-blue-500"
+                      value={priceBy} onChange={e => setPriceBy(e.target.value)}
+                    />
+                    <span>%</span>
+                  </div>
+                )}
+              </div>
+            </FbaCfgCard>
+
+            {/* Auto-Print FNSKU */}
+            <FbaCfgCard title="Auto-Print FNSKU" open={autoPrintOpen} onToggle={() => setAutoPrintOpen(v => !v)}>
+              <div className="flex items-center gap-8 flex-wrap">
+                <FbaToggleLabel value={autoPrintOnBox} onChange={setAutoPrintOnBox} label="After assigning to boxes" />
+                <FbaToggleLabel value={autoPrintOnQty} onChange={setAutoPrintOnQty} label="On quantity update" />
+              </div>
+            </FbaCfgCard>
+
+            {/* Meta Data */}
+            <FbaCfgCard title="Meta Data" open={metaOpen} onToggle={() => setMetaOpen(v => !v)}>
+              <div className="flex items-center gap-8 flex-wrap">
+                <FbaToggleLabel value={buyCostInput}   onChange={setBuyCostInput}   label="Buy Cost Input" />
+                <FbaToggleLabel value={supplierInput}  onChange={setSupplierInput}  label="Supplier Input" />
+                <FbaToggleLabel value={datePurchInput} onChange={setDatePurchInput} label="Date Purchased Input" />
+              </div>
+            </FbaCfgCard>
+
+            {/* Create button */}
+            <div className="flex justify-end pt-4">
+              <button
+                onClick={handleStartShipment}
+                className="flex items-center gap-2 px-6 py-2.5 rounded-lg text-sm font-semibold text-white bg-red-600 hover:bg-red-700 transition-colors"
+              >
+                + Create Shipment
+              </button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    )
+  }
 
   // ── DONE ─────────────────────────────────────────────────────────────────
   if (stage === 'done') {
@@ -414,9 +597,12 @@ function FBAShipmentForm() {
 
   // ── PICK PRODUCTS (main view) ─────────────────────────────────────────────
   return (
-    <div className="space-y-0">
+    <div className="space-y-2">
       {addrModal}
-      {error && <div className="mb-3"><ErrorBanner msg={error} /></div>}
+      <button onClick={() => setStage('config')} className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
+        ← Back to shipment settings
+      </button>
+      {error && <div className="mb-1"><ErrorBanner msg={error} /></div>}
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] min-h-[520px] bg-white rounded-xl border border-gray-200 overflow-hidden">
 
@@ -701,6 +887,63 @@ function FBMListingForm() {
         )}
       </div>
     </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FBA config helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function CfgRow({ label, children }) {
+  return (
+    <div className="flex items-start gap-4 py-3 first:pt-0">
+      <span className="text-sm text-gray-500 w-36 shrink-0 pt-2">{label}</span>
+      <div className="flex-1 min-w-0">{children}</div>
+    </div>
+  )
+}
+
+function FbaCfgCard({ title, open, onToggle, children }) {
+  return (
+    <div className="border border-gray-200 rounded-xl overflow-hidden">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full flex items-center justify-between px-4 py-3 bg-white hover:bg-gray-50 transition-colors"
+      >
+        <span className="text-sm font-semibold text-gray-900">{title}</span>
+        <svg
+          className={`w-4 h-4 text-gray-400 transition-transform ${open ? '' : 'rotate-180'}`}
+          fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
+        </svg>
+      </button>
+      {open && <div className="px-4 pb-4 border-t border-gray-100 pt-3">{children}</div>}
+    </div>
+  )
+}
+
+function FbaToggle({ value, onChange }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={value}
+      onClick={() => onChange(!value)}
+      className={`relative w-10 h-5 rounded-full shrink-0 transition-colors focus:outline-none ${value ? 'bg-red-500' : 'bg-gray-300'}`}
+    >
+      <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${value ? 'translate-x-5' : 'translate-x-0'}`} />
+    </button>
+  )
+}
+
+function FbaToggleLabel({ value, onChange, label }) {
+  return (
+    <label className="flex items-center gap-2 cursor-pointer select-none">
+      <FbaToggle value={value} onChange={onChange} />
+      <span className="text-sm text-gray-600">{label}</span>
+    </label>
   )
 }
 
