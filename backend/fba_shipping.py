@@ -252,16 +252,21 @@ async def create_plan(
     label_owner = "AMAZON" if label_prep == "AMAZON_LABEL" else "SELLER"
 
     # 1. Create inbound plan
+    def _item_body(it):
+        entry = {
+            "labelOwner": it.get("labelOwner") or label_owner,
+            "msku":       it["sku"],
+            "prepOwner":  it.get("prepOwner") or "SELLER",
+            "quantity":   int(it["qty"]),
+        }
+        if it.get("prepCategory") and it["prepCategory"] != "NONE":
+            entry["prepDetails"] = [{"prepCategory": it["prepCategory"]}]
+        if it.get("expDate"):
+            entry["expiration"] = it["expDate"]
+        return entry
+
     plan_body = {
-        "items": [
-            {
-                "labelOwner":  label_owner,
-                "msku":        it["sku"],
-                "prepOwner":   "SELLER",
-                "quantity":    int(it["qty"]),
-            }
-            for it in items
-        ],
+        "items": [_item_body(it) for it in items],
         "marketplaceId":          mkt_id,
         "destinationMarketplaces": [mkt_id],
         "name":                   f"Plan-{int(asyncio.get_event_loop().time())}",
