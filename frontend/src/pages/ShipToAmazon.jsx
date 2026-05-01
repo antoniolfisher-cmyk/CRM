@@ -103,7 +103,7 @@ function FBAShipmentForm() {
   // 'config' → 'pick' → 'placement' → 'done'
   const [stage, setStage] = useState('config')
 
-  const [addrForm, setAddrForm]       = useState({ name:'', line1:'', line2:'', city:'', state:'FL', zip:'', country:'US' })
+  const [addrForm, setAddrForm]       = useState({ name:'', line1:'', line2:'', city:'', state:'FL', zip:'', country:'US', phone:'' })
   const [editingAddr, setEditingAddr] = useState(false)
   const [addrLoading, setAddrLoading] = useState(true)
   const [addrError, setAddrError]     = useState('')
@@ -151,6 +151,7 @@ function FBAShipmentForm() {
       if (addr) {
         setAddrForm({
           name:    addr.name || c?.store_name || '',
+          phone:   addr.phoneNumber || addr.phone || '',
           line1:   addr.addressLine1 || addr.addressLine2 || '',
           line2:   addr.addressLine1 ? (addr.addressLine2 || '') : '',
           city:    addr.city || '',
@@ -174,6 +175,7 @@ function FBAShipmentForm() {
     }
     const payload = {
       name: addrForm.name,
+      phoneNumber: addrForm.phone || '',
       addressLine1: addr1,
       ...(addrForm.line2.trim() && addr1 !== addrForm.line2.trim() ? { addressLine2: addrForm.line2 } : {}),
       city: addrForm.city, stateOrProvinceCode: addrForm.state,
@@ -212,6 +214,7 @@ function FBAShipmentForm() {
   function buildFrom() {
     return {
       name:        addrForm.name,
+      phone:       addrForm.phone || '555-000-0000',
       address1:    addrForm.line1 || addrForm.line2,
       ...(addrForm.line2 && addrForm.line1 ? { address2: addrForm.line2 } : {}),
       city:        addrForm.city,
@@ -283,6 +286,10 @@ function FBAShipmentForm() {
           <div>
             <label className="block text-xs text-gray-500 mb-1">Name / Company</label>
             <input className={inp} value={addrForm.name} onChange={e => setAddrForm(a => ({...a, name: e.target.value}))} />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Phone Number</label>
+            <input className={inp} value={addrForm.phone} onChange={e => setAddrForm(a => ({...a, phone: e.target.value}))} placeholder="555-000-0000" type="tel" />
           </div>
           <div>
             <label className="block text-xs text-gray-500 mb-1">Address Line 1</label>

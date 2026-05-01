@@ -251,15 +251,17 @@ async def create_plan(
             }
             for it in items
         ],
-        "marketplaceId": mkt_id,
-        "name":          f"Plan-{int(asyncio.get_event_loop().time())}",
+        "marketplaceId":          mkt_id,
+        "destinationMarketplaces": [mkt_id],
+        "name":                   f"Plan-{int(asyncio.get_event_loop().time())}",
         "sourceAddress": {
-            "addressLine1":       from_address.get("address1", ""),
-            "city":               from_address.get("city", ""),
-            "companyName":        from_address.get("name", "Seller"),
-            "countryCode":        from_address.get("country", "US"),
-            "name":               from_address.get("name", "Seller"),
-            "postalCode":         from_address.get("postal_code", ""),
+            "addressLine1":        from_address.get("address1", ""),
+            "city":                from_address.get("city", ""),
+            "companyName":         from_address.get("name", "Seller"),
+            "countryCode":         from_address.get("country", "US"),
+            "name":                from_address.get("name", "Seller"),
+            "phoneNumber":         from_address.get("phone", "555-000-0000"),
+            "postalCode":          from_address.get("postal_code", ""),
             "stateOrProvinceCode": from_address.get("state", ""),
         },
     }
