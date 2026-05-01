@@ -198,20 +198,26 @@ function FBAShipmentForm() {
   const totalUnits  = shipment.reduce((sum, s) => sum + (s.qty || 1), 0)
   const totalProfit = shipment.reduce((sum, s) => sum + ((s.fees?.net_proceeds || 0) - (s.product.buy_cost || 0)) * (s.qty || 1), 0)
 
+  // Build address in the format fba_shipping.py expects
+  function buildFrom() {
+    return {
+      name:        addrForm.name,
+      address1:    addrForm.line1 || addrForm.line2,
+      ...(addrForm.line2 && addrForm.line1 ? { address2: addrForm.line2 } : {}),
+      city:        addrForm.city,
+      state:       addrForm.state,
+      postal_code: addrForm.zip,
+      country:     addrForm.country,
+    }
+  }
+
   async function handleCreateShipment() {
     if (!shipFromFilled) { setError('Set your ship-from address first.'); return }
     if (!shipment.length) { setError('Add at least one product to your shipment.'); return }
     setError(''); setLoading(true)
-    const from = {
-      name: addrForm.name,
-      addressLine1: addrForm.line1 || addrForm.line2,
-      ...(addrForm.line2 && addrForm.line1 ? { addressLine2: addrForm.line2 } : {}),
-      city: addrForm.city, stateOrProvinceCode: addrForm.state,
-      postalCode: addrForm.zip, countryCode: addrForm.country,
-    }
     const items = shipment.map(s => ({ sku: s.product.seller_sku || s.product.asin, asin: s.product.asin, qty: s.qty, condition: s.condition }))
     try {
-      const result = await api.fbaPlan(items, from, labelPrep)
+      const result = await api.fbaPlan(items, buildFrom(), labelPrep)
       setPlans(Array.isArray(result) ? result : [result])
       setSelectedPlan(0); setStage('placement')
     } catch (e) { setError(e.message) }
@@ -222,13 +228,7 @@ function FBAShipmentForm() {
     const thePlan = plans[selectedPlan]
     if (!thePlan) { setError('Select a placement option.'); return }
     setError(''); setLoading(true)
-    const from = {
-      name: addrForm.name,
-      addressLine1: addrForm.line1 || addrForm.line2,
-      ...(addrForm.line2 && addrForm.line1 ? { addressLine2: addrForm.line2 } : {}),
-      city: addrForm.city, stateOrProvinceCode: addrForm.state,
-      postalCode: addrForm.zip, countryCode: addrForm.country,
-    }
+    const from = buildFrom()
     const items = shipment.map(s => ({ sku: s.product.seller_sku || s.product.asin, asin: s.product.asin, qty: s.qty, condition: s.condition }))
     const p0 = shipment[0]
     try {
@@ -326,7 +326,7 @@ function FBAShipmentForm() {
   if (stage === 'placement') {
     const plan = plans[selectedPlan] || {}
     const shipTo    = plan.ship_to_address || {}
-    const shipToStr = [shipTo.addressLine1, shipTo.city, shipTo.stateOrProvinceCode, shipTo.postalCode].filter(Boolean).join(', ')
+    const shipToStr = [shipTo.address1, shipTo.city, shipTo.state, shipTo.postal_code].filter(Boolean).join(', ')
     return (
       <div className="space-y-4">
         {addrModal}
