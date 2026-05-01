@@ -7531,52 +7531,61 @@ def timeclock_export(
 @app.post("/api/fba/lookup")
 async def fba_lookup(body: dict = Body(...), current: dict = Depends(require_auth)):
     """Catalog Items API: title, dims, weight, BSR for an ASIN."""
-    import fba_shipping
     asin = (body.get("asin") or "").strip().upper()
     if not asin:
         raise HTTPException(400, "asin required")
     try:
+        import fba_shipping
         return await fba_shipping.lookup_asin(asin, tenant_id=current["tenant_id"])
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(502, str(e))
+        print(f"[fba_lookup] tenant={current.get('tenant_id')} asin={asin} error: {e}", flush=True)
+        raise HTTPException(502, f"ASIN lookup error: {e}")
 
 
 @app.post("/api/fba/fees")
 async def fba_fees(body: dict = Body(...), current: dict = Depends(require_auth)):
     """Product Fees API: referral + FBA fulfillment fee estimate."""
-    import fba_shipping
     asin  = (body.get("asin") or "").strip().upper()
     price = float(body.get("price") or 0)
     if not asin or price <= 0:
         raise HTTPException(400, "asin and price required")
     try:
+        import fba_shipping
         return await fba_shipping.estimate_fees(asin, price, tenant_id=current["tenant_id"])
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(502, str(e))
+        print(f"[fba_fees] tenant={current.get('tenant_id')} asin={asin} error: {e}", flush=True)
+        raise HTTPException(502, f"Fee estimate error: {e}")
 
 
 @app.post("/api/fba/plan")
 async def fba_plan(body: dict = Body(...), current: dict = Depends(require_auth)):
     """FBA Inbound v0: create shipment plan — returns FC assignment."""
-    import fba_shipping
     items        = body.get("items") or []
     from_address = body.get("from_address") or {}
     label_prep   = body.get("label_prep", "SELLER_LABEL")
     if not items or not from_address:
         raise HTTPException(400, "items and from_address required")
     try:
+        import fba_shipping
         return await fba_shipping.create_plan(items, from_address,
                                               tenant_id=current["tenant_id"],
                                               label_prep=label_prep)
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(502, str(e))
+        print(f"[fba_plan] tenant={current.get('tenant_id')} error: {e}", flush=True)
+        raise HTTPException(502, f"FBA plan error: {e}")
 
 
 @app.post("/api/fba/shipments")
 async def fba_create_shipment(body: dict = Body(...), current: dict = Depends(require_auth),
                                db: Session = Depends(get_db)):
     """Create FBA shipment record in Amazon + persist to DB."""
-    import fba_shipping, json as _json
+    import json as _json
     plan          = body.get("plan") or {}
     shipment_name = body.get("shipment_name", "")
     from_address  = body.get("from_address") or {}
@@ -7592,12 +7601,16 @@ async def fba_create_shipment(body: dict = Body(...), current: dict = Depends(re
         raise HTTPException(400, "plan, from_address and items required")
 
     try:
+        import fba_shipping
         amazon_id = await fba_shipping.create_shipment(
             plan, shipment_name, from_address, items,
             tenant_id=current["tenant_id"]
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(502, str(e))
+        print(f"[fba_create_shipment] tenant={current.get('tenant_id')} error: {e}", flush=True)
+        raise HTTPException(502, f"FBA create shipment error: {e}")
 
     try:
         optimized = await fba_shipping.check_optimized_eligible(
@@ -7704,7 +7717,7 @@ async def fba_set_transport(shipment_id: int, body: dict = Body(...),
                              current: dict = Depends(require_auth),
                              db: Session = Depends(get_db)):
     """Submit box dims/weight to Amazon and poll for rate estimate."""
-    import fba_shipping, json as _json
+    import json as _json
     row = (db.query(models.FBAShipment)
            .filter(models.FBAShipment.id == shipment_id,
                    models.FBAShipment.tenant_id == current["tenant_id"])
@@ -7720,13 +7733,17 @@ async def fba_set_transport(shipment_id: int, body: dict = Body(...),
         raise HTTPException(400, "packages required")
 
     try:
+        import fba_shipping
         await fba_shipping.set_transport(row.amazon_shipment_id, packages,
                                          tenant_id=current["tenant_id"],
                                          is_partnered=is_partnered)
         rate = await fba_shipping.get_transport(row.amazon_shipment_id,
                                                 tenant_id=current["tenant_id"])
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(502, str(e))
+        print(f"[fba_set_transport] shipment={shipment_id} error: {e}", flush=True)
+        raise HTTPException(502, f"Transport error: {e}")
 
     row.packages_json      = _json.dumps(packages)
     row.transport_status   = rate.get("status")
@@ -7742,7 +7759,6 @@ async def fba_set_transport(shipment_id: int, body: dict = Body(...),
 async def fba_get_transport(shipment_id: int, current: dict = Depends(require_auth),
                              db: Session = Depends(get_db)):
     """Poll Amazon for current transport rate status."""
-    import fba_shipping
     row = (db.query(models.FBAShipment)
            .filter(models.FBAShipment.id == shipment_id,
                    models.FBAShipment.tenant_id == current["tenant_id"])
@@ -7750,11 +7766,14 @@ async def fba_get_transport(shipment_id: int, current: dict = Depends(require_au
     if not row:
         raise HTTPException(404, "Shipment not found")
     try:
+        import fba_shipping
         rate = await fba_shipping.get_transport(row.amazon_shipment_id,
                                                 tenant_id=current["tenant_id"],
                                                 max_polls=1)
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(502, str(e))
+        raise HTTPException(502, f"Transport poll error: {e}")
     row.transport_status   = rate.get("status")
     row.estimated_cost     = rate.get("estimated_cost")
     row.transport_currency = rate.get("currency")
@@ -7766,7 +7785,6 @@ async def fba_get_transport(shipment_id: int, current: dict = Depends(require_au
 async def fba_confirm_transport(shipment_id: int, current: dict = Depends(require_auth),
                                  db: Session = Depends(get_db)):
     """Confirm (pay for) the partnered carrier rate."""
-    import fba_shipping
     row = (db.query(models.FBAShipment)
            .filter(models.FBAShipment.id == shipment_id,
                    models.FBAShipment.tenant_id == current["tenant_id"])
@@ -7774,10 +7792,13 @@ async def fba_confirm_transport(shipment_id: int, current: dict = Depends(requir
     if not row:
         raise HTTPException(404, "Shipment not found")
     try:
+        import fba_shipping
         await fba_shipping.confirm_transport(row.amazon_shipment_id,
                                              tenant_id=current["tenant_id"])
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(502, str(e))
+        raise HTTPException(502, f"Transport confirm error: {e}")
     row.transport_status = "CONFIRMED"
     row.status           = "transport_confirmed"
     db.commit()
@@ -7788,7 +7809,6 @@ async def fba_confirm_transport(shipment_id: int, current: dict = Depends(requir
 async def fba_void_transport(shipment_id: int, current: dict = Depends(require_auth),
                               db: Session = Depends(get_db)):
     """Void the partnered carrier rate (before it ships)."""
-    import fba_shipping
     row = (db.query(models.FBAShipment)
            .filter(models.FBAShipment.id == shipment_id,
                    models.FBAShipment.tenant_id == current["tenant_id"])
@@ -7796,10 +7816,14 @@ async def fba_void_transport(shipment_id: int, current: dict = Depends(require_a
     if not row:
         raise HTTPException(404, "Shipment not found")
     try:
+        import fba_shipping
         await fba_shipping.void_transport(row.amazon_shipment_id,
                                           tenant_id=current["tenant_id"])
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(502, str(e))
+        print(f"[fba_void_transport] tenant={current.get('tenant_id')} error: {e}", flush=True)
+        raise HTTPException(502, f"Transport void error: {e}")
     row.transport_status = "VOIDED"
     row.status           = "voided"
     db.commit()
@@ -7812,7 +7836,6 @@ async def fba_get_labels(shipment_id: int, current: dict = Depends(require_auth)
                           label_type: str = "UNIQUE",
                           page_type: str = "PackageLabel_Letter_2"):
     """Fetch box label download URL from Amazon."""
-    import fba_shipping
     row = (db.query(models.FBAShipment)
            .filter(models.FBAShipment.id == shipment_id,
                    models.FBAShipment.tenant_id == current["tenant_id"])
@@ -7820,12 +7843,16 @@ async def fba_get_labels(shipment_id: int, current: dict = Depends(require_auth)
     if not row:
         raise HTTPException(404, "Shipment not found")
     try:
+        import fba_shipping
         url = await fba_shipping.get_labels(row.amazon_shipment_id,
                                             tenant_id=current["tenant_id"],
                                             label_type=label_type,
                                             page_type=page_type)
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(502, str(e))
+        print(f"[fba_get_labels] tenant={current.get('tenant_id')} error: {e}", flush=True)
+        raise HTTPException(502, f"Labels fetch error: {e}")
     row.label_url = url
     row.status    = "labeled"
     db.commit()

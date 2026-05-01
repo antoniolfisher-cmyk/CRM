@@ -116,16 +116,24 @@ async def _get_access_token_for_tenant(tenant_id: Optional[int] = None) -> tuple
         mkt_id        = os.getenv("AMAZON_MARKETPLACE_ID", "ATVPDKIKX0DER")
         base          = _sp_base()
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.post(_LWA_URL, data={
-            "grant_type":    "refresh_token",
-            "refresh_token": refresh_token,
-            "client_id":     client_id,
-            "client_secret": client_secret,
-        })
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(_LWA_URL, data={
+                "grant_type":    "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id":     client_id,
+                "client_secret": client_secret,
+            })
+    except httpx.TimeoutException:
+        raise RuntimeError("Amazon LWA token request timed out")
+    except httpx.RequestError as exc:
+        raise RuntimeError(f"Amazon LWA token network error: {exc}")
     if r.status_code != 200:
-        raise RuntimeError(f"Amazon LWA token error: {r.text[:200]}")
-    return r.json()["access_token"], mkt_id, base
+        raise RuntimeError(f"Amazon LWA token error {r.status_code}: {r.text[:200]}")
+    token = r.json().get("access_token")
+    if not token:
+        raise RuntimeError(f"Amazon LWA response missing access_token: {r.text[:200]}")
+    return token, mkt_id, base
 
 
 # ── FBA inventory fetch ────────────────────────────────────────────────────────
