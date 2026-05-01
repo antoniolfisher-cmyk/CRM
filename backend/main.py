@@ -7571,6 +7571,132 @@ async def fba_fees(body: dict = Body(...), current: dict = Depends(require_auth)
         raise HTTPException(422, f"Fee estimate error: {e}")
 
 
+@app.get("/api/fba/sku-for-asin")
+async def fba_sku_for_asin(asin: str, current: dict = Depends(require_auth),
+                            db: Session = Depends(get_db)):
+    """Look up the seller's MSKU for a given ASIN — CRM DB first, then Amazon FBA Inventory API."""
+    import httpx as _hx
+    asin = asin.strip().upper()
+    tenant_id = current["tenant_id"]
+
+    # 1. CRM DB — fastest path (already synced from Amazon)
+    product = (db.query(models.Product)
+               .filter(models.Product.tenant_id == tenant_id,
+                       models.Product.asin == asin,
+                       models.Product.seller_sku.isnot(None),
+                       models.Product.seller_sku != "")
+               .first())
+    if product:
+        return {"seller_sku": product.seller_sku, "found": True, "source": "db"}
+
+    # 2. Amazon FBA Inventory API
+    try:
+        from amazon_sync import _get_access_token_for_tenant as _gat
+        token, mkt_id, base = await _gat(tenant_id)
+        async with _hx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{base}/fba/inventory/v1/summaries",
+                headers={"x-amz-access-token": token},
+                params={
+                    "granularityType": "Marketplace",
+                    "granularityId":   mkt_id,
+                    "marketplaceIds":  mkt_id,
+                    "asins":           asin,
+                    "details":         "true",
+                },
+            )
+        if resp.status_code == 200:
+            for s in resp.json().get("payload", {}).get("inventorySummaries", []):
+                sku = s.get("sellerSku", "")
+                if sku:
+                    # Write back to DB so future lookups skip the API call
+                    p = (db.query(models.Product)
+                         .filter(models.Product.tenant_id == tenant_id,
+                                 models.Product.asin == asin)
+                         .first())
+                    if p:
+                        p.seller_sku = sku
+                        db.commit()
+                    return {"seller_sku": sku, "found": True, "source": "fba_inventory"}
+    except Exception as _e:
+        print(f"[fba_sku_for_asin] FBA inventory lookup failed: {_e}", flush=True)
+
+    return {"seller_sku": None, "found": False, "source": None}
+
+
+@app.post("/api/fba/create-sku")
+async def fba_create_sku(body: dict = Body(...), current: dict = Depends(require_auth),
+                          db: Session = Depends(get_db)):
+    """Create a new listing offer on Amazon for an ASIN and return the generated MSKU."""
+    import httpx as _hx, uuid as _uuid
+    asin      = (body.get("asin") or "").strip().upper()
+    if not asin:
+        raise HTTPException(400, "asin required")
+    tenant_id = current["tenant_id"]
+
+    try:
+        from amazon_sync import _get_access_token_for_tenant as _gat
+        token, mkt_id, base = await _gat(tenant_id)
+
+        # Get seller ID from marketplace participations
+        async with _hx.AsyncClient(timeout=15) as client:
+            r = await client.get(f"{base}/sellers/v1/marketplaceParticipations",
+                                 headers={"x-amz-access-token": token})
+        if r.status_code != 200:
+            raise RuntimeError(f"Cannot get seller ID ({r.status_code}): {r.text[:200]}")
+        participations = r.json().get("payload", [])
+        seller_id = ""
+        for p in participations:
+            seller_id = (p.get("seller") or {}).get("sellerId", "")
+            if seller_id:
+                break
+        if not seller_id:
+            raise RuntimeError("Seller ID not found — ensure SP-API credentials are correct")
+
+        # Generate unique SKU: ASIN-XXXXXXXX
+        generated_sku = f"{asin}-{_uuid.uuid4().hex[:8].upper()}"
+
+        # Create listing offer via Listings Items API v2021-08-01
+        async with _hx.AsyncClient(timeout=15) as client:
+            r = await client.put(
+                f"{base}/listings/2021-08-01/items/{seller_id}/{generated_sku}",
+                headers={"x-amz-access-token": token, "Content-Type": "application/json"},
+                params={"marketplaceIds": mkt_id},
+                json={
+                    "productType": "PRODUCT",
+                    "attributes": {
+                        "condition_type": [
+                            {"value": "new_new", "marketplace_id": mkt_id}
+                        ],
+                        "merchant_suggested_asin": [
+                            {"value": asin, "marketplace_id": mkt_id}
+                        ],
+                    },
+                },
+            )
+        if r.status_code not in (200, 201):
+            issues = r.json().get("issues", []) or r.json().get("errors", [])
+            msgs   = "; ".join(i.get("message", "") for i in issues) or r.text[:300]
+            raise RuntimeError(f"Amazon listing creation failed: {msgs}")
+
+        # Save SKU to CRM DB
+        product = (db.query(models.Product)
+                   .filter(models.Product.tenant_id == tenant_id,
+                           models.Product.asin == asin)
+                   .first())
+        if product:
+            product.seller_sku = generated_sku
+            db.commit()
+
+        return {"seller_sku": generated_sku, "created": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[fba_create_sku] tenant={tenant_id} asin={asin} error: {e}", flush=True)
+        raise HTTPException(422, f"Create SKU error: {e}")
+
+
 @app.post("/api/fba/plan")
 async def fba_plan(body: dict = Body(...), current: dict = Depends(require_auth)):
     """FBA Inbound v0: create shipment plan — returns FC assignment."""

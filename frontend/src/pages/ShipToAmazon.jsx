@@ -199,13 +199,41 @@ function FBAShipmentForm() {
 
   function addToShipment(product) {
     if (inShipment(product.asin)) return
-    setShipment(prev => [...prev, { product, qty: 1, condition: 'NewItem', fees: null }])
+    // Use seller_sku from CRM if present; otherwise 'loading' until lookup returns
+    const initialSku = product.seller_sku || null
+    setShipment(prev => [...prev, {
+      product, qty: 1, condition: 'NewItem', fees: null,
+      sku: initialSku, skuStatus: initialSku ? 'found' : 'loading',
+    }])
     api.fbaFees(product.asin, product.buy_box || product.aria_live_price || 19.99)
       .then(f => setShipment(prev => prev.map(s => s.product.asin === product.asin ? {...s, fees: f} : s)))
-      .catch(() => {})
+    if (!initialSku) {
+      api.fbaSkuForAsin(product.asin)
+        .then(r => setShipment(prev => prev.map(s =>
+          s.product.asin === product.asin
+            ? {...s, sku: r.seller_sku || null, skuStatus: r.found ? 'found' : 'missing'}
+            : s
+        )))
+        .catch(() => setShipment(prev => prev.map(s =>
+          s.product.asin === product.asin ? {...s, skuStatus: 'missing'} : s
+        )))
+    }
   }
   function removeFromShipment(asin) { setShipment(prev => prev.filter(s => s.product.asin !== asin)) }
   function updateQty(asin, val) { setShipment(prev => prev.map(s => s.product.asin === asin ? {...s, qty: Math.max(1, val)} : s)) }
+
+  async function createSkuForItem(asin) {
+    setShipment(prev => prev.map(s => s.product.asin === asin ? {...s, skuStatus: 'creating'} : s))
+    try {
+      const r = await api.fbaCreateSku(asin)
+      setShipment(prev => prev.map(s =>
+        s.product.asin === asin ? {...s, sku: r.seller_sku, skuStatus: 'found'} : s
+      ))
+    } catch (e) {
+      setError(e.message)
+      setShipment(prev => prev.map(s => s.product.asin === asin ? {...s, skuStatus: 'missing'} : s))
+    }
+  }
 
   const totalUnits  = shipment.reduce((sum, s) => sum + (s.qty || 1), 0)
   const totalProfit = shipment.reduce((sum, s) => sum + ((s.fees?.net_proceeds || 0) - (s.product.buy_cost || 0)) * (s.qty || 1), 0)
@@ -227,13 +255,15 @@ function FBAShipmentForm() {
   async function handleCreateShipment() {
     if (!shipFromFilled) { setError('Set your ship-from address first.'); return }
     if (!shipment.length) { setError('Add at least one product to your shipment.'); return }
-    const missingSku = shipment.filter(s => !s.product.seller_sku)
+    const stillLoading = shipment.filter(s => s.skuStatus === 'loading' || s.skuStatus === 'creating')
+    if (stillLoading.length) { setError('Still looking up SKUs — please wait a moment.'); return }
+    const missingSku = shipment.filter(s => !s.sku)
     if (missingSku.length) {
-      setError(`These products are missing a Seller SKU: ${missingSku.map(s => s.product.title || s.product.asin).join(', ')}. Edit each product in the Products page and add its Seller SKU first.`)
+      setError(`These products need a SKU before shipping: ${missingSku.map(s => s.product.product_name || s.product.asin).join(', ')}. Click "New SKU" next to each product.`)
       return
     }
     setError(''); setLoading(true)
-    const items = shipment.map(s => ({ sku: s.product.seller_sku, asin: s.product.asin, qty: s.qty, condition: s.condition }))
+    const items = shipment.map(s => ({ sku: s.sku, asin: s.product.asin, qty: s.qty, condition: s.condition }))
     try {
       const result = await api.fbaPlan(items, buildFrom(), labelPrep)
       setPlans(Array.isArray(result) ? result : [result])
@@ -739,7 +769,24 @@ function FBAShipmentForm() {
                     }
                     <div className="flex-1 min-w-0">
                       <p className="text-xs font-medium text-gray-900 line-clamp-2 leading-snug">{s.product.product_name || s.product.asin}</p>
-                      <div className="flex items-center gap-1 mt-1.5">
+                      <div className="flex items-center gap-1 mt-0.5">
+                        {s.skuStatus === 'loading' && (
+                          <span className="text-xs text-gray-400 italic">Looking up SKU…</span>
+                        )}
+                        {s.skuStatus === 'found' && (
+                          <span className="text-xs text-green-600 font-mono">{s.sku}</span>
+                        )}
+                        {(s.skuStatus === 'missing') && (
+                          <button onClick={() => createSkuForItem(s.product.asin)}
+                            className="text-xs bg-amber-500 hover:bg-amber-600 text-white px-2 py-0.5 rounded font-medium">
+                            New SKU
+                          </button>
+                        )}
+                        {s.skuStatus === 'creating' && (
+                          <span className="text-xs text-amber-600 italic">Creating SKU…</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1 mt-1">
                         <button onClick={() => updateQty(s.product.asin, s.qty - 1)}
                           className="w-5 h-5 border border-gray-300 rounded text-xs font-bold text-gray-600 flex items-center justify-center hover:bg-gray-50">−</button>
                         <span className="text-xs w-6 text-center font-semibold">{s.qty}</span>
