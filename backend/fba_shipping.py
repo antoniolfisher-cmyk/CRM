@@ -351,47 +351,25 @@ async def create_plan(
     if not placement_opts:
         raise RuntimeError("Amazon returned no placement options")
 
-    # 6. Get shipments already generated for the plan
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(
-            f"{base}{_V2}/inboundPlans/{plan_id}/shipments",
-            headers={"x-amz-access-token": token},
-        )
-    shipments = resp.json().get("shipments", []) if resp.status_code == 200 else []
-
-    # Build result — one entry per placement option (frontend picks one)
+    # Build result — one entry per placement option (frontend picks one).
+    # v2024 placement options carry shipmentIds directly; no GET /shipments call needed.
     result = []
     for opt in placement_opts:
-        placement_id = opt["placementOptionId"]
+        placement_id  = opt["placementOptionId"]
+        shipment_ids  = opt.get("shipmentIds") or []
+        shipment_id   = shipment_ids[0] if shipment_ids else ""
 
-        # Parse fees by target name
+        # Parse fees by target name (v2024: fees[].target / fees[].amount.amount)
         fees_by_target: dict[str, float] = {}
         for f in (opt.get("fees") or []):
             target = (f.get("target") or "").lower()
             amount = float((f.get("amount") or {}).get("amount", 0) or 0)
             fees_by_target[target] = fees_by_target.get(target, 0.0) + amount
 
-        # Match shipments to this option via shipmentIds (v2024 pattern)
-        opt_shipment_ids = set(opt.get("shipmentIds") or [])
-        opt_ships = [s for s in shipments if s.get("shipmentId") in opt_shipment_ids]
-        if not opt_ships:
-            opt_ships = shipments  # fallback: assign all (single-option case)
-
-        shipment = opt_ships[0] if opt_ships else {}
-        dest_addr = (shipment.get("destination") or {}).get("address") or {}
-
         result.append({
-            "shipment_id":         shipment.get("shipmentId", ""),
-            "destination_fc":      shipment.get("fulfillmentCenterId", ""),
-            "ship_to_address": {
-                "name":        dest_addr.get("name", ""),
-                "address1":    dest_addr.get("addressLine1", ""),
-                "address2":    dest_addr.get("addressLine2", ""),
-                "city":        dest_addr.get("city", ""),
-                "state":       dest_addr.get("stateOrProvinceCode", ""),
-                "postal_code": dest_addr.get("postalCode", ""),
-                "country":     dest_addr.get("countryCode", "US"),
-            },
+            "shipment_id":         shipment_id,
+            "destination_fc":      "",   # not available until placement confirmed; filled later
+            "ship_to_address":     {},
             "items":               [{"sku": i["sku"], "qty": i["qty"]} for i in items],
             "label_prep_type":     "SELLER_LABEL",
             "estimated_fees": {
@@ -446,25 +424,15 @@ async def create_shipment(
         raise RuntimeError(f"Confirm placement {resp.status_code}: {resp.text[:400]}")
     await _poll_op(base, token, resp.json()["operationId"])
 
-    # Fetch shipments for this plan
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(
-            f"{base}{_V2}/inboundPlans/{plan_id}/shipments",
-            headers={"x-amz-access-token": token},
+    # The shipment ID was captured from the placement option's shipmentIds list
+    # during create_plan — no need to call GET /shipments (that endpoint requires
+    # an extra SP-API scope that not all apps have).
+    shipment_id = plan.get("shipment_id", "")
+    if not shipment_id:
+        raise RuntimeError(
+            "No shipment ID in plan — please re-run the plan step before creating a shipment."
         )
-    if resp.status_code != 200:
-        raise RuntimeError(f"Get shipments {resp.status_code}: {resp.text[:300]}")
-
-    shipments = resp.json().get("shipments", [])
-    if not shipments:
-        raise RuntimeError("No shipments found after confirming placement — check plan status in Seller Central")
-
-    # Prefer the shipment we already know about (from plan step), else take first
-    known_id = plan.get("shipment_id", "")
-    for s in shipments:
-        if s.get("shipmentId") == known_id:
-            return known_id
-    return shipments[0]["shipmentId"]
+    return shipment_id
 
 
 # ─────────────────────────────────────────────────────────────────────────────
