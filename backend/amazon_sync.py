@@ -173,12 +173,18 @@ async def _fetch_fba_inventory(tenant_id: Optional[int] = None) -> list:
                     "FBA item asin=%s sku=%s fulfillable=%s inb_work=%s inb_ship=%s inb_recv=%s reserved=%s total_api=%s → qty=%s",
                     s.get("asin"), s.get("sellerSku"), fulfillable, inb_working, inb_shipped, inb_recv, reserved, total_api, qty
                 )
-                items.append({
-                    "asin":         s.get("asin", ""),
-                    "product_name": s.get("productName", ""),
-                    "seller_sku":   s.get("sellerSku", ""),
-                    "quantity":     qty,
-                })
+                asin = s.get("asin", "")
+                # Sum quantities across multiple SKUs for the same ASIN
+                existing_item = next((i for i in items if i["asin"] == asin), None)
+                if existing_item:
+                    existing_item["quantity"] += qty
+                else:
+                    items.append({
+                        "asin":         asin,
+                        "product_name": s.get("productName", ""),
+                        "seller_sku":   s.get("sellerSku", ""),
+                        "quantity":     qty,
+                    })
             next_token = data.get("payload", {}).get("nextToken")
             if not next_token:
                 break
