@@ -1803,35 +1803,40 @@ def get_dashboard(db: Session = Depends(get_db), current: dict = Depends(require
     )
 
 
-async def _amazon_fetch_orders(access_token: str, params_first: list) -> list:
+async def _amazon_fetch_orders(access_token: str, params_first: list, sp_base: str = None) -> list:
     """Paginate through Amazon Orders API. params_first is a list of (key, value) tuples."""
     import httpx as _httpx
+    base = sp_base or _AMAZON_SP_BASE
     orders = []
     next_token = None
-    async with _httpx.AsyncClient(timeout=30) as client:
-        while True:
-            if next_token:
-                p = [("NextToken", next_token)]
-            else:
-                p = params_first
-            resp = await client.get(
-                f"{_AMAZON_SP_BASE}/orders/v0/orders",
-                params=p,
-                headers={"x-amz-access-token": access_token},
-            )
-            if resp.status_code == 403:
-                raise HTTPException(403, "Amazon Orders API: insufficient permissions. Enable 'Orders' role in Seller Central → SP-API app.")
-            if resp.status_code == 429:
-                # Rate limited — return whatever we have so far rather than crashing
-                print(f"[orders] 429 QuotaExceeded — returning {len(orders)} orders fetched so far", flush=True)
-                break
-            if resp.status_code != 200:
-                raise HTTPException(502, f"Amazon Orders API {resp.status_code}: {resp.text[:400]}")
-            body = resp.json().get("payload", {})
-            orders.extend(body.get("Orders", []))
-            next_token = body.get("NextToken")
-            if not next_token:
-                break
+    try:
+        async with _httpx.AsyncClient(timeout=30) as client:
+            while True:
+                if next_token:
+                    p = [("NextToken", next_token)]
+                else:
+                    p = params_first
+                resp = await client.get(
+                    f"{base}/orders/v0/orders",
+                    params=p,
+                    headers={"x-amz-access-token": access_token},
+                )
+                if resp.status_code == 403:
+                    raise HTTPException(403, "Amazon Orders API: insufficient permissions. Enable 'Orders' role in Seller Central → SP-API app.")
+                if resp.status_code == 429:
+                    print(f"[orders] 429 QuotaExceeded — returning {len(orders)} orders fetched so far", flush=True)
+                    break
+                if resp.status_code != 200:
+                    raise HTTPException(502, f"Amazon Orders API {resp.status_code}: {resp.text[:400]}")
+                body = resp.json().get("payload", {})
+                orders.extend(body.get("Orders", []))
+                next_token = body.get("NextToken")
+                if not next_token:
+                    break
+    except _httpx.TimeoutException:
+        raise HTTPException(502, "Amazon Orders API request timed out — try again in a moment")
+    except _httpx.RequestError as exc:
+        raise HTTPException(502, f"Amazon Orders API network error: {exc}")
     return orders
 
 
@@ -1936,7 +1941,8 @@ async def get_dashboard_amazon_sales(
         ("MarketplaceIds", mkt_id),
         ("CreatedAfter", created_after),
     ]
-    sales_orders = await _amazon_fetch_orders(access_token, sales_params)
+    _sp = _sp_base(cred.is_sandbox)
+    sales_orders = await _amazon_fetch_orders(access_token, sales_params, sp_base=_sp)
 
     # ── 1b. FBM shipped in period: catches FBM orders fulfilled today that were created before period ──
     fbm_shipped_params = [
@@ -1945,7 +1951,7 @@ async def get_dashboard_amazon_sales(
         ("OrderStatuses", "Shipped"),
         ("FulfillmentChannels", "MFN"),
     ]
-    fbm_shipped_orders = await _amazon_fetch_orders(access_token, fbm_shipped_params)
+    fbm_shipped_orders = await _amazon_fetch_orders(access_token, fbm_shipped_params, sp_base=_sp)
     existing_ids = {o.get("AmazonOrderId") for o in sales_orders}
     for o in fbm_shipped_orders:
         oid = o.get("AmazonOrderId")
@@ -1964,7 +1970,7 @@ async def get_dashboard_amazon_sales(
         ("OrderStatuses", "Unshipped"),
         ("OrderStatuses", "PartiallyShipped"),
     ]
-    open_orders = await _amazon_fetch_orders(access_token, open_params)
+    open_orders = await _amazon_fetch_orders(access_token, open_params, sp_base=_sp)
 
     # ── 3. Aggregate sales metrics ──────────────────────────────────────────
     sales_revenue = 0.0
@@ -2143,55 +2149,63 @@ async def get_dashboard_amazon_live(db: Session = Depends(get_db), current: dict
 
     items = []
     next_token = None
-    async with _httpx.AsyncClient(timeout=30) as client:
-        while True:
-            params = {
-                "granularityType": "Marketplace",
-                "granularityId":   mkt_id,
-                "marketplaceIds":  mkt_id,
-                "details":         "true",
-            }
-            if next_token:
-                params["nextToken"] = next_token
+    try:
+        async with _httpx.AsyncClient(timeout=30) as client:
+            while True:
+                params = {
+                    "granularityType": "Marketplace",
+                    "granularityId":   mkt_id,
+                    "marketplaceIds":  mkt_id,
+                    "details":         "true",
+                }
+                if next_token:
+                    params["nextToken"] = next_token
 
-            resp = await client.get(
-                f"{_sp_base(cred.is_sandbox)}/fba/inventory/v1/summaries",
-                params=params,
-                headers={"x-amz-access-token": access_token},
-            )
-            if resp.status_code == 403:
-                raise HTTPException(403, "Amazon SP-API access denied — check Seller Central permissions include FBA Inventory")
-            if resp.status_code != 200:
-                raise HTTPException(502, f"Amazon SP-API error {resp.status_code}: {resp.text[:300]}")
-
-            body = resp.json().get("payload", {})
-            for s in body.get("inventorySummaries", []):
-                details = s.get("inventoryDetails") or {}
-                fulfillable = details.get("fulfillableQuantity") or 0
-                inbound_shipped = details.get("inboundShippedQuantity") or 0
-                inbound_receiving = details.get("inboundReceivingQuantity") or 0
-                inbound_working = details.get("inboundWorkingQuantity") or 0
-                reserved = (details.get("reservedQuantity") or {})
-                reserved_qty = (
-                    (reserved.get("pendingCustomerOrderQuantity") or 0)
-                    + (reserved.get("pendingTransshipmentQuantity") or 0)
-                    + (reserved.get("fcProcessingQuantity") or 0)
+                resp = await client.get(
+                    f"{_sp_base(cred.is_sandbox)}/fba/inventory/v1/summaries",
+                    params=params,
+                    headers={"x-amz-access-token": access_token},
                 )
-                total = fulfillable + inbound_shipped + inbound_receiving + inbound_working
-                asin = (s.get("asin") or "").upper()
-                items.append({
-                    "asin":              asin,
-                    "product_name":      s.get("productName") or s.get("sellerSku") or asin,
-                    "seller_sku":        s.get("sellerSku", ""),
-                    "fulfillable":       fulfillable,
-                    "inbound":           inbound_shipped + inbound_receiving + inbound_working,
-                    "reserved":          reserved_qty,
-                    "total":             total,
-                })
+                if resp.status_code == 403:
+                    raise HTTPException(403, "Amazon SP-API access denied — check Seller Central permissions include FBA Inventory")
+                if resp.status_code == 429:
+                    print("[amazon-live] FBA inventory rate-limited (429) — returning partial results", flush=True)
+                    break
+                if resp.status_code != 200:
+                    raise HTTPException(502, f"Amazon SP-API error {resp.status_code}: {resp.text[:300]}")
 
-            next_token = body.get("nextToken")
-            if not next_token:
-                break
+                body = resp.json().get("payload", {})
+                for s in body.get("inventorySummaries", []):
+                    details = s.get("inventoryDetails") or {}
+                    fulfillable = details.get("fulfillableQuantity") or 0
+                    inbound_shipped = details.get("inboundShippedQuantity") or 0
+                    inbound_receiving = details.get("inboundReceivingQuantity") or 0
+                    inbound_working = details.get("inboundWorkingQuantity") or 0
+                    reserved = (details.get("reservedQuantity") or {})
+                    reserved_qty = (
+                        (reserved.get("pendingCustomerOrderQuantity") or 0)
+                        + (reserved.get("pendingTransshipmentQuantity") or 0)
+                        + (reserved.get("fcProcessingQuantity") or 0)
+                    )
+                    total = fulfillable + inbound_shipped + inbound_receiving + inbound_working
+                    asin = (s.get("asin") or "").upper()
+                    items.append({
+                        "asin":              asin,
+                        "product_name":      s.get("productName") or s.get("sellerSku") or asin,
+                        "seller_sku":        s.get("sellerSku", ""),
+                        "fulfillable":       fulfillable,
+                        "inbound":           inbound_shipped + inbound_receiving + inbound_working,
+                        "reserved":          reserved_qty,
+                        "total":             total,
+                    })
+
+                next_token = body.get("nextToken")
+                if not next_token:
+                    break
+    except _httpx.TimeoutException:
+        raise HTTPException(502, "Amazon FBA Inventory API request timed out — try again in a moment")
+    except _httpx.RequestError as exc:
+        raise HTTPException(502, f"Amazon FBA Inventory API network error: {exc}")
 
     total_skus = len(items)
     total_fulfillable = sum(i["fulfillable"] for i in items)
@@ -2257,7 +2271,7 @@ async def get_dashboard_amazon_orders(
         ("MarketplaceIds",   mkt_id),
         ("LastUpdatedAfter", open_since),
     ]
-    open_raw = await _amazon_fetch_orders(access_token, open_params)
+    open_raw = await _amazon_fetch_orders(access_token, open_params, sp_base=_sp_base(cred.is_sandbox))
 
     def _fmt(o):
         total_obj = o.get("OrderTotal") or {}
@@ -2354,11 +2368,12 @@ async def debug_amazon_orders_tenant(
         ("MarketplaceIds", mkt_id), ("LastUpdatedAfter", since7),
     ]
 
+    _sp = _sp_base(cred.is_sandbox)
     a_raw, b_raw, c_raw, d_raw = await asyncio.gather(
-        _amazon_fetch_orders(access_token, a_params),
-        _amazon_fetch_orders(access_token, b_params),
-        _amazon_fetch_orders(access_token, c_params),
-        _amazon_fetch_orders(access_token, d_params),
+        _amazon_fetch_orders(access_token, a_params, sp_base=_sp),
+        _amazon_fetch_orders(access_token, b_params, sp_base=_sp),
+        _amazon_fetch_orders(access_token, c_params, sp_base=_sp),
+        _amazon_fetch_orders(access_token, d_params, sp_base=_sp),
     )
 
     return {
@@ -4518,19 +4533,27 @@ async def _get_tenant_access_token(cred: models.AmazonCredential) -> str:
     # App-level credentials: prefer per-tenant override, else fall back to env vars
     client_id     = cred.lwa_client_id     or os.getenv("AMAZON_LWA_CLIENT_ID", "")
     client_secret = cred.lwa_client_secret or os.getenv("AMAZON_LWA_CLIENT_SECRET", "")
-    async with _httpx.AsyncClient(timeout=15) as client:
-        r = await client.post(
-            _AMAZON_LWA_URL,
-            data={
-                "grant_type":    "refresh_token",
-                "refresh_token": cred.sp_refresh_token,
-                "client_id":     client_id,
-                "client_secret": client_secret,
-            },
-        )
+    try:
+        async with _httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                _AMAZON_LWA_URL,
+                data={
+                    "grant_type":    "refresh_token",
+                    "refresh_token": cred.sp_refresh_token,
+                    "client_id":     client_id,
+                    "client_secret": client_secret,
+                },
+            )
+    except _httpx.TimeoutException:
+        raise HTTPException(502, "Amazon LWA token request timed out — check network connectivity")
+    except _httpx.RequestError as exc:
+        raise HTTPException(502, f"Amazon LWA token request failed: {exc}")
     if r.status_code != 200:
-        raise HTTPException(502, f"Amazon LWA token error: {r.text[:200]}")
-    return r.json()["access_token"]
+        raise HTTPException(502, f"Amazon LWA token error {r.status_code}: {r.text[:200]}")
+    token = r.json().get("access_token")
+    if not token:
+        raise HTTPException(502, f"Amazon LWA response missing access_token: {r.text[:200]}")
+    return token
 
 
 async def _fetch_amazon_store_name(cred) -> str:
