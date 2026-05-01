@@ -19,8 +19,10 @@ const CONDITIONS = [
   { value: 'UsedAcceptable',   label: 'Used – Acceptable' },
 ]
 const SHIP_METHODS = [
+  { value: 'spd',             label: 'SPD (Small Parcel Delivery)' },
   { value: 'partnered_ups',   label: 'Amazon Partnered Carrier (UPS)' },
   { value: 'non_partnered',   label: 'Non-Partnered Carrier' },
+  { value: 'ltl',             label: 'LTL (Less Than Truckload)' },
 ]
 const LABEL_PREPS = [
   { value: 'SELLER_LABEL',       label: 'Seller Labels (I will label)' },
@@ -28,8 +30,20 @@ const LABEL_PREPS = [
   { value: 'NO_LABEL',           label: 'No Label Required' },
 ]
 const BOX_CONTENTS = [
+  { value: 'BOXEM_PROVIDED',   label: 'Boxem Provided' },
   { value: 'INDIVIDUAL_ITEMS', label: 'Individual Items' },
   { value: 'CASE_PACKED',      label: 'Case Packed' },
+]
+
+const PRICE_MATCH_BASIS = [
+  { value: 'buy_box',     label: 'Buy Box' },
+  { value: 'lowest_fba',  label: 'Lowest FBA' },
+  { value: 'lowest_fbm',  label: 'Lowest FBM' },
+]
+const PRICE_DIRECTION = [
+  { value: 'increase', label: 'Increase' },
+  { value: 'decrease', label: 'Decrease' },
+  { value: 'match',    label: 'Match' },
 ]
 
 function nowLabel() {
@@ -87,70 +101,82 @@ export default function ShipToAmazon() {
 // FBA SHIPMENT — matches Boxem's "Create New Shipment" layout
 // ─────────────────────────────────────────────────────────────────────────────
 function FBAShipmentForm() {
-  // Shipment creation phase vs. products phase
-  const [phase, setPhase] = useState('form') // 'form' | 'products' | 'rate' | 'done'
+  const [phase, setPhase] = useState('form') // 'form' | 'rate' | 'done'
 
   // Credentials / ship-from
-  const [creds, setCreds]         = useState(null)
+  const [creds, setCreds]           = useState(null)
   const [editingAddr, setEditingAddr] = useState(false)
-  const [addrForm, setAddrForm]   = useState({
-    name: '', line1: '', line2: '', city: '', state: 'TX', zip: '', country: 'US',
+  const [addrForm, setAddrForm]     = useState({
+    name: '', line1: '', line2: '', city: '', state: 'FL', zip: '', country: 'US',
   })
+  const [addrLoading, setAddrLoading] = useState(true)
 
-  // Form fields (Details)
+  // Details
   const [shipmentName, setShipmentName] = useState(nowLabel)
-  const [fulfillmentType] = useState('Amazon FBA')
 
   // Shipping & Origin
-  const [shipMethod, setShipMethod] = useState('partnered_ups')
+  const [shipMethod, setShipMethod] = useState('spd')
 
   // Packaging & Labeling
-  const [boxContents, setBoxContents]   = useState('INDIVIDUAL_ITEMS')
-  const [labelPrep, setLabelPrep]       = useState('SELLER_LABEL')
-  const [autoPrice, setAutoPrice]       = useState(false)
-  const [autoPrintFnsku, setAutoPrint]  = useState(false)
-  const [fnSkuOnAssign, setFnOnAssign]  = useState(false)
-  const [fnSkuOnQty, setFnOnQty]        = useState(false)
+  const [boxContents, setBoxContents] = useState('BOXEM_PROVIDED')
+  const [labelPrep, setLabelPrep]     = useState('SELLER_LABEL')
+
+  // Auto Pricing
+  const [autoPrice, setAutoPrice]         = useState(true)
+  const [priceBasis, setPriceBasis]       = useState('buy_box')
+  const [priceDirection, setPriceDir]     = useState('increase')
+  const [pricePercent, setPricePct]       = useState('25')
+
+  // Auto-Print FNSKU
+  const [fnSkuOnAssign, setFnOnAssign] = useState(false)
+  const [fnSkuOnQty, setFnOnQty]       = useState(false)
 
   // Meta Data toggles
-  const [showBuyCost, setShowBuyCost]   = useState(true)
-  const [showSupplier, setShowSupplier] = useState(false)
-  const [showDatePurchased, setShowDate]= useState(false)
+  const [showBuyCost, setShowBuyCost]       = useState(true)
+  const [showSupplier, setShowSupplier]     = useState(false)
+  const [showDatePurchased, setShowDate]    = useState(false)
 
-  // Products phase
-  const [asinInput, setAsinInput]   = useState('')
-  const [products, setProducts]     = useState([]) // [{asin, title, image_url, bsr, qty, condition, fees, feesLoading}]
+  // Products
+  const [asinInput, setAsinInput]     = useState('')
+  const [products, setProducts]       = useState([])
   const [asinLoading, setAsinLoading] = useState(false)
-  const [asinError, setAsinError]   = useState('')
-  const [packages, setPackages]     = useState([{ length_in:'', width_in:'', height_in:'', weight_lbs:'' }])
+  const [asinError, setAsinError]     = useState('')
+  const [packages, setPackages]       = useState([{ length_in:'', width_in:'', height_in:'', weight_lbs:'' }])
 
   // Result
-  const [creating, setCreating]     = useState(false)
+  const [creating, setCreating]       = useState(false)
   const [shipmentRecord, setShipmentRecord] = useState(null)
-  const [plan, setPlan]             = useState(null)
-  const [rate, setRate]             = useState(null)
-  const [confirming, setConfirming] = useState(false)
-  const [labelUrl, setLabelUrl]     = useState('')
-  const [error, setError]           = useState('')
+  const [plan, setPlan]               = useState(null)
+  const [rate, setRate]               = useState(null)
+  const [confirming, setConfirming]   = useState(false)
+  const [labelUrl, setLabelUrl]       = useState('')
+  const [error, setError]             = useState('')
 
   useEffect(() => {
-    api.getAmazonCredentials().then(c => {
+    setAddrLoading(true)
+    // Load from credentials first, then fall back to dedicated ship-from endpoint
+    Promise.all([
+      api.getAmazonCredentials().catch(() => null),
+      api.getShipFrom().catch(() => null),
+    ]).then(([c, sf]) => {
       setCreds(c)
-      if (c?.ship_from) {
-        const sf = c.ship_from
+      // ship_from from dedicated endpoint takes priority
+      const addr = sf || c?.ship_from
+      if (addr) {
         setAddrForm({
-          name:    sf.name    || c.store_name || '',
-          line1:   sf.addressLine1 || '',
-          line2:   sf.addressLine2 || '',
-          city:    sf.city    || '',
-          state:   sf.stateOrProvinceCode || 'TX',
-          zip:     sf.postalCode || '',
-          country: sf.countryCode || 'US',
+          name:    addr.name    || c?.store_name || '',
+          line1:   addr.addressLine1 || '',
+          line2:   addr.addressLine2 || '',
+          city:    addr.city    || '',
+          state:   addr.stateOrProvinceCode || 'FL',
+          zip:     addr.postalCode || '',
+          country: addr.countryCode || 'US',
         })
       } else if (c?.store_name) {
         setAddrForm(a => ({ ...a, name: c.store_name }))
+        setEditingAddr(true) // prompt to fill address on first use
       }
-    }).catch(() => {})
+    }).finally(() => setAddrLoading(false))
   }, [])
 
   const shipFromFilled = addrForm.name && addrForm.line1 && addrForm.city && addrForm.zip
@@ -383,202 +409,286 @@ function FBAShipmentForm() {
 
   // ── phase === 'form' ──
   return (
-    <div className="max-w-2xl space-y-0">
+    <div className="space-y-0">
       {error && <div className="mb-4"><ErrorBanner msg={error} /></div>}
 
-      <div className="card overflow-hidden">
+      {/* Address edit modal */}
+      {editingAddr && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-6">
+            <h3 className="text-base font-semibold text-gray-900 mb-4">Ship From Address</h3>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Name / Company</label>
+                <input className={inp} value={addrForm.name}
+                  onChange={e => setAddrForm(a => ({ ...a, name: e.target.value }))} />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Address Line 1</label>
+                <input className={inp} value={addrForm.line1}
+                  onChange={e => setAddrForm(a => ({ ...a, line1: e.target.value }))} />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Address Line 2 (optional)</label>
+                <input className={inp} value={addrForm.line2}
+                  onChange={e => setAddrForm(a => ({ ...a, line2: e.target.value }))} />
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div className="col-span-1">
+                  <label className="block text-xs text-gray-500 mb-1">City</label>
+                  <input className={inp} value={addrForm.city}
+                    onChange={e => setAddrForm(a => ({ ...a, city: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">State</label>
+                  <select className={inp} value={addrForm.state}
+                    onChange={e => setAddrForm(a => ({ ...a, state: e.target.value }))}>
+                    {US_STATES.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">ZIP</label>
+                  <input className={inp} value={addrForm.zip}
+                    onChange={e => setAddrForm(a => ({ ...a, zip: e.target.value }))} />
+                </div>
+              </div>
+            </div>
+            <div className="flex gap-2 mt-5 justify-end">
+              <button onClick={() => setEditingAddr(false)}
+                className="btn-secondary text-sm px-4">Cancel</button>
+              <button onClick={handleSaveAddress}
+                className="btn-primary text-sm px-4">Save Address</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-100">
           <h2 className="text-base font-semibold text-gray-900">Create New Shipment</h2>
         </div>
 
-        {/* ── DETAILS ── */}
-        <Section title="Details">
-          <FormRow label="Shipment Name">
-            <input className={inp} value={shipmentName} onChange={e => setShipmentName(e.target.value)} />
-          </FormRow>
-          <FormRow label="Fulfillment Type">
-            <input className={`${inp} bg-gray-50 text-gray-500`} value={fulfillmentType} readOnly />
-          </FormRow>
-        </Section>
+        <div className="grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x divide-gray-100">
 
-        {/* ── SHIPPING & ORIGIN ── */}
-        <Section title="Shipping & Origin">
-          <FormRow label="Ship From">
-            {editingAddr ? (
-              <div className="space-y-2 w-full">
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="col-span-2">
-                    <label className="block text-xs text-gray-400 mb-1">Name / Company</label>
-                    <input className={inp} value={addrForm.name} onChange={e => setAddrForm(a => ({ ...a, name: e.target.value }))} />
-                  </div>
-                  <div className="col-span-2">
-                    <label className="block text-xs text-gray-400 mb-1">Address Line 1</label>
-                    <input className={inp} value={addrForm.line1} onChange={e => setAddrForm(a => ({ ...a, line1: e.target.value }))} />
-                  </div>
-                  <div className="col-span-2">
-                    <label className="block text-xs text-gray-400 mb-1">Address Line 2 (optional)</label>
-                    <input className={inp} value={addrForm.line2} onChange={e => setAddrForm(a => ({ ...a, line2: e.target.value }))} />
-                  </div>
+          {/* ── LEFT COLUMN ── */}
+          <div className="divide-y divide-gray-100">
+
+            {/* DETAILS */}
+            <div className="px-6 py-5 space-y-4">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Details</p>
+              <FormRow label="Shipment Name:">
+                <input className={inp} value={shipmentName}
+                  onChange={e => setShipmentName(e.target.value)} />
+              </FormRow>
+              <FormRow label="Fulfillment Type:">
+                <select className={inp} value="fba" readOnly onChange={() => {}}>
+                  <option value="fba">FBA (Fulfillment By Amazon)</option>
+                </select>
+              </FormRow>
+            </div>
+
+            {/* SHIPPING & ORIGIN */}
+            <div className="px-6 py-5 space-y-4">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Shipping &amp; Origin</p>
+              <FormRow label="Ship From:">
+                {addrLoading ? (
+                  <p className="text-sm text-gray-400">Loading…</p>
+                ) : (
                   <div>
-                    <label className="block text-xs text-gray-400 mb-1">City</label>
-                    <input className={inp} value={addrForm.city} onChange={e => setAddrForm(a => ({ ...a, city: e.target.value }))} />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-400 mb-1">State</label>
-                    <select className={inp} value={addrForm.state} onChange={e => setAddrForm(a => ({ ...a, state: e.target.value }))}>
-                      {US_STATES.map(s => <option key={s} value={s}>{s}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-400 mb-1">ZIP</label>
-                    <input className={inp} value={addrForm.zip} onChange={e => setAddrForm(a => ({ ...a, zip: e.target.value }))} />
-                  </div>
-                </div>
-                <div className="flex gap-2">
-                  <button onClick={handleSaveAddress} className="btn-primary text-xs py-1.5 px-3">Save Address</button>
-                  <button onClick={() => setEditingAddr(false)} className="btn-secondary text-xs py-1.5 px-3">Cancel</button>
-                </div>
-              </div>
-            ) : (
-              <div className="w-full border border-gray-200 rounded-lg p-3 bg-gray-50">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <p className="text-sm font-semibold text-gray-800 uppercase tracking-wide">
-                      {addrForm.name || creds?.store_name || <span className="text-gray-400 normal-case font-normal">Not set</span>}
-                    </p>
-                    {shipFromFilled ? (
-                      <p className="text-gray-500 text-xs mt-0.5">
+                    <div className="flex items-center gap-2">
+                      <select
+                        className={inp}
+                        value={addrForm.name}
+                        onChange={() => {}}
+                        onClick={() => setEditingAddr(true)}
+                        readOnly
+                      >
+                        <option value={addrForm.name}>
+                          {addrForm.name || creds?.store_name || 'Not set'}
+                        </option>
+                      </select>
+                      <button onClick={() => setEditingAddr(true)}
+                        className="text-red-600 hover:text-red-700 text-sm font-medium shrink-0 whitespace-nowrap">
+                        Edit Address
+                      </button>
+                    </div>
+                    {shipFromFilled && (
+                      <p className="text-gray-400 text-xs mt-1.5">
                         {addrForm.line1}{addrForm.line2 ? `, ${addrForm.line2}` : ''},{' '}
                         {addrForm.city} {addrForm.state} {addrForm.zip}
                       </p>
-                    ) : (
-                      <p className="text-amber-600 text-xs mt-0.5">Address not set — click Edit Address</p>
+                    )}
+                    {!shipFromFilled && (
+                      <p className="text-amber-500 text-xs mt-1.5">Address not set — click Edit Address</p>
                     )}
                   </div>
-                  <button onClick={() => setEditingAddr(true)}
-                    className="text-blue-600 hover:text-blue-700 text-xs font-medium shrink-0">
-                    Edit Address
-                  </button>
-                </div>
-              </div>
-            )}
-          </FormRow>
-          <FormRow label="Ship Method">
-            <select className={inp} value={shipMethod} onChange={e => setShipMethod(e.target.value)}>
-              {SHIP_METHODS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
-            </select>
-          </FormRow>
-        </Section>
-
-        {/* ── PACKAGING & LABELING ── */}
-        <Section title="Packaging & Labeling">
-          <FormRow label="Box Contents">
-            <select className={inp} value={boxContents} onChange={e => setBoxContents(e.target.value)}>
-              {BOX_CONTENTS.map(b => <option key={b.value} value={b.value}>{b.label}</option>)}
-            </select>
-          </FormRow>
-          <FormRow label="Label Prep">
-            <select className={inp} value={labelPrep} onChange={e => setLabelPrep(e.target.value)}>
-              {LABEL_PREPS.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
-            </select>
-          </FormRow>
-          <FormRow label="Auto Pricing">
-            <Toggle value={autoPrice} onChange={setAutoPrice} label="Auto-fill list price" />
-          </FormRow>
-          <FormRow label="Auto-Print FNSKU">
-            <div className="space-y-2 w-full">
-              <Toggle value={fnSkuOnAssign} onChange={setFnOnAssign} label="After assigning to boxes" />
-              <Toggle value={fnSkuOnQty}    onChange={setFnOnQty}    label="On quantity update" />
-            </div>
-          </FormRow>
-        </Section>
-
-        {/* ── META DATA ── */}
-        <Section title="Meta Data">
-          <FormRow label="">
-            <div className="space-y-2 w-full">
-              <Toggle value={showBuyCost}  onChange={setShowBuyCost}  label="Buy Cost Input" />
-              <Toggle value={showSupplier} onChange={setShowSupplier} label="Supplier Input" />
-              <Toggle value={showDatePurchased} onChange={setShowDate} label="Date Purchased Input" />
-            </div>
-          </FormRow>
-        </Section>
-
-        {/* ── ADD PRODUCTS ── */}
-        <Section title="Add Products">
-          <div className="w-full space-y-3">
-            <div className="flex gap-2">
-              <input
-                className={`${inp} flex-1`}
-                placeholder="Enter ASIN (e.g. B08N5WRWNW)"
-                value={asinInput}
-                onChange={e => setAsinInput(e.target.value.toUpperCase())}
-                onKeyDown={e => e.key === 'Enter' && handleAsinLookup()}
-              />
-              <button onClick={handleAsinLookup} disabled={asinLoading}
-                className="btn-primary text-sm flex items-center gap-2 shrink-0">
-                {asinLoading && <SpinIcon className="w-3.5 h-3.5 animate-spin" />}
-                Add
-              </button>
-            </div>
-            {asinError && <p className="text-red-600 text-xs">{asinError}</p>}
-
-            {products.map(p => (
-              <div key={p.asin} className="border border-gray-200 rounded-lg p-3 flex gap-3">
-                {p.image_url && (
-                  <img src={p.image_url} alt="" className="w-14 h-14 object-contain rounded border border-gray-100 bg-gray-50 shrink-0" />
                 )}
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-gray-900 line-clamp-1">{p.title}</p>
-                  <p className="text-xs text-gray-400 mt-0.5">{p.asin}</p>
-                  {p.bsr > 0 && <p className="text-xs text-gray-400">BSR #{p.bsr.toLocaleString()}</p>}
-                  <div className="flex items-center gap-3 mt-2 flex-wrap">
-                    <div>
-                      <label className="block text-xs text-gray-400">Qty</label>
-                      <input type="number" min="1" className="w-16 border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-blue-500"
-                        value={p.qty} onChange={e => updateProduct(p.asin, 'qty', parseInt(e.target.value) || 1)} />
-                    </div>
-                    <div>
-                      <label className="block text-xs text-gray-400">Condition</label>
-                      <select className="border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-blue-500"
-                        value={p.condition} onChange={e => updateProduct(p.asin, 'condition', e.target.value)}>
-                        {CONDITIONS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
-                      </select>
-                    </div>
-                    {showBuyCost && (
-                      <div>
-                        <label className="block text-xs text-gray-400">Buy Cost</label>
-                        <input type="number" min="0" step="0.01" placeholder="$0.00"
-                          className="w-20 border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-blue-500"
-                          value={p.buyCost || ''} onChange={e => updateProduct(p.asin, 'buyCost', e.target.value)} />
-                      </div>
-                    )}
-                    {p.feesLoading && <span className="text-gray-400 text-xs">Loading fees…</span>}
-                    {p.fees && !p.feesLoading && (
-                      <div className="flex gap-2 text-xs">
-                        <span className="bg-gray-100 px-2 py-0.5 rounded text-gray-600">Ref: {fmt$(p.fees.referral_fee)}</span>
-                        <span className="bg-gray-100 px-2 py-0.5 rounded text-gray-600">FBA: {fmt$(p.fees.fba_fee)}</span>
-                        <span className="bg-green-100 px-2 py-0.5 rounded text-green-700 font-medium">Net: {fmt$(p.fees.net_proceeds)}</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <button onClick={() => removeProduct(p.asin)} className="text-gray-300 hover:text-red-500 text-xl self-start shrink-0">×</button>
+              </FormRow>
+              <FormRow label="Ship Method:">
+                <select className={inp} value={shipMethod}
+                  onChange={e => setShipMethod(e.target.value)}>
+                  {SHIP_METHODS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+                </select>
+              </FormRow>
+            </div>
+
+            {/* PACKAGING & LABELING */}
+            <div className="px-6 py-5 space-y-4">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Packaging &amp; Labeling</p>
+              <FormRow label="Box Contents:">
+                <select className={inp} value={boxContents}
+                  onChange={e => setBoxContents(e.target.value)}>
+                  {BOX_CONTENTS.map(b => <option key={b.value} value={b.value}>{b.label}</option>)}
+                </select>
+              </FormRow>
+            </div>
+
+            {/* ADD PRODUCTS */}
+            <div className="px-6 py-5 space-y-3">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Add Products</p>
+              <div className="flex gap-2">
+                <input
+                  className={`${inp} flex-1`}
+                  placeholder="Enter ASIN (e.g. B08N5WRWNW)"
+                  value={asinInput}
+                  onChange={e => setAsinInput(e.target.value.toUpperCase())}
+                  onKeyDown={e => e.key === 'Enter' && handleAsinLookup()}
+                />
+                <button onClick={handleAsinLookup} disabled={asinLoading}
+                  className="btn-primary text-sm flex items-center gap-2 shrink-0">
+                  {asinLoading && <SpinIcon className="w-3.5 h-3.5 animate-spin" />}
+                  Add
+                </button>
               </div>
-            ))}
+              {asinError && <p className="text-red-600 text-xs">{asinError}</p>}
+              {products.map(p => (
+                <div key={p.asin} className="border border-gray-200 rounded-lg p-3 flex gap-3">
+                  {p.image_url && (
+                    <img src={p.image_url} alt="" className="w-12 h-12 object-contain rounded border border-gray-100 bg-gray-50 shrink-0" />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-gray-900 line-clamp-1">{p.title}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">{p.asin}</p>
+                    <div className="flex items-center gap-3 mt-2 flex-wrap">
+                      <div>
+                        <label className="block text-xs text-gray-400">Qty</label>
+                        <input type="number" min="1"
+                          className="w-16 border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-500"
+                          value={p.qty} onChange={e => updateProduct(p.asin, 'qty', parseInt(e.target.value) || 1)} />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-400">Condition</label>
+                        <select className="border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-500"
+                          value={p.condition} onChange={e => updateProduct(p.asin, 'condition', e.target.value)}>
+                          {CONDITIONS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                        </select>
+                      </div>
+                      {showBuyCost && (
+                        <div>
+                          <label className="block text-xs text-gray-400">Buy Cost</label>
+                          <input type="number" min="0" step="0.01" placeholder="$0.00"
+                            className="w-20 border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-500"
+                            value={p.buyCost || ''} onChange={e => updateProduct(p.asin, 'buyCost', e.target.value)} />
+                        </div>
+                      )}
+                      {p.feesLoading && <span className="text-gray-400 text-xs">Loading fees…</span>}
+                      {p.fees && !p.feesLoading && (
+                        <div className="flex gap-2 text-xs">
+                          <span className="bg-gray-100 px-2 py-0.5 rounded text-gray-600">Ref: {fmt$(p.fees.referral_fee)}</span>
+                          <span className="bg-gray-100 px-2 py-0.5 rounded text-gray-600">FBA: {fmt$(p.fees.fba_fee)}</span>
+                          <span className="bg-green-100 px-2 py-0.5 rounded text-green-700 font-medium">Net: {fmt$(p.fees.net_proceeds)}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <button onClick={() => removeProduct(p.asin)}
+                    className="text-gray-300 hover:text-red-500 text-xl self-start shrink-0">×</button>
+                </div>
+              ))}
+            </div>
           </div>
-        </Section>
+
+          {/* ── RIGHT COLUMN ── */}
+          <div className="divide-y divide-gray-100">
+
+            {/* AUTO PRICING */}
+            <div className="px-6 py-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Auto Pricing</p>
+                <ChevronIcon />
+              </div>
+              <div className="space-y-3">
+                <Toggle value={autoPrice} onChange={setAutoPrice} label="Auto-fill list price" />
+                {autoPrice && (
+                  <p className="text-xs text-gray-400 -mt-1">Enable to configure the list price default.</p>
+                )}
+                {autoPrice && (
+                  <div className="flex items-center gap-2 flex-wrap text-sm">
+                    <span className="text-gray-500 text-xs">Match list price with</span>
+                    <select
+                      className="border border-gray-300 rounded px-2 py-1 text-xs text-gray-800 focus:outline-none focus:border-blue-500"
+                      value={priceBasis} onChange={e => setPriceBasis(e.target.value)}>
+                      {PRICE_MATCH_BASIS.map(b => <option key={b.value} value={b.value}>{b.label}</option>)}
+                    </select>
+                    <span className="text-gray-500 text-xs">and</span>
+                    <select
+                      className="border border-gray-300 rounded px-2 py-1 text-xs text-gray-800 focus:outline-none focus:border-blue-500"
+                      value={priceDirection} onChange={e => setPriceDir(e.target.value)}>
+                      {PRICE_DIRECTION.map(d => <option key={d.value} value={d.value}>{d.label}</option>)}
+                    </select>
+                    <span className="text-gray-500 text-xs">by</span>
+                    <input
+                      type="number" min="0" max="100" step="1"
+                      className="w-16 border border-gray-300 rounded px-2 py-1 text-xs text-gray-800 focus:outline-none focus:border-blue-500"
+                      value={pricePercent} onChange={e => setPricePct(e.target.value)}
+                    />
+                    <span className="text-gray-500 text-xs">%</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* AUTO-PRINT FNSKU */}
+            <div className="px-6 py-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Auto-Print FNSKU</p>
+                <ChevronIcon />
+              </div>
+              <div className="space-y-3">
+                <Toggle value={fnSkuOnAssign} onChange={setFnOnAssign} label="After assigning to boxes" />
+                <Toggle value={fnSkuOnQty}    onChange={setFnOnQty}    label="On quantity update" />
+              </div>
+            </div>
+
+            {/* META DATA */}
+            <div className="px-6 py-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Meta Data</p>
+                <ChevronIcon />
+              </div>
+              <div className="flex flex-wrap gap-4">
+                <Toggle value={showBuyCost}       onChange={setShowBuyCost}  label="Buy Cost Input" />
+                <Toggle value={showSupplier}      onChange={setShowSupplier} label="Supplier Input" />
+                <Toggle value={showDatePurchased} onChange={setShowDate}     label="Date Purchased Input" />
+              </div>
+            </div>
+
+          </div>
+        </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex items-center justify-between">
-          <p className="text-xs text-gray-400">{products.length} product{products.length !== 1 ? 's' : ''} added</p>
+        <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex items-center justify-end gap-3">
+          <p className="text-xs text-gray-400 mr-auto">
+            {products.length} product{products.length !== 1 ? 's' : ''} added
+          </p>
           <button
             onClick={handleCreateShipment}
             disabled={creating || !products.length || !shipFromFilled}
-            className="btn-primary flex items-center gap-2"
+            className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold text-white
+              bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {creating && <SpinIcon className="w-4 h-4 animate-spin" />}
-            Create Shipment →
+            + Create Shipment
           </button>
         </div>
       </div>
@@ -792,6 +902,14 @@ function DownloadIcon({ className }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+    </svg>
+  )
+}
+
+function ChevronIcon() {
+  return (
+    <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
     </svg>
   )
 }
