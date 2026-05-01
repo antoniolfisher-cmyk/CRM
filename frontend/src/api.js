@@ -20,7 +20,10 @@ async function req(method, path, body) {
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail || `Request failed (${res.status})`)
+    const fallback = res.status === 502
+      ? 'Amazon API error — check your SP-API credentials and permissions in Settings'
+      : `Request failed (${res.status})`
+    throw new Error(err.detail || fallback)
   }
   if (res.status === 204) return null
   return res.json()

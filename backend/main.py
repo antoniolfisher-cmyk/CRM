@@ -494,6 +494,16 @@ if _limiter_enabled:
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception):
+    """Catch-all: ensures unhandled crashes always return JSON, never a blank body."""
+    log.error("Unhandled exception %s %s: %s", request.method, request.url.path, exc, exc_info=True)
+    print(f"[UNHANDLED] {request.method} {request.url.path}: {type(exc).__name__}: {exc}", flush=True)
+    return StarletteJSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {type(exc).__name__}: {exc}"},
+    )
+
 _ALLOWED_ORIGINS = [o.strip() for o in os.getenv(
     "CORS_ORIGINS",
     "https://sellers-pulse.com,https://www.sellers-pulse.com",
@@ -2744,16 +2754,16 @@ async def _amazon_fetch_orders(access_token: str, params_first: list, sp_base: s
                     print(f"[orders] 429 QuotaExceeded — returning {len(orders)} orders fetched so far", flush=True)
                     break
                 if resp.status_code != 200:
-                    raise HTTPException(502, f"Amazon Orders API {resp.status_code}: {resp.text[:400]}")
+                    raise HTTPException(422, f"Amazon Orders API {resp.status_code}: {resp.text[:400]}")
                 body = resp.json().get("payload", {})
                 orders.extend(body.get("Orders", []))
                 next_token = body.get("NextToken")
                 if not next_token:
                     break
     except _httpx.TimeoutException:
-        raise HTTPException(502, "Amazon Orders API request timed out — try again in a moment")
+        raise HTTPException(422, "Amazon Orders API request timed out — try again in a moment")
     except _httpx.RequestError as exc:
-        raise HTTPException(502, f"Amazon Orders API network error: {exc}")
+        raise HTTPException(422, f"Amazon Orders API network error: {exc}")
     return orders
 
 
@@ -5411,7 +5421,7 @@ async def keepa_amazon_search(body: dict, current: dict = Depends(require_auth))
         )
 
     if resp.status_code != 200:
-        raise HTTPException(502, f"Amazon catalog search failed ({resp.status_code})")
+        raise HTTPException(422, f"Amazon catalog search failed ({resp.status_code})")
 
     items = resp.json().get("items") or []
     asins = [item.get("asin") for item in items if item.get("asin")]
@@ -5458,11 +5468,11 @@ async def keepa_refresh_one(
         except Exception:
             raise HTTPException(429, "Keepa token limit reached. Please wait before syncing again.")
     if resp.status_code != 200:
-        raise HTTPException(502, f"Keepa returned {resp.status_code}: {resp.text[:200]}")
+        raise HTTPException(422, f"Keepa returned {resp.status_code}: {resp.text[:200]}")
 
     data = resp.json()
     if data.get("error"):
-        raise HTTPException(502, f"Keepa error: {data.get('status', 'unknown')}")
+        raise HTTPException(422, f"Keepa error: {data.get('status', 'unknown')}")
 
     products_data = data.get("products") or []
     if not products_data:
@@ -5599,7 +5609,7 @@ async def _get_amazon_access_token() -> str:
             },
         )
     if resp_data.status_code != 200:
-        raise HTTPException(502, f"Amazon LWA token error: {resp_data.text[:200]}")
+        raise HTTPException(422, f"Amazon LWA token error: {resp_data.text[:200]}")
     return resp_data.json()["access_token"]
 
 
@@ -5659,14 +5669,14 @@ async def _get_tenant_access_token(cred: models.AmazonCredential) -> str:
                 },
             )
     except _httpx.TimeoutException:
-        raise HTTPException(502, "Amazon LWA token request timed out — check network connectivity")
+        raise HTTPException(422, "Amazon LWA token request timed out — check network connectivity")
     except _httpx.RequestError as exc:
-        raise HTTPException(502, f"Amazon LWA token request failed: {exc}")
+        raise HTTPException(422, f"Amazon LWA token request failed: {exc}")
     if r.status_code != 200:
-        raise HTTPException(502, f"Amazon LWA token error {r.status_code}: {r.text[:200]}")
+        raise HTTPException(422, f"Amazon LWA token error {r.status_code}: {r.text[:200]}")
     token = r.json().get("access_token")
     if not token:
-        raise HTTPException(502, f"Amazon LWA response missing access_token: {r.text[:200]}")
+        raise HTTPException(422, f"Amazon LWA response missing access_token: {r.text[:200]}")
     return token
 
 
@@ -6220,7 +6230,7 @@ async def _fetch_fba_inventory() -> list:
             if resp.status_code == 403:
                 raise HTTPException(403, "Amazon SP-API access denied — check Seller Central permissions include FBA Inventory")
             if resp.status_code != 200:
-                raise HTTPException(502, f"Amazon SP-API error {resp.status_code}: {resp.text[:300]}")
+                raise HTTPException(422, f"Amazon SP-API error {resp.status_code}: {resp.text[:300]}")
 
             body = resp.json().get("payload", {})
             for s in body.get("inventorySummaries", []):
@@ -6270,7 +6280,7 @@ async def import_amazon_inventory(current: dict = Depends(require_auth)):
             "skipped":  result["skipped"],
         }
     except Exception as e:
-        raise HTTPException(502, str(e))
+        raise HTTPException(422, str(e))
 
 
 @app.get("/api/amazon/inventory/sync-status")
@@ -6298,7 +6308,7 @@ async def amazon_inventory_sync_now(current: dict = Depends(require_auth)):
         cache_bust(tid, "products")   # invalidate stale product cache immediately
         return result
     except Exception as e:
-        raise HTTPException(502, str(e))
+        raise HTTPException(422, str(e))
 
 
 @app.post("/api/amazon/fbm-upload")
@@ -6754,7 +6764,7 @@ Output ONLY the subject line and email body, no other text."""
         email_body = "\n".join(lines[body_start:]).strip()
         return {"subject": subject, "body": email_body}
     except Exception as e:
-        raise HTTPException(502, f"AI error: {str(e)}")
+        raise HTTPException(422, f"AI error: {str(e)}")
 
 
 # ── Ungate requirements ───────────────────────────────────────────────────────
@@ -7182,7 +7192,7 @@ async def send_ungate_email(req_id: int, body: dict, db: Session = Depends(get_d
             server.login(smtp_user, smtp_pass)
             server.sendmail(smtp_from, [to_email], msg.as_string())
     except Exception as e:
-        raise HTTPException(502, f"Failed to send email: {str(e)}")
+        raise HTTPException(422, f"Failed to send email: {str(e)}")
 
     # Record the send in history
     history = _json.loads(req.history or "[]")
@@ -7291,7 +7301,7 @@ Be concise, friendly, and specific. If you don't know something about their spec
         )
         return {"response": result.choices[0].message.content}
     except Exception as e:
-        raise HTTPException(502, f"AI error: {str(e)}")
+        raise HTTPException(422, f"AI error: {str(e)}")
 
 
 @app.get("/api/amazon/check-asin/{asin}")
@@ -7319,7 +7329,7 @@ async def check_asin_ungated(asin: str, current: dict = Depends(require_auth)):
     if resp.status_code == 403:
         raise HTTPException(403, "Amazon SP-API access denied — check credentials and app permissions")
     if resp.status_code != 200:
-        raise HTTPException(502, f"Amazon SP-API error {resp.status_code}: {resp.text[:300]}")
+        raise HTTPException(422, f"Amazon SP-API error {resp.status_code}: {resp.text[:300]}")
 
     restrictions = resp.json().get("restrictions", [])
     return {"asin": asin.upper(), "ungated": len(restrictions) == 0, "restrictions": restrictions}
@@ -7541,7 +7551,7 @@ async def fba_lookup(body: dict = Body(...), current: dict = Depends(require_aut
         raise
     except Exception as e:
         print(f"[fba_lookup] tenant={current.get('tenant_id')} asin={asin} error: {e}", flush=True)
-        raise HTTPException(502, f"ASIN lookup error: {e}")
+        raise HTTPException(422, f"ASIN lookup error: {e}")
 
 
 @app.post("/api/fba/fees")
@@ -7558,7 +7568,7 @@ async def fba_fees(body: dict = Body(...), current: dict = Depends(require_auth)
         raise
     except Exception as e:
         print(f"[fba_fees] tenant={current.get('tenant_id')} asin={asin} error: {e}", flush=True)
-        raise HTTPException(502, f"Fee estimate error: {e}")
+        raise HTTPException(422, f"Fee estimate error: {e}")
 
 
 @app.post("/api/fba/plan")
@@ -7578,7 +7588,7 @@ async def fba_plan(body: dict = Body(...), current: dict = Depends(require_auth)
         raise
     except Exception as e:
         print(f"[fba_plan] tenant={current.get('tenant_id')} error: {e}", flush=True)
-        raise HTTPException(502, f"FBA plan error: {e}")
+        raise HTTPException(422, f"FBA plan error: {e}")
 
 
 @app.post("/api/fba/shipments")
@@ -7610,7 +7620,7 @@ async def fba_create_shipment(body: dict = Body(...), current: dict = Depends(re
         raise
     except Exception as e:
         print(f"[fba_create_shipment] tenant={current.get('tenant_id')} error: {e}", flush=True)
-        raise HTTPException(502, f"FBA create shipment error: {e}")
+        raise HTTPException(422, f"FBA create shipment error: {e}")
 
     try:
         optimized = await fba_shipping.check_optimized_eligible(
@@ -7743,7 +7753,7 @@ async def fba_set_transport(shipment_id: int, body: dict = Body(...),
         raise
     except Exception as e:
         print(f"[fba_set_transport] shipment={shipment_id} error: {e}", flush=True)
-        raise HTTPException(502, f"Transport error: {e}")
+        raise HTTPException(422, f"Transport error: {e}")
 
     row.packages_json      = _json.dumps(packages)
     row.transport_status   = rate.get("status")
@@ -7773,7 +7783,7 @@ async def fba_get_transport(shipment_id: int, current: dict = Depends(require_au
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(502, f"Transport poll error: {e}")
+        raise HTTPException(422, f"Transport poll error: {e}")
     row.transport_status   = rate.get("status")
     row.estimated_cost     = rate.get("estimated_cost")
     row.transport_currency = rate.get("currency")
@@ -7798,7 +7808,7 @@ async def fba_confirm_transport(shipment_id: int, current: dict = Depends(requir
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(502, f"Transport confirm error: {e}")
+        raise HTTPException(422, f"Transport confirm error: {e}")
     row.transport_status = "CONFIRMED"
     row.status           = "transport_confirmed"
     db.commit()
@@ -7823,7 +7833,7 @@ async def fba_void_transport(shipment_id: int, current: dict = Depends(require_a
         raise
     except Exception as e:
         print(f"[fba_void_transport] tenant={current.get('tenant_id')} error: {e}", flush=True)
-        raise HTTPException(502, f"Transport void error: {e}")
+        raise HTTPException(422, f"Transport void error: {e}")
     row.transport_status = "VOIDED"
     row.status           = "voided"
     db.commit()
@@ -7852,7 +7862,7 @@ async def fba_get_labels(shipment_id: int, current: dict = Depends(require_auth)
         raise
     except Exception as e:
         print(f"[fba_get_labels] tenant={current.get('tenant_id')} error: {e}", flush=True)
-        raise HTTPException(502, f"Labels fetch error: {e}")
+        raise HTTPException(422, f"Labels fetch error: {e}")
     row.label_url = url
     row.status    = "labeled"
     db.commit()
