@@ -363,21 +363,26 @@ async def create_plan(
     result = []
     for opt in placement_opts:
         placement_id = opt["placementOptionId"]
-        fee = 0.0
-        for f in (opt.get("fees") or []):
-            fee += float((f.get("amount") or {}).get("amount", 0) or 0)
 
-        # Find shipment(s) associated with this option (may be empty until confirmed)
-        opt_ships = [s for s in shipments if s.get("placementOptionId") == placement_id]
+        # Parse fees by target name
+        fees_by_target: dict[str, float] = {}
+        for f in (opt.get("fees") or []):
+            target = (f.get("target") or "").lower()
+            amount = float((f.get("amount") or {}).get("amount", 0) or 0)
+            fees_by_target[target] = fees_by_target.get(target, 0.0) + amount
+
+        # Match shipments to this option via shipmentIds (v2024 pattern)
+        opt_shipment_ids = set(opt.get("shipmentIds") or [])
+        opt_ships = [s for s in shipments if s.get("shipmentId") in opt_shipment_ids]
         if not opt_ships:
-            opt_ships = shipments  # fall back to all shipments
+            opt_ships = shipments  # fallback: assign all (single-option case)
 
         shipment = opt_ships[0] if opt_ships else {}
         dest_addr = (shipment.get("destination") or {}).get("address") or {}
 
         result.append({
-            "shipment_id":               shipment.get("shipmentId", ""),
-            "destination_fc":            shipment.get("fulfillmentCenterId", ""),
+            "shipment_id":         shipment.get("shipmentId", ""),
+            "destination_fc":      shipment.get("fulfillmentCenterId", ""),
             "ship_to_address": {
                 "name":        dest_addr.get("name", ""),
                 "address1":    dest_addr.get("addressLine1", ""),
@@ -387,12 +392,16 @@ async def create_plan(
                 "postal_code": dest_addr.get("postalCode", ""),
                 "country":     dest_addr.get("countryCode", "US"),
             },
-            "items":                     [{"sku": i["sku"], "qty": i["qty"]} for i in items],
-            "label_prep_type":           "SELLER_LABEL",
-            "estimated_box_contents_fee": fee,
-            # Passed back to create_shipment so it can confirm the chosen option
-            "inbound_plan_id":           plan_id,
-            "placement_option_id":       placement_id,
+            "items":               [{"sku": i["sku"], "qty": i["qty"]} for i in items],
+            "label_prep_type":     "SELLER_LABEL",
+            "estimated_fees": {
+                "placement_fee": fees_by_target.get("placement fee", 0.0),
+                "labeling_fee":  fees_by_target.get("labeling fee", 0.0),
+                "shipping_fee":  0.0,
+            },
+            "expires_at":          opt.get("expiration"),
+            "inbound_plan_id":     plan_id,
+            "placement_option_id": placement_id,
         })
 
     return result
