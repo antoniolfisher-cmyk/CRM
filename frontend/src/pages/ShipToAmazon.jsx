@@ -182,6 +182,10 @@ function FBAShipmentForm() {
   const shipFromFilled = addrForm.name && addrForm.line1 && addrForm.city && addrForm.zip
 
   async function handleSaveAddress() {
+    if (!addrForm.line1 || !addrForm.city || !addrForm.zip) {
+      setError('Please fill in Address, City, and ZIP before saving.')
+      return
+    }
     const payload = {
       name: addrForm.name,
       addressLine1: addrForm.line1,
@@ -191,7 +195,12 @@ function FBAShipmentForm() {
       postalCode: addrForm.zip,
       countryCode: addrForm.country,
     }
-    await api.saveShipFrom(payload).catch(() => {})
+    try {
+      await api.saveShipFrom(payload)
+    } catch (_e) {
+      // non-fatal — address is still set locally for this session
+    }
+    setError('')
     setEditingAddr(false)
   }
 
@@ -496,29 +505,29 @@ function FBAShipmentForm() {
                 ) : (
                   <div>
                     <div className="flex items-center gap-2">
-                      <select
-                        className={inp}
-                        value={addrForm.name}
-                        onChange={() => {}}
+                      <button
+                        type="button"
                         onClick={() => setEditingAddr(true)}
-                        readOnly
+                        className={`${inp} text-left flex items-center justify-between gap-2`}
                       >
-                        <option value={addrForm.name}>
-                          {addrForm.name || creds?.store_name || 'Not set'}
-                        </option>
-                      </select>
+                        <span className={addrForm.name || creds?.store_name ? 'text-gray-900' : 'text-gray-400'}>
+                          {addrForm.name || creds?.store_name || 'Select address…'}
+                        </span>
+                        <svg className="w-4 h-4 text-gray-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
                       <button onClick={() => setEditingAddr(true)}
                         className="text-red-600 hover:text-red-700 text-sm font-medium shrink-0 whitespace-nowrap">
                         Edit Address
                       </button>
                     </div>
-                    {shipFromFilled && (
+                    {shipFromFilled ? (
                       <p className="text-gray-400 text-xs mt-1.5">
                         {addrForm.line1}{addrForm.line2 ? `, ${addrForm.line2}` : ''},{' '}
                         {addrForm.city} {addrForm.state} {addrForm.zip}
                       </p>
-                    )}
-                    {!shipFromFilled && (
+                    ) : (
                       <p className="text-amber-500 text-xs mt-1.5">Address not set — click Edit Address</p>
                     )}
                   </div>
@@ -683,7 +692,7 @@ function FBAShipmentForm() {
           </p>
           <button
             onClick={handleCreateShipment}
-            disabled={creating || !products.length || !shipFromFilled}
+            disabled={creating || !products.length}
             className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold text-white
               bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
