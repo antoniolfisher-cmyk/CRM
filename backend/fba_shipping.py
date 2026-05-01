@@ -155,29 +155,27 @@ async def lookup_asin(asin: str, tenant_id: Optional[int] = None) -> dict:
 async def estimate_fees(asin: str, price: float, tenant_id: Optional[int] = None) -> dict:
     """
     Returns {"referral_fee": X, "fba_fee": X, "total_fee": X, "net_proceeds": X}
-    using the SP-API Product Fees v0 endpoint.
+    using the SP-API Product Fees v0 per-ASIN endpoint.
     """
     token, mkt_id, base = await _get_access_token_for_tenant(tenant_id)
     asin = asin.strip().upper()
 
     body = {
-        "FeesEstimateByProductIdRequests": [{
-            "ProductIdType": "ASIN",
-            "ProductId": asin,
-            "FeesEstimateRequest": {
-                "Identifier": f"sp-{asin}",
-                "PriceToEstimateFees": {
-                    "ListingPrice": {"CurrencyCode": "USD", "Amount": round(price, 2)},
-                },
-                "IsAmazonFulfilled": True,
-                "MarketplaceId": mkt_id,
+        "FeesEstimateRequest": {
+            "MarketplaceId": mkt_id,
+            "IsAmazonFulfilled": True,
+            "PriceToEstimateFees": {
+                "ListingPrice": {"CurrencyCode": "USD", "Amount": round(price, 2)},
+                "Shipping":     {"CurrencyCode": "USD", "Amount": 0.0},
             },
-        }]
+            "Identifier": f"sp-{asin}",
+            "OptionalFulfillmentProgram": "FBA_CORE",
+        }
     }
 
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
-            f"{base}/products/fees/v0/feesEstimate",
+            f"{base}/products/fees/v0/items/{asin}/feesEstimate",
             headers={"x-amz-access-token": token, "Content-Type": "application/json"},
             json=body,
         )
@@ -185,17 +183,14 @@ async def estimate_fees(asin: str, price: float, tenant_id: Optional[int] = None
     if resp.status_code != 200:
         raise RuntimeError(f"Fees API {resp.status_code}: {resp.text[:300]}")
 
-    results = resp.json().get("payload", {}).get("FeesEstimateResultList", [])
-    if not results:
-        raise RuntimeError("No fee estimate returned")
-
-    result = results[0]
-    status = result.get("Status", "")
+    payload = resp.json().get("payload", {})
+    result  = payload.get("FeesEstimateResult", {})
+    status  = result.get("Status", "")
     if status != "Success":
-        err = result.get("Error", {}).get("Message", "Unknown error")
+        err = (result.get("Error") or {}).get("Message", "Unknown error")
         raise RuntimeError(f"Fee estimate failed: {err}")
 
-    estimate = result.get("FeesEstimate", {})
+    estimate   = result.get("FeesEstimate", {})
     fee_detail = estimate.get("FeeDetailList", [])
 
     referral_fee = 0.0
@@ -271,6 +266,12 @@ async def create_plan(
             json=body,
         )
 
+    if resp.status_code == 403:
+        raise RuntimeError(
+            "Amazon denied access to FBA Inbound Shipments (403 Unauthorized). "
+            "In Seller Central → Apps & Services → Develop Apps, open your SP-API app "
+            "and add the 'FBA Inbound Shipment' role, then re-authorize the app."
+        )
     if resp.status_code != 200:
         raise RuntimeError(f"Inbound Plan API {resp.status_code}: {resp.text[:400]}")
 
@@ -357,6 +358,11 @@ async def create_shipment(
             json=body,
         )
 
+    if resp.status_code == 403:
+        raise RuntimeError(
+            "Amazon denied access to FBA Inbound Shipments (403 Unauthorized). "
+            "Add the 'FBA Inbound Shipment' role to your SP-API app in Seller Central."
+        )
     if resp.status_code != 200:
         raise RuntimeError(f"Create Shipment API {resp.status_code}: {resp.text[:400]}")
 
