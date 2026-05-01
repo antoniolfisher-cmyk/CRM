@@ -867,6 +867,16 @@ def _ensure_products_table():
                 )
             """))
         log.info("products table ensured")
+        # Diagnostic: confirm where products table actually lives
+        try:
+            with _engine.connect() as _dc:
+                sp = _dc.execute(text("SHOW search_path")).scalar()
+                rows = _dc.execute(text(
+                    "SELECT table_schema FROM information_schema.tables WHERE table_name='products'"
+                )).fetchall()
+                log.info("search_path=%s  products schema(s)=%s", sp, [r[0] for r in rows])
+        except Exception as _de:
+            log.warning("products diagnostic failed: %s", _de)
     except Exception as _e:
         log.warning("products table ensure failed: %s", _e)
 
@@ -4272,11 +4282,17 @@ def fix_products_table(current: dict = Depends(require_superadmin)):
     _ensure_products_table()
     try:
         with engine.connect() as _c:
-            result = _c.execute(text("SELECT COUNT(*) FROM products"))
-            count = result.scalar()
-        return {"status": "ok", "products_count": count}
+            sp = _c.execute(text("SHOW search_path")).scalar()
+            rows = _c.execute(text(
+                "SELECT table_schema FROM information_schema.tables WHERE table_name='products'"
+            )).fetchall()
+            schemas = [r[0] for r in rows]
+            count = None
+            if schemas:
+                count = _c.execute(text(f"SELECT COUNT(*) FROM {schemas[0]}.products")).scalar()
+        return {"search_path": sp, "products_in_schemas": schemas, "count": count}
     except Exception as _e:
-        raise HTTPException(status_code=500, detail=f"Still failing: {_e}")
+        raise HTTPException(status_code=500, detail=f"diagnostic failed: {_e}")
 
 
 @app.post("/api/admin/purge-system-products")
