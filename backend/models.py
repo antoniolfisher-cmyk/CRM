@@ -300,6 +300,7 @@ class RepricerStrategy(Base):
 
 class Product(Base):
     __tablename__ = "products"
+    __table_args__ = {"schema": "public"}
 
     id         = Column(Integer, primary_key=True, index=True)
     tenant_id  = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
@@ -413,7 +414,7 @@ class UngateRequest(Base):
 
     id                   = Column(Integer, primary_key=True, index=True)
     tenant_id            = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
-    product_id           = Column(Integer, ForeignKey("products.id", ondelete="SET NULL"), nullable=True)
+    product_id           = Column(Integer, ForeignKey("public.products.id", ondelete="SET NULL"), nullable=True)
     asin                 = Column(String, nullable=False, index=True)
     product_name         = Column(String, nullable=False)
     category             = Column(String, nullable=True)
