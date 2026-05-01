@@ -3333,7 +3333,7 @@ def list_accounts(
     territory: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
-    db: Session = Depends(get_read_db),
+    db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
 ):
     tid = current.get("tenant_id")
@@ -3941,7 +3941,7 @@ def list_follow_ups(
     overdue_only: bool = False,
     limit: int = 100,
     offset: int = 0,
-    db: Session = Depends(get_read_db),
+    db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
 ):
     tid = current.get("tenant_id")
@@ -4019,7 +4019,7 @@ def list_orders(
     status: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
-    db: Session = Depends(get_read_db),
+    db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
 ):
     tid = current.get("tenant_id")
@@ -4113,7 +4113,7 @@ def list_products(
     status: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
-    db: Session = Depends(get_read_db),
+    db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
 ):
     tid = current.get("tenant_id")
