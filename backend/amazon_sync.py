@@ -82,7 +82,7 @@ def configured(tenant_id: Optional[int] = None) -> bool:
             lwa_secret = cred.lwa_client_secret or os.getenv("AMAZON_LWA_CLIENT_SECRET", "")
             # If refresh token exists and at least client_id is available, consider configured
             # (secret falls back to env var at token-exchange time)
-            return bool(lwa_id or lwa_secret)
+            return bool(lwa_id and lwa_secret)
         finally:
             db.close()
     return _env_configured
@@ -207,7 +207,7 @@ async def _supplement_fba_via_listings(tenant_id: Optional[int], fba_items: list
             import models as _m
             _db = _SL()
             try:
-                _creds = _db.query(_m.AmazonCredentials).filter(_m.AmazonCredentials.tenant_id == tenant_id).first() if tenant_id else None
+                _creds = _db.query(_m.AmazonCredential).filter(_m.AmazonCredential.tenant_id == tenant_id).first() if tenant_id else None
                 if _creds:
                     seller_id = _creds.seller_id or _creds.merchant_id
             finally:
@@ -633,7 +633,7 @@ async def check_buy_box_winners(products: list, tenant_id, db) -> None:
             except Exception as e:
                 log.warning("Buy Box batch check failed for tenant %s: %s", tenant_id, e)
 
-            await asyncio.sleep(0.3)  # gentle rate limiting between batches
+            await asyncio.sleep(2.0)  # Amazon Competitive Pricing API: 10 TPS restore rate, 20-item batches = safe at 0.5 req/s
 
 
 # ── Core sync logic ────────────────────────────────────────────────────────────

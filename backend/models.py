@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, ForeignKey, Boolean, Enum
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, ForeignKey, Boolean, Enum, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -183,6 +183,10 @@ class Contact(Base):
 
 class FollowUp(Base):
     __tablename__ = "follow_ups"
+    __table_args__ = (
+        Index("ix_follow_ups_tenant_status_due", "tenant_id", "status", "due_date"),
+        Index("ix_follow_ups_tenant_account", "tenant_id", "account_id"),
+    )
 
     id               = Column(Integer, primary_key=True, index=True)
     tenant_id        = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
@@ -244,6 +248,10 @@ class OrderItem(Base):
 
 class EmailMessage(Base):
     __tablename__ = "email_messages"
+    __table_args__ = (
+        Index("ix_email_messages_account_direction_read", "account_id", "direction", "is_read"),
+        Index("ix_email_messages_tenant_created", "tenant_id", "created_at"),
+    )
 
     id         = Column(Integer, primary_key=True, index=True)
     tenant_id  = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
@@ -300,7 +308,12 @@ class RepricerStrategy(Base):
 
 class Product(Base):
     __tablename__ = "products"
-    __table_args__ = {"schema": "public"}
+    __table_args__ = (
+        Index("ix_products_tenant_status", "tenant_id", "status"),
+        Index("ix_products_tenant_asin", "tenant_id", "asin"),
+        Index("ix_products_tenant_channel", "tenant_id", "fulfillment_channel"),
+        {"schema": "public"},
+    )
 
     id         = Column(Integer, primary_key=True, index=True)
     tenant_id  = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
@@ -377,6 +390,10 @@ class Product(Base):
 class RepricerLog(Base):
     """One row per price change Aria pushes to Amazon."""
     __tablename__ = "repricer_logs"
+    __table_args__ = (
+        Index("ix_repricer_logs_tenant_created", "tenant_id", "created_at"),
+        Index("ix_repricer_logs_tenant_product", "tenant_id", "product_id"),
+    )
 
     id           = Column(Integer, primary_key=True, index=True)
     tenant_id    = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)

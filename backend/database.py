@@ -12,7 +12,16 @@ if DATABASE_URL.startswith("postgres://"):
 is_sqlite = DATABASE_URL.startswith("sqlite")
 connect_args = {"check_same_thread": False} if is_sqlite else {"options": "-csearch_path=public"}
 
-_PG_POOL = dict(pool_size=10, max_overflow=20, pool_recycle=1800, pool_timeout=30, pool_pre_ping=True)
+# Pool sized for 10k+ users: 20 base + 40 overflow = 60 max connections per worker.
+# With 4 uvicorn workers this is 240 total — stay within Railway PG limits by
+# setting POOL_SIZE / POOL_OVERFLOW env vars or deploying PgBouncer in front.
+_PG_POOL = dict(
+    pool_size=int(os.getenv("POOL_SIZE", "20")),
+    max_overflow=int(os.getenv("POOL_OVERFLOW", "40")),
+    pool_recycle=1800,
+    pool_timeout=10,
+    pool_pre_ping=True,
+)
 
 if is_sqlite:
     engine = create_engine(DATABASE_URL, connect_args=connect_args)

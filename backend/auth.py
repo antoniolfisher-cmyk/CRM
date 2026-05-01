@@ -9,7 +9,17 @@ from sqlalchemy.orm import Session
 from database import get_db
 import models
 
-SECRET_KEY          = os.getenv("SECRET_KEY", "dev-secret-change-in-production")
+_RAW_SECRET = os.getenv("SECRET_KEY", "")
+_INSECURE_DEFAULTS = {"dev-secret-change-in-production", "changeme", "secret", ""}
+if not _RAW_SECRET or _RAW_SECRET in _INSECURE_DEFAULTS:
+    import sys
+    print(
+        "FATAL: SECRET_KEY env var is missing or is an insecure default value. "
+        "Set a strong random SECRET_KEY (e.g. `openssl rand -hex 32`) before starting.",
+        flush=True,
+    )
+    sys.exit(1)
+SECRET_KEY          = _RAW_SECRET
 ALGORITHM           = "HS256"
 TOKEN_EXPIRE_HOURS  = 24 * 7   # 7 days
 

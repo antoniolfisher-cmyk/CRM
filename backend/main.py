@@ -686,7 +686,10 @@ class GlobalRateLimitMiddleware(BaseHTTPMiddleware):
         if path == "/api/health":
             return await call_next(request)
 
-        ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown").split(",")[0].strip()
+        # Use the LAST IP in X-Forwarded-For — Railway's load balancer appends the real client IP last.
+        # Taking the first value allows header spoofing to bypass rate limits.
+        _xff = request.headers.get("X-Forwarded-For", "")
+        ip = (_xff.split(",")[-1].strip() if _xff else None) or (request.client.host if request.client else "unknown")
         if not _rate_limiter.is_allowed(ip, path):
             return StarletteJSONResponse(
                 status_code=429,
@@ -901,6 +904,18 @@ def startup():
     if os.getenv("DISABLE_SCHEDULER", "").lower() in ("1", "true", "yes"):
         log.info("Scheduler disabled (DISABLE_SCHEDULER=true) — web-only mode")
     else:
+        # IMPORTANT: APScheduler runs inside this process. If Railway scales to
+        # multiple replicas, every replica will run the scheduler and trigger
+        # duplicate Amazon syncs and Aria repricer runs. Set DISABLE_SCHEDULER=true
+        # on all but one replica, or run the scheduler as a separate Railway service.
+        num_replicas = int(os.getenv("RAILWAY_NUM_REPLICAS", "1"))
+        replica_id   = os.getenv("RAILWAY_REPLICA_ID", "")
+        if num_replicas > 1 and replica_id:
+            # Only the lexicographically first replica ID runs the scheduler
+            all_replica_ids = sorted(os.getenv("RAILWAY_REPLICA_IDS", replica_id).split(","))
+            if replica_id != all_replica_ids[0]:
+                log.info("Scheduler suppressed on replica %s — only primary replica runs it", replica_id)
+                return
         start_scheduler()
 
 
@@ -1525,12 +1540,15 @@ def aria_status(db: Session = Depends(get_db), current: dict = Depends(require_a
 async def aria_run_one(product_id: int, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     if not aria_repricer.aria_configured():
         raise HTTPException(503, "ANTHROPIC_API_KEY is not configured")
-    product = db.query(models.Product).filter(models.Product.id == product_id).first()
+    tid = current.get("tenant_id")
+    product = db.query(models.Product).filter(
+        models.Product.id == product_id,
+        models.Product.tenant_id == tid,
+    ).first()
     if not product:
         raise HTTPException(404, "Product not found")
     if not product.buy_box:
         raise HTTPException(400, "Product needs a Buy Box price to reprice")
-    tid = current.get("tenant_id")
     strategy = aria_repricer._get_strategy(db, tenant_id=tid)
     result = await aria_repricer.price_product(product, strategy)
     product.aria_suggested_price = result["price"]
@@ -2227,13 +2245,13 @@ def export_tenant_data(
             for f in follow_ups
         ],
         "products": [
-            {"id": p.id, "name": p.name, "asin": p.asin, "sku": p.sku,
-             "status": p.status, "cost": p.cost, "created_at": _dt(p.created_at)}
+            {"id": p.id, "name": p.product_name, "asin": p.asin, "sku": p.seller_sku,
+             "status": p.status, "cost": p.buy_cost, "created_at": _dt(p.created_at)}
             for p in products
         ],
         "orders": [
             {"id": o.id, "status": o.status,
-             "total_amount": o.total_amount, "created_at": _dt(o.created_at)}
+             "total_amount": o.total, "created_at": _dt(o.created_at)}
             for o in orders
         ],
     }
@@ -3052,7 +3070,8 @@ async def get_dashboard_amazon_live(db: Session = Depends(get_db), current: dict
 
     # ── Buy-box stats come from DB — always fresh, no Amazon call needed ──────
     approved_products = db.query(models.Product).filter(
-        models.Product.status == "approved"
+        models.Product.status == "approved",
+        models.Product.tenant_id == tenant_id,
     ).all()
     approved_with_bb = [p for p in approved_products if p.buy_box and p.buy_box > 0]
     competitive = sum(
@@ -3297,7 +3316,7 @@ async def get_dashboard_amazon_orders(
 
 @app.get("/api/debug/amazon-orders-tenant")
 async def debug_amazon_orders_tenant(
-    current: dict = Depends(require_auth),
+    current: dict = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     """
@@ -3684,8 +3703,8 @@ def send_account_email(
     # Resolve tenant store name so the From display name shows the seller's brand
     _from_name = None
     if _tid:
-        _t_cred = db.query(models.AmazonCredentials).filter(
-            models.AmazonCredentials.tenant_id == _tid
+        _t_cred = db.query(models.AmazonCredential).filter(
+            models.AmazonCredential.tenant_id == _tid
         ).first()
         _t_obj  = db.query(models.Tenant).filter(models.Tenant.id == _tid).first()
         _from_name = (
@@ -3749,7 +3768,10 @@ def get_account_emails(account_id: int, db: Session = Depends(get_db), current: 
     _check_owner(acc, current)
     msgs = (
         db.query(models.EmailMessage)
-        .filter(models.EmailMessage.account_id == account_id)
+        .filter(
+            models.EmailMessage.account_id == account_id,
+            models.EmailMessage.tenant_id == current.get("tenant_id"),
+        )
         .order_by(models.EmailMessage.created_at.asc())
         .all()
     )
@@ -3934,8 +3956,8 @@ async def inbound_email_webhook(request: Request, db: Session = Depends(get_db))
                         _notif_tid = inbound_tenant_id
                         _notif_store = None
                         if _notif_tid:
-                            _nc = db.query(models.AmazonCredentials).filter(
-                                models.AmazonCredentials.tenant_id == _notif_tid
+                            _nc = db.query(models.AmazonCredential).filter(
+                                models.AmazonCredential.tenant_id == _notif_tid
                             ).first()
                             _nt = db.query(models.Tenant).filter(
                                 models.Tenant.id == _notif_tid
@@ -4142,8 +4164,8 @@ def get_order(order_id: int, db: Session = Depends(get_db), current: dict = Depe
 def create_order(data: schemas.OrderCreate, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     order_data = data.model_dump(exclude={"items"})
     if not order_data.get("order_number"):
-        count = db.query(func.count(models.Order.id)).scalar() + 1
-        order_data["order_number"] = f"ORD-{datetime.utcnow().year}-{count:04d}"
+        import uuid as _uuid
+        order_data["order_number"] = f"ORD-{datetime.utcnow().year}-{_uuid.uuid4().hex[:8].upper()}"
     order = models.Order(**order_data, created_by=current["sub"], tenant_id=current.get("tenant_id"))
     db.add(order)
     db.flush()
