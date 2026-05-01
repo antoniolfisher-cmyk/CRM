@@ -831,54 +831,62 @@ def _audit(db, action: str, *, request: Request = None, current: dict = None,
 
 
 def _ensure_products_table():
-    """Create the products table if it doesn't exist — no FK constraints, always safe."""
+    """Create the products table on both primary and read-replica engines."""
     from database import engine as _engine, is_sqlite as _is_sqlite
+    import database as _db_module
+    _rengine = getattr(_db_module, '_read_engine', _engine)
     if _is_sqlite:
         return
-    try:
-        with _engine.begin() as _c:
-            _c.execute(text("SET search_path = public"))
-            _c.execute(text("""
-                CREATE TABLE IF NOT EXISTS public.products (
-                    id SERIAL PRIMARY KEY, tenant_id INTEGER, created_by VARCHAR,
-                    asin VARCHAR, product_name VARCHAR, amazon_url VARCHAR,
-                    purchase_link VARCHAR, date_found TIMESTAMPTZ, va_finder VARCHAR,
-                    date_purchased TIMESTAMPTZ, order_number VARCHAR,
-                    quantity FLOAT DEFAULT 0, buy_cost FLOAT DEFAULT 0,
-                    money_spent FLOAT DEFAULT 0, arrived_at_prep TIMESTAMPTZ,
-                    date_sent_to_amazon TIMESTAMPTZ, amazon_tracking_number VARCHAR,
-                    ungated BOOLEAN DEFAULT FALSE, ungating_quantity FLOAT DEFAULT 0,
-                    total_bought FLOAT DEFAULT 0, replenish BOOLEAN DEFAULT FALSE,
-                    amazon_fee FLOAT DEFAULT 0, total_cost FLOAT DEFAULT 0,
-                    buy_box FLOAT DEFAULT 0, profit FLOAT DEFAULT 0,
-                    profit_margin FLOAT DEFAULT 0, roi FLOAT DEFAULT 0,
-                    estimated_sales FLOAT DEFAULT 0, num_sellers INTEGER DEFAULT 0,
-                    notes TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ,
-                    keepa_bsr INTEGER, keepa_category VARCHAR, keepa_last_synced TIMESTAMPTZ,
-                    price_90_high FLOAT, price_90_low FLOAT, price_90_median FLOAT,
-                    fba_low FLOAT, fba_high FLOAT, fba_median FLOAT,
-                    fbm_low FLOAT, fbm_high FLOAT, fbm_median FLOAT,
-                    status VARCHAR DEFAULT 'sourcing', seller_sku VARCHAR,
-                    aria_suggested_price FLOAT, aria_suggested_at TIMESTAMPTZ,
-                    aria_reasoning TEXT, aria_last_buy_box FLOAT, aria_strategy_id INTEGER,
-                    aria_live_price FLOAT, aria_live_pushed_at TIMESTAMPTZ,
-                    buy_box_winner BOOLEAN, buy_box_checked_at TIMESTAMPTZ,
-                    fulfillment_channel VARCHAR
-                )
-            """))
-        log.info("products table ensured")
-        # Diagnostic: confirm where products table actually lives
+    _DDL = """
+        CREATE TABLE IF NOT EXISTS public.products (
+            id SERIAL PRIMARY KEY, tenant_id INTEGER, created_by VARCHAR,
+            asin VARCHAR, product_name VARCHAR, amazon_url VARCHAR,
+            purchase_link VARCHAR, date_found TIMESTAMPTZ, va_finder VARCHAR,
+            date_purchased TIMESTAMPTZ, order_number VARCHAR,
+            quantity FLOAT DEFAULT 0, buy_cost FLOAT DEFAULT 0,
+            money_spent FLOAT DEFAULT 0, arrived_at_prep TIMESTAMPTZ,
+            date_sent_to_amazon TIMESTAMPTZ, amazon_tracking_number VARCHAR,
+            ungated BOOLEAN DEFAULT FALSE, ungating_quantity FLOAT DEFAULT 0,
+            total_bought FLOAT DEFAULT 0, replenish BOOLEAN DEFAULT FALSE,
+            amazon_fee FLOAT DEFAULT 0, total_cost FLOAT DEFAULT 0,
+            buy_box FLOAT DEFAULT 0, profit FLOAT DEFAULT 0,
+            profit_margin FLOAT DEFAULT 0, roi FLOAT DEFAULT 0,
+            estimated_sales FLOAT DEFAULT 0, num_sellers INTEGER DEFAULT 0,
+            notes TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ,
+            keepa_bsr INTEGER, keepa_category VARCHAR, keepa_last_synced TIMESTAMPTZ,
+            price_90_high FLOAT, price_90_low FLOAT, price_90_median FLOAT,
+            fba_low FLOAT, fba_high FLOAT, fba_median FLOAT,
+            fbm_low FLOAT, fbm_high FLOAT, fbm_median FLOAT,
+            status VARCHAR DEFAULT 'sourcing', seller_sku VARCHAR,
+            aria_suggested_price FLOAT, aria_suggested_at TIMESTAMPTZ,
+            aria_reasoning TEXT, aria_last_buy_box FLOAT, aria_strategy_id INTEGER,
+            aria_live_price FLOAT, aria_live_pushed_at TIMESTAMPTZ,
+            buy_box_winner BOOLEAN, buy_box_checked_at TIMESTAMPTZ,
+            fulfillment_channel VARCHAR
+        )
+    """
+    seen_ids = set()
+    for _label, _eng in [("primary", _engine), ("replica", _rengine)]:
+        if id(_eng) in seen_ids:
+            continue
+        seen_ids.add(id(_eng))
         try:
-            with _engine.connect() as _dc:
+            with _eng.begin() as _c:
+                _c.execute(text("SET search_path = public"))
+                _c.execute(text(_DDL))
+            log.info("products table ensured on %s", _label)
+        except Exception as _e:
+            log.warning("products table ensure failed on %s: %s", _label, _e)
+        # Diagnostic
+        try:
+            with _eng.connect() as _dc:
                 sp = _dc.execute(text("SHOW search_path")).scalar()
                 rows = _dc.execute(text(
                     "SELECT table_schema FROM information_schema.tables WHERE table_name='products'"
                 )).fetchall()
-                log.info("search_path=%s  products schema(s)=%s", sp, [r[0] for r in rows])
+                log.info("[%s] search_path=%s  products schema(s)=%s", _label, sp, [r[0] for r in rows])
         except Exception as _de:
-            log.warning("products diagnostic failed: %s", _de)
-    except Exception as _e:
-        log.warning("products table ensure failed: %s", _e)
+            log.warning("[%s] products diagnostic failed: %s", _label, _de)
 
 
 @app.on_event("startup")
@@ -4279,20 +4287,24 @@ def approve_all_sourcing(db: Session = Depends(get_db), current: dict = Depends(
 @app.post("/api/admin/fix-products-table")
 def fix_products_table(current: dict = Depends(require_superadmin)):
     """Manually create products table if missing — superadmin only."""
+    import database as _db_module
+    _rengine = getattr(_db_module, '_read_engine', engine)
     _ensure_products_table()
-    try:
-        with engine.connect() as _c:
-            sp = _c.execute(text("SHOW search_path")).scalar()
-            rows = _c.execute(text(
-                "SELECT table_schema FROM information_schema.tables WHERE table_name='products'"
-            )).fetchall()
-            schemas = [r[0] for r in rows]
-            count = None
-            if schemas:
-                count = _c.execute(text(f"SELECT COUNT(*) FROM {schemas[0]}.products")).scalar()
-        return {"search_path": sp, "products_in_schemas": schemas, "count": count}
-    except Exception as _e:
-        raise HTTPException(status_code=500, detail=f"diagnostic failed: {_e}")
+    result = {}
+    for _label, _eng in [("primary", engine), ("replica", _rengine)]:
+        try:
+            with _eng.connect() as _c:
+                sp = _c.execute(text("SHOW search_path")).scalar()
+                rows = _c.execute(text(
+                    "SELECT table_schema FROM information_schema.tables WHERE table_name='products'"
+                )).fetchall()
+                schemas = [r[0] for r in rows]
+                count = _c.execute(text("SELECT COUNT(*) FROM public.products")).scalar() if schemas else None
+            result[_label] = {"search_path": sp, "schemas": schemas, "count": count}
+        except Exception as _e:
+            result[_label] = {"error": str(_e)}
+    result["same_engine"] = id(engine) == id(_rengine)
+    return result
 
 
 @app.post("/api/admin/purge-system-products")
