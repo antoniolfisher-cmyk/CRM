@@ -237,6 +237,17 @@ async def create_plan(
       create plan → poll → packing options → poll → confirm → poll
       → placement options → poll → list → return to frontend.
     """
+    # Validate: MSKUs cannot be ASINs (10-char B0... codes)
+    import re as _re
+    _asin_pat = _re.compile(r'^B0[A-Z0-9]{8}$')
+    bad = [it["sku"] for it in items if _asin_pat.match(str(it.get("sku", "")).strip().upper())]
+    if bad:
+        raise RuntimeError(
+            f"The following items are missing a Seller SKU and are using their ASIN instead: "
+            f"{', '.join(bad)}. "
+            f"Go to Products → edit each product and set its Seller SKU before creating an FBA shipment."
+        )
+
     token, mkt_id, base = await _get_access_token_for_tenant(tenant_id)
     label_owner = "AMAZON" if label_prep == "AMAZON_LABEL" else "SELLER"
 

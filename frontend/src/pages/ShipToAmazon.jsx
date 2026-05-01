@@ -227,8 +227,13 @@ function FBAShipmentForm() {
   async function handleCreateShipment() {
     if (!shipFromFilled) { setError('Set your ship-from address first.'); return }
     if (!shipment.length) { setError('Add at least one product to your shipment.'); return }
+    const missingSku = shipment.filter(s => !s.product.seller_sku)
+    if (missingSku.length) {
+      setError(`These products are missing a Seller SKU: ${missingSku.map(s => s.product.title || s.product.asin).join(', ')}. Edit each product in the Products page and add its Seller SKU first.`)
+      return
+    }
     setError(''); setLoading(true)
-    const items = shipment.map(s => ({ sku: s.product.seller_sku || s.product.asin, asin: s.product.asin, qty: s.qty, condition: s.condition }))
+    const items = shipment.map(s => ({ sku: s.product.seller_sku, asin: s.product.asin, qty: s.qty, condition: s.condition }))
     try {
       const result = await api.fbaPlan(items, buildFrom(), labelPrep)
       setPlans(Array.isArray(result) ? result : [result])
