@@ -237,7 +237,10 @@ async def _fetch_shipment_detail(base: str, token: str, plan_id: str, shipment_i
                 headers={"x-amz-access-token": token},
             )
         if r.status_code == 200:
-            return r.json().get("shipment", {})
+            shipment = r.json().get("shipment", {})
+            dest = shipment.get("destination") or {}
+            print(f"[FBA shipment] {shipment_id} warehouseId={dest.get('warehouseId','')} addr={str(dest.get('address',{}))[:120]}", flush=True)
+            return shipment
     except Exception:
         pass
     return {}
