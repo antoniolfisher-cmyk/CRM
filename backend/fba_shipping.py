@@ -285,22 +285,28 @@ async def _estimate_shipping(
 
         from datetime import datetime as _dt, timedelta as _td
         now = _dt.utcnow()
-        start_ts = now.strftime("%Y-%m-%dT00:00:00Z")
-        end_ts   = (now + _td(days=3)).strftime("%Y-%m-%dT00:00:00Z")
+        # Amazon v2024 uses date-only for readyToShipWindow (no time, no Z suffix)
+        start_date = now.strftime("%Y-%m-%d")
+        end_date   = (now + _td(days=3)).strftime("%Y-%m-%d")
         body = {
             "placementOptionId": placement_id,
-            "readyToShipWindow": {"start": start_ts, "end": end_ts},
+            "readyToShipWindow": {"start": start_date, "end": end_date},
             "shipmentTransportationConfigurations": configs,
         }
-        print(f"[FBA transport] POST body: {body}", flush=True)
+        print(f"[FBA transport] POST body keys: placementOptionId={placement_id} start={start_date} configs={len(configs)}", flush=True)
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(
                 f"{base}{_V2}/inboundPlans/{plan_id}/transportationOptions",
                 headers={"x-amz-access-token": token, "Content-Type": "application/json"},
                 json=body,
             )
-        print(f"[FBA transport] POST {r.status_code}: {r.text[:500]}", flush=True)
         if r.status_code not in (200, 202):
+            # Extract just the error messages for clean logging
+            try:
+                errs = [e.get("message","") for e in r.json().get("errors",[])]
+            except Exception:
+                errs = [r.text[:300]]
+            print(f"[FBA transport] POST {r.status_code} errors: {errs}", flush=True)
             return 0.0
         op_id = r.json().get("operationId")
         if op_id:
