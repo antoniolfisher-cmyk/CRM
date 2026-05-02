@@ -292,15 +292,14 @@ async def _estimate_shipping(
                 }],
             })
 
-        import json as _json
-        # Minimal body — no optional fields so we can isolate the DateTime '' error
+        from datetime import datetime, timezone, timedelta
+        ready_start = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        ready_end   = (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
         body = {
             "placementOptionId": placement_id,
-            "shipmentTransportationConfigurations": [
-                {"shipmentId": sid} for sid in shipment_ids
-            ],
+            "shipmentTransportationConfigurations": configs,
+            "readyToShipWindow": {"start": ready_start, "end": ready_end},
         }
-        print(f"[FBA transport] BODY={_json.dumps(body)}", flush=True)
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(
                 f"{base}{_V2}/inboundPlans/{plan_id}/transportationOptions",
@@ -392,10 +391,11 @@ async def create_plan(
         }
         if it.get("prepCategory") and it["prepCategory"] != "NONE":
             entry["prepDetails"] = [{"prepCategory": it["prepCategory"]}]
-        if it.get("expDate"):
-            exp = it["expDate"]
-            # Amazon plan creation wants YYYY-MM-DD (date-only); strip any time component
-            entry["expiration"] = exp[:10]
+        # NOTE: expiration is intentionally omitted from plan creation.
+        # Amazon stores the date-only value internally and then tries to parse it
+        # as a full date-time when generateTransportationOptions is called, producing
+        # "DateTime value '' is not valid". Expiration is set via setPackingInformation
+        # after placement confirmation instead.
         return entry
 
     plan_body = {
