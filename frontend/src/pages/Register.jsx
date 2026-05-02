@@ -278,6 +278,11 @@ export default function Register() {
         <p className="text-center text-slate-500 text-xs mt-5">
           No credit card required · Cancel anytime
         </p>
+        <p className="text-center text-slate-400 text-xs mt-2">
+          <Link to="/terms" className="hover:text-orange-600 hover:underline">Terms of Service</Link>
+          {' · '}
+          <Link to="/privacy" className="hover:text-orange-600 hover:underline">Privacy Policy</Link>
+        </p>
       </div>
     </div>
   )

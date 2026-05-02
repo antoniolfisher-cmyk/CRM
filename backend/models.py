@@ -1,7 +1,8 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, ForeignKey, Boolean, Enum
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, ForeignKey, Boolean, Enum, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
+from crypto import EncryptedString
 import enum
 
 
@@ -15,6 +16,7 @@ class Tenant(Base):
     slug                    = Column(String, unique=True, nullable=False, index=True)
     plan                    = Column(String, default="starter")   # starter|pro|enterprise
     is_active               = Column(Boolean, default=True)
+    is_beta                 = Column(Boolean, default=False)  # permanent bypass: immune to billing/trial enforcement
 
     # Stripe billing
     stripe_customer_id      = Column(String, nullable=True)
@@ -24,6 +26,7 @@ class Tenant(Base):
     trial_ends_at           = Column(DateTime(timezone=True), nullable=True)
 
     created_at              = Column(DateTime(timezone=True), server_default=func.now())
+    deleted_at              = Column(DateTime(timezone=True), nullable=True)
 
     users             = relationship("User", back_populates="tenant")
     amazon_credential = relationship("AmazonCredential", back_populates="tenant", uselist=False)
@@ -37,9 +40,9 @@ class AmazonCredential(Base):
     tenant_id        = Column(Integer, ForeignKey("tenants.id"), unique=True, nullable=False)
 
     # These can come from OAuth flow or manual entry
-    lwa_client_id     = Column(String, nullable=True)   # app-level (shared) or per-seller
-    lwa_client_secret = Column(String, nullable=True)   # app-level (shared) or per-seller
-    sp_refresh_token  = Column(String, nullable=True)   # per-seller, from OAuth
+    lwa_client_id     = Column(String, nullable=True)
+    lwa_client_secret = Column(EncryptedString(1024), nullable=True)
+    sp_refresh_token  = Column(EncryptedString(1024), nullable=True)
     seller_id         = Column(String, nullable=True)
     store_name        = Column(String, nullable=True)   # Amazon storefront/business name
     marketplace_id    = Column(String, default="ATVPDKIKX0DER")
@@ -66,8 +69,11 @@ class User(Base):
     email              = Column(String, nullable=True)
     notify_email       = Column(Boolean, default=True)
     email_verified     = Column(Boolean, default=False)
-    dashboard_sections = Column(Text, nullable=True)   # comma-separated dashboard widget keys; NULL = all
-    page_permissions   = Column(Text, nullable=True)   # comma-separated page keys; NULL = all pages
+    dashboard_sections = Column(Text, nullable=True)
+    page_permissions   = Column(Text, nullable=True)
+    failed_login_count = Column(Integer, default=0)
+    locked_until       = Column(DateTime(timezone=True), nullable=True)
+    last_login_at      = Column(DateTime(timezone=True), nullable=True)
     created_at         = Column(DateTime(timezone=True), server_default=func.now())
 
     tenant = relationship("Tenant", back_populates="users")
@@ -129,8 +135,8 @@ class Account(Base):
     tenant_id    = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
     created_by   = Column(String, nullable=True, index=True)
     name         = Column(String, nullable=False, index=True)
-    account_type = Column(String, default="retailer")
-    status       = Column(String, default="prospect")
+    account_type = Column(String, default="retailer", index=True)
+    status       = Column(String, default="prospect", index=True)
     phone        = Column(String)
     email        = Column(String)
     website      = Column(String)
@@ -160,7 +166,7 @@ class Contact(Base):
     id         = Column(Integer, primary_key=True, index=True)
     tenant_id  = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
     created_by = Column(String, nullable=True, index=True)
-    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False, index=True)
     first_name = Column(String, nullable=False)
     last_name  = Column(String, nullable=False)
     title      = Column(String)
@@ -177,15 +183,19 @@ class Contact(Base):
 
 class FollowUp(Base):
     __tablename__ = "follow_ups"
+    __table_args__ = (
+        Index("ix_follow_ups_tenant_status_due", "tenant_id", "status", "due_date"),
+        Index("ix_follow_ups_tenant_account", "tenant_id", "account_id"),
+    )
 
     id               = Column(Integer, primary_key=True, index=True)
     tenant_id        = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
     created_by       = Column(String, nullable=True, index=True)
-    account_id       = Column(Integer, ForeignKey("accounts.id"), nullable=False)
-    contact_id       = Column(Integer, ForeignKey("contacts.id"), nullable=True)
+    account_id       = Column(Integer, ForeignKey("accounts.id"), nullable=False, index=True)
+    contact_id       = Column(Integer, ForeignKey("contacts.id"), nullable=True, index=True)
     follow_up_type   = Column(String, default="call")
-    status           = Column(String, default="pending")
-    priority         = Column(String, default="medium")
+    status           = Column(String, default="pending", index=True)
+    priority         = Column(String, default="medium", index=True)
     subject          = Column(String, nullable=False)
     due_date         = Column(DateTime(timezone=True), nullable=False)
     completed_date   = Column(DateTime(timezone=True), nullable=True)
@@ -205,9 +215,9 @@ class Order(Base):
     id           = Column(Integer, primary_key=True, index=True)
     tenant_id    = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
     created_by   = Column(String, nullable=True, index=True)
-    account_id   = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    account_id   = Column(Integer, ForeignKey("accounts.id"), nullable=False, index=True)
     order_number = Column(String, index=True)
-    status       = Column(String, default="pending")
+    status       = Column(String, default="pending", index=True)
     order_date   = Column(DateTime(timezone=True), server_default=func.now())
     ship_date    = Column(DateTime(timezone=True), nullable=True)
     subtotal     = Column(Float, default=0)
@@ -225,7 +235,7 @@ class OrderItem(Base):
     __tablename__ = "order_items"
 
     id           = Column(Integer, primary_key=True, index=True)
-    order_id     = Column(Integer, ForeignKey("orders.id"), nullable=False)
+    order_id     = Column(Integer, ForeignKey("orders.id"), nullable=False, index=True)
     product_name = Column(String, nullable=False)
     sku          = Column(String)
     quantity     = Column(Float, default=1)
@@ -238,6 +248,10 @@ class OrderItem(Base):
 
 class EmailMessage(Base):
     __tablename__ = "email_messages"
+    __table_args__ = (
+        Index("ix_email_messages_account_direction_read", "account_id", "direction", "is_read"),
+        Index("ix_email_messages_tenant_created", "tenant_id", "created_at"),
+    )
 
     id         = Column(Integer, primary_key=True, index=True)
     tenant_id  = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
@@ -294,6 +308,12 @@ class RepricerStrategy(Base):
 
 class Product(Base):
     __tablename__ = "products"
+    __table_args__ = (
+        Index("ix_products_tenant_status", "tenant_id", "status"),
+        Index("ix_products_tenant_asin", "tenant_id", "asin"),
+        Index("ix_products_tenant_channel", "tenant_id", "fulfillment_channel"),
+        {"schema": "public"},
+    )
 
     id         = Column(Integer, primary_key=True, index=True)
     tenant_id  = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
@@ -350,7 +370,7 @@ class Product(Base):
     fbm_high       = Column(Float, nullable=True)
     fbm_median     = Column(Float, nullable=True)
 
-    status = Column(String, default='sourcing')
+    status = Column(String, default='sourcing', index=True)
 
     seller_sku           = Column(String, nullable=True, index=True)   # Amazon seller-assigned SKU
     aria_suggested_price = Column(Float, nullable=True)
@@ -370,6 +390,10 @@ class Product(Base):
 class RepricerLog(Base):
     """One row per price change Aria pushes to Amazon."""
     __tablename__ = "repricer_logs"
+    __table_args__ = (
+        Index("ix_repricer_logs_tenant_created", "tenant_id", "created_at"),
+        Index("ix_repricer_logs_tenant_product", "tenant_id", "product_id"),
+    )
 
     id           = Column(Integer, primary_key=True, index=True)
     tenant_id    = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
@@ -407,7 +431,7 @@ class UngateRequest(Base):
 
     id                   = Column(Integer, primary_key=True, index=True)
     tenant_id            = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
-    product_id           = Column(Integer, ForeignKey("products.id", ondelete="SET NULL"), nullable=True)
+    product_id           = Column(Integer, ForeignKey("public.products.id", ondelete="SET NULL"), nullable=True)
     asin                 = Column(String, nullable=False, index=True)
     product_name         = Column(String, nullable=False)
     category             = Column(String, nullable=True)
@@ -486,3 +510,83 @@ class PasswordResetToken(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User")
+
+
+# ─── Audit Log ───────────────────────────────────────────────────────────────
+
+class AuditLog(Base):
+    """Immutable record of security-relevant actions, scoped per tenant."""
+    __tablename__ = "audit_logs"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    tenant_id  = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
+    user_id    = Column(Integer, ForeignKey("users.id"), nullable=True)
+    username   = Column(String, nullable=True)
+    action     = Column(String, nullable=False, index=True)  # e.g. "login", "credentials.save"
+    target     = Column(String, nullable=True)               # e.g. "user:42", "tenant:7"
+    detail     = Column(Text, nullable=True)                 # JSON or plain description
+    ip         = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+# ─── Waitlist ─────────────────────────────────────────────────────────────────
+
+class WaitlistEntry(Base):
+    __tablename__ = "waitlist"
+
+    id           = Column(Integer, primary_key=True, index=True)
+    email        = Column(String, unique=True, nullable=False, index=True)
+    name         = Column(String, nullable=True)
+    company      = Column(String, nullable=True)
+    monthly_gmv  = Column(String, nullable=True)   # revenue range they select
+    source       = Column(String, nullable=True)   # utm_source or referral
+    notes        = Column(Text, nullable=True)
+    created_at   = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+# ─── FBA Inbound Shipments ────────────────────────────────────────────────────
+
+class FBAShipment(Base):
+    __tablename__ = "fba_shipments"
+
+    id                   = Column(Integer, primary_key=True, index=True)
+    tenant_id            = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    user_id              = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    # Product info
+    asin                 = Column(String, nullable=False)
+    seller_sku           = Column(String, nullable=True)
+    title                = Column(String, nullable=True)
+    quantity             = Column(Integer, nullable=False, default=1)
+
+    # Shipment plan
+    shipment_name        = Column(String, nullable=True)
+    amazon_shipment_id   = Column(String, nullable=True, index=True)
+    destination_fc       = Column(String, nullable=True)
+    ship_to_address      = Column(Text, nullable=True)   # JSON
+
+    # Transport
+    transport_status     = Column(String, nullable=True)  # WORKING|ESTIMATING|ESTIMATED|CONFIRMING|CONFIRMED|VOIDED|ERROR
+    estimated_cost       = Column(Float, nullable=True)
+    transport_currency   = Column(String, nullable=True)
+
+    # Amazon fees
+    referral_fee         = Column(Float, nullable=True)
+    fba_fee              = Column(Float, nullable=True)
+
+    # Optimized shipping
+    optimized_eligible   = Column(Boolean, nullable=True)
+
+    # Status lifecycle
+    status               = Column(String, default="planning")  # planning|submitted|transport_pending|transport_confirmed|labeled|voided
+    label_url            = Column(Text, nullable=True)
+
+    # Addresses + packages stored as JSON
+    from_address         = Column(Text, nullable=True)
+    packages_json        = Column(Text, nullable=True)
+
+    created_at           = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at           = Column(DateTime(timezone=True), onupdate=func.now())
+    # v2024-03-20 FBA Inbound API fields
+    inbound_plan_id      = Column(String, nullable=True, index=True)
+    placement_option_id  = Column(String, nullable=True)

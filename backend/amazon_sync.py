@@ -82,7 +82,7 @@ def configured(tenant_id: Optional[int] = None) -> bool:
             lwa_secret = cred.lwa_client_secret or os.getenv("AMAZON_LWA_CLIENT_SECRET", "")
             # If refresh token exists and at least client_id is available, consider configured
             # (secret falls back to env var at token-exchange time)
-            return bool(lwa_id or lwa_secret)
+            return bool(lwa_id and lwa_secret)
         finally:
             db.close()
     return _env_configured
@@ -116,16 +116,24 @@ async def _get_access_token_for_tenant(tenant_id: Optional[int] = None) -> tuple
         mkt_id        = os.getenv("AMAZON_MARKETPLACE_ID", "ATVPDKIKX0DER")
         base          = _sp_base()
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.post(_LWA_URL, data={
-            "grant_type":    "refresh_token",
-            "refresh_token": refresh_token,
-            "client_id":     client_id,
-            "client_secret": client_secret,
-        })
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(_LWA_URL, data={
+                "grant_type":    "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id":     client_id,
+                "client_secret": client_secret,
+            })
+    except httpx.TimeoutException:
+        raise RuntimeError("Amazon LWA token request timed out")
+    except httpx.RequestError as exc:
+        raise RuntimeError(f"Amazon LWA token network error: {exc}")
     if r.status_code != 200:
-        raise RuntimeError(f"Amazon LWA token error: {r.text[:200]}")
-    return r.json()["access_token"], mkt_id, base
+        raise RuntimeError(f"Amazon LWA token error {r.status_code}: {r.text[:200]}")
+    token = r.json().get("access_token")
+    if not token:
+        raise RuntimeError(f"Amazon LWA response missing access_token: {r.text[:200]}")
+    return token, mkt_id, base
 
 
 # ── FBA inventory fetch ────────────────────────────────────────────────────────
@@ -159,22 +167,131 @@ async def _fetch_fba_inventory(tenant_id: Optional[int] = None) -> list:
             data = resp.json()
             for s in data.get("payload", {}).get("inventorySummaries", []):
                 details = s.get("inventoryDetails") or {}
-                qty = (
-                    (details.get("fulfillableQuantity") or 0)
-                    + (details.get("inboundShippedQuantity") or 0)
-                    + (details.get("inboundReceivingQuantity") or 0)
+                fulfillable  = details.get("fulfillableQuantity") or 0
+                inb_working  = details.get("inboundWorkingQuantity") or 0
+                inb_shipped  = details.get("inboundShippedQuantity") or 0
+                inb_recv     = details.get("inboundReceivingQuantity") or 0
+                reserved     = (details.get("reservedQuantity") or {}).get("totalReservedQuantity") or 0
+                total_api    = s.get("totalQuantity") or 0
+                qty = fulfillable + inb_working + inb_shipped + inb_recv + reserved
+                if qty == 0:
+                    qty = total_api
+                import logging as _log
+                _log.getLogger("amazon_sync").info(
+                    "FBA item asin=%s sku=%s fulfillable=%s inb_work=%s inb_ship=%s inb_recv=%s reserved=%s total_api=%s → qty=%s",
+                    s.get("asin"), s.get("sellerSku"), fulfillable, inb_working, inb_shipped, inb_recv, reserved, total_api, qty
                 )
-                items.append({
-                    "asin":         s.get("asin", ""),
-                    "product_name": s.get("productName", ""),
-                    "seller_sku":   s.get("sellerSku", ""),
-                    "quantity":     qty,
-                })
+                asin = s.get("asin", "")
+                # Sum quantities across multiple SKUs for the same ASIN
+                existing_item = next((i for i in items if i["asin"] == asin), None)
+                if existing_item:
+                    existing_item["quantity"] += qty
+                else:
+                    items.append({
+                        "asin":         asin,
+                        "product_name": s.get("productName", ""),
+                        "seller_sku":   s.get("sellerSku", ""),
+                        "quantity":     qty,
+                    })
             next_token = data.get("payload", {}).get("nextToken")
             if not next_token:
                 break
 
     return items
+
+
+async def _supplement_fba_via_listings(tenant_id: Optional[int], fba_items: list) -> list:
+    """
+    Supplement FBA inventory using the Listings Items API for ASINs the FBA
+    Inventory API missed (50-row page limit workaround).
+    Returns fba_items with any missing FBA ASINs appended.
+    """
+    import httpx
+    try:
+        token, mkt_id, base = await _get_access_token_for_tenant(tenant_id)
+        seller_id = None
+        try:
+            from database import SessionLocal as _SL
+            import models as _m
+            _db = _SL()
+            try:
+                _creds = _db.query(_m.AmazonCredential).filter(_m.AmazonCredential.tenant_id == tenant_id).first() if tenant_id else None
+                if _creds:
+                    seller_id = _creds.seller_id or _creds.merchant_id
+            finally:
+                _db.close()
+        except Exception:
+            pass
+        if not seller_id:
+            seller_id = os.getenv("AMAZON_SELLER_ID") or os.getenv("AMAZON_MERCHANT_ID")
+        if not seller_id:
+            return fba_items
+
+        known_asins = {(i.get("asin") or "").strip() for i in fba_items}
+        page_token = None
+        extra: list = []
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            while True:
+                params = {
+                    "marketplaceIds": mkt_id,
+                    "includedData":   "summaries,fulfillmentAvailability",
+                    "pageSize":       20,
+                }
+                if page_token:
+                    params["pageToken"] = page_token
+
+                resp = await client.get(
+                    f"{base}/listings/2021-08-01/items/{seller_id}",
+                    headers={"x-amz-access-token": token},
+                    params=params,
+                )
+                if resp.status_code != 200:
+                    break
+
+                data = resp.json()
+                for listing in data.get("items", []):
+                    summaries = listing.get("summaries") or []
+                    if not any("ACTIVE" in (s.get("status") or []) for s in summaries):
+                        continue
+                    channel = next(
+                        (s.get("fulfillmentChannel") for s in summaries if s.get("fulfillmentChannel")),
+                        None,
+                    )
+                    if channel != "AMAZON":
+                        continue
+                    asin = next((s.get("asin") for s in summaries if s.get("asin")), "")
+                    if not asin or asin in known_asins:
+                        continue
+                    product_name = next((s.get("itemName") for s in summaries if s.get("itemName")), "")
+                    seller_sku = listing.get("sku", "")
+                    qty = 0
+                    for fa in (listing.get("fulfillmentAvailability") or []):
+                        if fa.get("fulfillmentChannelCode") == "AMAZON_NA":
+                            qty = fa.get("quantity") or 0
+                            break
+                    if qty == 0:
+                        qty = 1
+                    log.info("FBA supplement: asin=%s sku=%s qty=%s (not in FBA Inventory API)", asin, seller_sku, qty)
+                    known_asins.add(asin)
+                    extra.append({
+                        "asin":                asin,
+                        "product_name":        product_name,
+                        "seller_sku":          seller_sku,
+                        "quantity":            qty,
+                        "fulfillment_channel": "FBA",
+                    })
+
+                page_token = (data.get("pagination") or {}).get("nextPageToken")
+                if not page_token:
+                    break
+
+        if extra:
+            log.info("FBA supplement added %d items for tenant %s", len(extra), tenant_id)
+        return fba_items + extra
+    except Exception as _e:
+        log.warning("FBA supplement skipped for tenant %s: %s", tenant_id, _e)
+        return fba_items
 
 
 # ── FBM listings fetch ─────────────────────────────────────────────────────────
@@ -282,7 +399,7 @@ async def _listings_api_fbm(seller_id: str, tenant_id, token: str, mkt_id: str, 
             params = {
                 "marketplaceIds": mkt_id,
                 "includedData":   "summaries,fulfillmentAvailability",
-                "pageSize":       200,
+                "pageSize":       20,
             }
             if page_token:
                 params["pageToken"] = page_token
@@ -524,7 +641,7 @@ async def check_buy_box_winners(products: list, tenant_id, db) -> None:
             except Exception as e:
                 log.warning("Buy Box batch check failed for tenant %s: %s", tenant_id, e)
 
-            await asyncio.sleep(0.3)  # gentle rate limiting between batches
+            await asyncio.sleep(2.0)  # Amazon Competitive Pricing API: 10 TPS restore rate, 20-item batches = safe at 0.5 req/s
 
 
 # ── Core sync logic ────────────────────────────────────────────────────────────
@@ -553,6 +670,12 @@ async def run_sync(tenant_id: Optional[int] = None) -> dict:
         fba_items = await _fetch_fba_inventory(tenant_id)
         for item in fba_items:
             item["fulfillment_channel"] = "FBA"
+
+        # Supplement FBA with Listings Items API to catch items the 50-row FBA API missed
+        try:
+            fba_items = await _supplement_fba_via_listings(tenant_id, fba_items)
+        except Exception as _sup_e:
+            log.warning("FBA supplement failed for tenant %s (non-fatal): %s", tenant_id, _sup_e)
 
         # Pull FBM listings — capture error separately so FBA sync still completes
         try:
@@ -588,6 +711,7 @@ async def run_sync(tenant_id: Optional[int] = None) -> dict:
             if existing:
                 existing.quantity = item["quantity"]
                 existing.fulfillment_channel = channel
+                existing.status = "approved"   # live Amazon inventory is always approved
                 if item.get("seller_sku"):
                     existing.seller_sku = item["seller_sku"]
                 updated += 1
@@ -834,7 +958,7 @@ def scheduled_sync_all():
     log.info("Amazon scheduled sync starting for %d tenant(s)", len(tenant_ids))
 
     async def _sync_all():
-        sem = asyncio.Semaphore(5)   # max 5 concurrent tenant syncs
+        sem = asyncio.Semaphore(20)  # max 20 concurrent tenant syncs
 
         async def _sync_one(tid):
             async with sem:

@@ -77,7 +77,13 @@ async def push_price_to_amazon(seller_sku: str, price: float, cred) -> dict:
                 }],
             }],
         }
-        sp_base = os.getenv("AMAZON_SP_BASE", _SP_BASE)
+        # Respect per-tenant sandbox flag — never push to production from a sandbox credential
+        is_sandbox = getattr(cred, "is_sandbox", False) or os.getenv("AMAZON_SP_SANDBOX", "").lower() in ("1", "true", "yes")
+        sp_base = (
+            "https://sandbox.sellingpartnerapi-na.amazon.com"
+            if is_sandbox
+            else os.getenv("AMAZON_SP_BASE", _SP_BASE)
+        )
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.patch(
                 f"{sp_base}/listings/2021-08-01/items/{cred.seller_id}/{seller_sku}",

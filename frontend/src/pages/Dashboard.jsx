@@ -56,11 +56,7 @@ export default function Dashboard() {
             <RepricerStatCard
               label="Units Sold This Month"
               value={monthlyUnitsSold !== null ? monthlyUnitsSold.toLocaleString() : '—'}
-              data={repricerStats.weekly_updates.map((w, i) =>
-                monthlyUnitsSold !== null
-                  ? Math.round((monthlyUnitsSold / 4) * (0.7 + i * 0.15))
-                  : 0
-              )}
+              data={repricerStats.weekly_updates.map(() => 0)}
               labels={repricerStats.weekly_updates.map(w => w.week_start)}
               color="#8b5cf6"
               yLabel="Units Sold"
@@ -552,6 +548,10 @@ function AmazonLivePanel() {
     try {
       const result = await api.getDashboardAmazonLive()
       setData(result)
+      // Surface a soft warning if the server returned data but flagged an Amazon error
+      if (result?.error && !result?.total_skus) {
+        setError(result.error)
+      }
     } catch (e) {
       setError(e.message)
     } finally {

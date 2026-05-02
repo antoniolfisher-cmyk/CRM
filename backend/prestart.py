@@ -1,0 +1,160 @@
+"""
+Pre-start script: runs once before uvicorn spawns workers.
+Handles DB migrations so workers don't race each other on startup.
+"""
+import os
+import sys
+import logging
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
+log = logging.getLogger("prestart")
+
+db_url = os.getenv("DATABASE_URL", "sqlite:///./crm.db").replace("postgres://", "postgresql://", 1)
+is_sqlite = db_url.startswith("sqlite")
+
+
+def run_migrations():
+    try:
+        from alembic.config import Config
+        from alembic import command
+        from alembic.runtime.migration import MigrationContext
+        from sqlalchemy import create_engine as _ce
+
+        cfg = Config()
+        cfg.set_main_option("script_location", os.path.join(os.path.dirname(__file__), "alembic"))
+        cfg.set_main_option("sqlalchemy.url", db_url)
+
+        # Fix broken chain: if version table has stale '0001' instead of '0001_safe_new_tables'
+        try:
+            _eng = _ce(db_url)
+            with _eng.connect() as _conn:
+                ctx = MigrationContext.configure(_conn)
+                current = ctx.get_current_heads()
+                if current and "0001_safe_new_tables" not in current and "0001" in current:
+                    log.warning("Fixing broken Alembic chain — stamping 0001_safe_new_tables")
+                    command.stamp(cfg, "0001_safe_new_tables")
+            _eng.dispose()
+        except Exception as e:
+            log.warning("Alembic chain check skipped: %s", e)
+
+        command.upgrade(cfg, "head")
+        log.info("Alembic migrations applied")
+    except Exception as e:
+        log.warning("Alembic migration skipped: %s", e)
+
+    # Safety net: ensure critical columns exist even if Alembic failed
+    if not is_sqlite:
+        try:
+            from sqlalchemy import create_engine as _ce, text
+            _eng = _ce(db_url)
+            with _eng.begin() as conn:
+                conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_count INTEGER DEFAULT 0"))
+                conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ"))
+                conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ"))
+                conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ"))
+            _eng.dispose()
+            log.info("Column safety-net applied")
+        except Exception as e:
+            log.warning("Column safety-net skipped: %s", e)
+
+    # Table safety net: create products table directly if it still doesn't exist
+    if not is_sqlite:
+        try:
+            from sqlalchemy import create_engine as _ce, text
+            _eng = _ce(db_url, connect_args={"options": "-csearch_path=public"})
+            with _eng.begin() as conn:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS public.products (
+                        id                      SERIAL PRIMARY KEY,
+                        tenant_id               INTEGER,
+                        created_by              VARCHAR,
+                        asin                    VARCHAR,
+                        product_name            VARCHAR,
+                        amazon_url              VARCHAR,
+                        purchase_link           VARCHAR,
+                        date_found              TIMESTAMPTZ,
+                        va_finder               VARCHAR,
+                        date_purchased          TIMESTAMPTZ,
+                        order_number            VARCHAR,
+                        quantity                FLOAT DEFAULT 0,
+                        buy_cost                FLOAT DEFAULT 0,
+                        money_spent             FLOAT DEFAULT 0,
+                        arrived_at_prep         TIMESTAMPTZ,
+                        date_sent_to_amazon     TIMESTAMPTZ,
+                        amazon_tracking_number  VARCHAR,
+                        ungated                 BOOLEAN DEFAULT FALSE,
+                        ungating_quantity       FLOAT DEFAULT 0,
+                        total_bought            FLOAT DEFAULT 0,
+                        replenish               BOOLEAN DEFAULT FALSE,
+                        amazon_fee              FLOAT DEFAULT 0,
+                        total_cost              FLOAT DEFAULT 0,
+                        buy_box                 FLOAT DEFAULT 0,
+                        profit                  FLOAT DEFAULT 0,
+                        profit_margin           FLOAT DEFAULT 0,
+                        roi                     FLOAT DEFAULT 0,
+                        estimated_sales         FLOAT DEFAULT 0,
+                        num_sellers             INTEGER DEFAULT 0,
+                        notes                   TEXT,
+                        created_at              TIMESTAMPTZ DEFAULT NOW(),
+                        updated_at              TIMESTAMPTZ,
+                        keepa_bsr               INTEGER,
+                        keepa_category          VARCHAR,
+                        keepa_last_synced       TIMESTAMPTZ,
+                        price_90_high           FLOAT,
+                        price_90_low            FLOAT,
+                        price_90_median         FLOAT,
+                        fba_low                 FLOAT,
+                        fba_high                FLOAT,
+                        fba_median              FLOAT,
+                        fbm_low                 FLOAT,
+                        fbm_high                FLOAT,
+                        fbm_median              FLOAT,
+                        status                  VARCHAR DEFAULT 'sourcing',
+                        seller_sku              VARCHAR,
+                        aria_suggested_price    FLOAT,
+                        aria_suggested_at       TIMESTAMPTZ,
+                        aria_reasoning          TEXT,
+                        aria_last_buy_box       FLOAT,
+                        aria_strategy_id        INTEGER,
+                        aria_live_price         FLOAT,
+                        aria_live_pushed_at     TIMESTAMPTZ,
+                        buy_box_winner          BOOLEAN,
+                        buy_box_checked_at      TIMESTAMPTZ,
+                        fulfillment_channel     VARCHAR
+                    )
+                """))
+            _eng.dispose()
+            log.info("Products table safety-net applied")
+        except Exception as e:
+            log.warning("Products table safety-net failed: %s", e)
+
+
+def seed():
+    try:
+        import seed_if_empty  # noqa: F401 — side-effectful import
+        log.info("Seed check complete")
+    except Exception as e:
+        log.warning("Seed skipped: %s", e)
+
+
+def bootstrap():
+    """Create the default tenant + admin user if none exist."""
+    try:
+        from database import SessionLocal
+        from auth import ensure_bootstrap_admin
+        db = SessionLocal()
+        try:
+            ensure_bootstrap_admin(db)
+            log.info("Bootstrap admin check complete")
+        finally:
+            db.close()
+    except Exception as e:
+        log.warning("Bootstrap admin skipped: %s", e)
+
+
+if __name__ == "__main__":
+    log.info("=== Pre-start ===")
+    run_migrations()
+    seed()
+    bootstrap()
+    log.info("=== Pre-start complete — handing off to uvicorn ===")

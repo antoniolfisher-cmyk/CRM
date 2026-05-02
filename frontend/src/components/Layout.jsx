@@ -12,8 +12,9 @@ const nav = [
   { to: '/inventory',  label: 'Current Inventory',icon: InventoryIcon, permKey: 'inventory' },
   { to: '/timeclock',  label: 'Time Clock',       icon: ClockIcon,     permKey: 'timeclock' },
   { to: '/upc-scanner',label: 'UPC Scanner',      icon: BarcodeIcon,   permKey: 'upc_scanner' },
-  { to: '/ungate',     label: 'Ungate Requests',  icon: UnlockIcon,    permKey: 'ungate' },
-  { to: '/support',    label: 'Support',          icon: SupportIcon,   permKey: 'support' },
+  { to: '/ungate',          label: 'Ungate Requests',  icon: UnlockIcon,    permKey: 'ungate' },
+  { to: '/ship-to-amazon',  label: 'FBA Inbound',      icon: ShipIcon,      permKey: 'ship_to_amazon' },
+  { to: '/support',         label: 'Support',          icon: SupportIcon,   permKey: 'support' },
 ]
 
 export default function Layout({ children }) {
@@ -83,6 +84,17 @@ export default function Layout({ children }) {
               >
                 <PlatformIcon className="w-4 h-4 shrink-0" />
                 Seller Management
+              </NavLink>
+              <NavLink
+                to="/audit-log"
+                className={({ isActive }) =>
+                  `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                    isActive ? 'bg-orange-600 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                  }`
+                }
+              >
+                <AuditIcon className="w-4 h-4 shrink-0" />
+                Audit Log
               </NavLink>
             </>
           )}
@@ -314,6 +326,22 @@ function WholesaleIcon({ className }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
+    </svg>
+  )
+}
+function AuditIcon({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+    </svg>
+  )
+}
+function ShipIcon({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M20 7H4a2 2 0 00-2 2v6a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 12v.01" />
     </svg>
   )
 }

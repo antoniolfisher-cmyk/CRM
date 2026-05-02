@@ -20,7 +20,10 @@ async function req(method, path, body) {
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail || `Request failed (${res.status})`)
+    const fallback = res.status === 502
+      ? 'Amazon API error — check your SP-API credentials and permissions in Settings'
+      : `Request failed (${res.status})`
+    throw new Error(err.detail || fallback)
   }
   if (res.status === 204) return null
   return res.json()
@@ -85,11 +88,35 @@ export const api = {
   },
   suspendTenant: (id) => req('POST', `/admin/billing/tenants/${id}/suspend`),
   activateTenant: (id) => req('POST', `/admin/billing/tenants/${id}/activate`),
+  grantTenantAccess: (id) => req('POST', `/admin/billing/tenants/${id}/grant-access`),
+  setBetaTenant: (id, is_beta) => req('POST', `/admin/billing/tenants/${id}/beta`, { is_beta }),
   adminChangePlan: (id, plan) => req('PUT', `/admin/billing/tenants/${id}/plan`, { plan }),
+  adminTenantUsers: (id) => req('GET', `/admin/billing/tenants/${id}/users`),
+  adminUnlockUser: (tenantId, userId, newPassword) => req('POST', `/admin/billing/tenants/${tenantId}/users/${userId}/unlock`, newPassword ? { new_password: newPassword } : {}),
+  getAuditLog: (params = {}) => {
+    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== '')).toString()
+    return req('GET', `/admin/audit-log${qs ? '?' + qs : ''}`)
+  },
+
+  // GDPR / Data Export
+  exportTenantData: () => {
+    const token = localStorage.getItem(TOKEN_KEY)
+    return fetch('/api/tenant/export', {
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    }).then(async r => {
+      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText) }
+      const blob = await r.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a'); a.href = url
+      a.download = `sellerpulse-export-${Date.now()}.json`
+      a.click(); URL.revokeObjectURL(url)
+    })
+  },
 
   // Accounts
   getAccounts: (params = {}) => {
-    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v)).toString()
+    const merged = { limit: 500, ...params }
+    const qs = new URLSearchParams(Object.entries(merged).filter(([, v]) => v)).toString()
     return req('GET', `/accounts${qs ? '?' + qs : ''}`)
   },
   getAccount: (id) => req('GET', `/accounts/${id}`),
@@ -109,8 +136,9 @@ export const api = {
 
   // Follow-ups
   getFollowUps: (params = {}) => {
+    const merged = { limit: 500, ...params }
     const qs = new URLSearchParams(
-      Object.entries(params).filter(([, v]) => v !== undefined && v !== '' && v !== false)
+      Object.entries(merged).filter(([, v]) => v !== undefined && v !== '' && v !== false)
     ).toString()
     return req('GET', `/follow-ups${qs ? '?' + qs : ''}`)
   },
@@ -121,7 +149,8 @@ export const api = {
 
   // Products
   getProducts: (params = {}) => {
-    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== '')).toString()
+    const merged = { limit: 500, ...params }
+    const qs = new URLSearchParams(Object.entries(merged).filter(([, v]) => v !== undefined && v !== '')).toString()
     return req('GET', `/products${qs ? '?' + qs : ''}`)
   },
   getProduct: (id) => req('GET', `/products/${id}`),
@@ -221,9 +250,34 @@ export const api = {
   },
   deleteUngateInvoice: (id) => req('DELETE', `/ungate/requests/${id}/invoice`),
 
+  // Ship-from address
+  getShipFrom: () => req('GET', '/amazon/ship-from'),
+  saveShipFrom: (data) => req('PUT', '/amazon/ship-from', data),
+
+  // FBA Inbound Shipments
+  fbaLookup: (asin) => req('POST', '/fba/lookup', { asin }),
+  fbaSkuForAsin: (asin) => req('GET', `/fba/sku-for-asin?asin=${encodeURIComponent(asin)}`),
+  fbaCreateSku: (asin) => req('POST', '/fba/create-sku', { asin }),
+  fbaFees: (asin, price) => req('POST', '/fba/fees', { asin, price }),
+  fbaPlan: (items, from_address, label_prep = 'SELLER_LABEL', boxes = []) =>
+    req('POST', '/fba/plan', { items, from_address, label_prep, boxes }),
+  fbaCreateShipment: (data) => req('POST', '/fba/shipments', data),
+  fbaListShipments: () => req('GET', '/fba/shipments'),
+  fbaGetShipment: (id) => req('GET', `/fba/shipments/${id}`),
+  fbaSetTransport: (id, packages, is_partnered = true) =>
+    req('POST', `/fba/shipments/${id}/transport`, { packages, is_partnered }),
+  fbaGetTransport: (id) => req('GET', `/fba/shipments/${id}/transport`),
+  fbaConfirmTransport: (id, transport_option_id) =>
+    req('POST', `/fba/shipments/${id}/confirm-transport`, { transport_option_id }),
+  fbaVoidTransport: (id) => req('POST', `/fba/shipments/${id}/transport/void`, {}),
+  fbaGetLabels: (id, label_type = 'UNIQUE', page_type = 'PackageLabel_Letter_2') =>
+    req('GET', `/fba/shipments/${id}/labels?label_type=${label_type}&page_type=${page_type}`),
+  createFbaListings: (listings) => req('POST', '/amazon/fba-listings', { listings }),
+
   // Orders
   getOrders: (params = {}) => {
-    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v)).toString()
+    const merged = { limit: 500, ...params }
+    const qs = new URLSearchParams(Object.entries(merged).filter(([, v]) => v)).toString()
     return req('GET', `/orders${qs ? '?' + qs : ''}`)
   },
   getOrder: (id) => req('GET', `/orders/${id}`),

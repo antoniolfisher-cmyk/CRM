@@ -1,0 +1,1807 @@
+/**
+ * FBA Inbound — create shipment page.
+ * Two modes: Create FBA Shipment | Create FBM Listing
+ */
+import { useState, useEffect, useRef } from 'react'
+import { api } from '../api'
+
+const US_STATES = [
+  'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA',
+  'KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ',
+  'NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT',
+  'VA','WA','WV','WI','WY',
+]
+const CONDITIONS = [
+  { value: 'NewItem',          label: 'New' },
+  { value: 'UsedLikeNew',      label: 'Used – Like New' },
+  { value: 'UsedVeryGood',     label: 'Used – Very Good' },
+  { value: 'UsedGood',         label: 'Used – Good' },
+  { value: 'UsedAcceptable',   label: 'Used – Acceptable' },
+]
+const SHIP_METHODS = [
+  { value: 'spd',             label: 'SPD (Small Parcel Delivery)' },
+  { value: 'partnered_ups',   label: 'Amazon Partnered Carrier (UPS)' },
+  { value: 'non_partnered',   label: 'Non-Partnered Carrier' },
+  { value: 'ltl',             label: 'LTL (Less Than Truckload)' },
+]
+const LABEL_PREPS = [
+  { value: 'SELLER_LABEL',       label: 'Seller Labels (I will label)' },
+  { value: 'AMAZON_LABEL_ONLY',  label: 'Amazon Labels (fee applies)' },
+  { value: 'NO_LABEL',           label: 'No Label Required' },
+]
+const BOX_CONTENTS = [
+  { value: 'INDIVIDUAL_ITEMS', label: 'Individual Items' },
+  { value: 'CASE_PACKED',      label: 'Case Packed' },
+]
+
+const PRICE_MATCH_BASIS = [
+  { value: 'buy_box',     label: 'Buy Box' },
+  { value: 'lowest_fba',  label: 'Lowest FBA' },
+  { value: 'lowest_fbm',  label: 'Lowest FBM' },
+]
+const PRICE_DIRECTION = [
+  { value: 'increase', label: 'Increase' },
+  { value: 'decrease', label: 'Decrease' },
+  { value: 'match',    label: 'Match' },
+]
+
+function nowLabel() {
+  return new Date().toLocaleString('en-US', {
+    weekday: 'long', year: 'numeric', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true,
+  })
+}
+const fmt$ = (v) => (v != null && v !== '') ? `$${Number(v).toFixed(2)}` : '—'
+
+const PREP_CATEGORIES = [
+  { value: 'NONE',      label: 'No prep needed' },
+  { value: 'FRAGILE',   label: 'Bubble wrap / Fragile' },
+  { value: 'LIQUID',    label: 'Poly bag / Liquid' },
+  { value: 'SHARP',     label: 'Tape / Sharp' },
+  { value: 'SMALL',     label: 'Poly bag / Small' },
+  { value: 'TEXTILE',   label: 'Poly bag / Textile' },
+  { value: 'SET',       label: 'Set creation' },
+  { value: 'GRANULAR',  label: 'Granular' },
+  { value: 'ADULT',     label: 'Adult product' },
+  { value: 'BABY',      label: 'Baby product' },
+  { value: 'HANGER',    label: 'Hanger removal' },
+]
+const EXPIRY_KEYWORDS = ['grocery','food','health','beauty','personal care','baby','pet','vitamin','supplement']
+
+function AddToShipmentModal({ product, onAdd, onClose }) {
+  const [tab, setTab]               = useState('add')
+  const [qty, setQty]               = useState(1)
+  const [qtyErr, setQtyErr]         = useState(false)
+  const [buyCost, setBuyCost]       = useState(product.buy_cost ?? '')
+  const [listPrice, setListPrice]   = useState(product.buy_box || product.aria_live_price || '')
+  const [expDate, setExpDate]       = useState('')
+  const [prepCat, setPrepCat]       = useState('NONE')
+  const [prepOwner, setPrepOwner]   = useState('SELLER')
+  const [labelOwner, setLabelOwner] = useState('SELLER')
+  const [offers, setOffers]         = useState([])
+  const [offerLoad, setOfferLoad]   = useState(false)
+
+  const cat       = (product.keepa_category || '').toLowerCase()
+  const needsExpiry = EXPIRY_KEYWORDS.some(k => cat.includes(k))
+
+  useEffect(() => {
+    if (tab !== 'offers') return
+    setOfferLoad(true)
+    api.fbaLookup(product.asin)
+      .then(d => setOffers(d.offers || []))
+      .catch(() => setOffers([]))
+      .finally(() => setOfferLoad(false))
+  }, [tab, product.asin])
+
+  function handleAdd() {
+    if (qty < 1) { setQtyErr(true); return }
+    onAdd({
+      product: { ...product, buy_cost: buyCost !== '' ? parseFloat(buyCost) : product.buy_cost },
+      qty,
+      condition:    'NewItem',
+      listPrice:    listPrice !== '' ? parseFloat(listPrice) : null,
+      expDate:      expDate || null,
+      prepCategory: prepCat,
+      prepOwner,
+      labelOwner,
+    })
+    onClose()
+  }
+
+  const inp = 'w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 overflow-y-auto py-8 px-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl">
+
+        {/* Header */}
+        <div className="flex items-start gap-3 p-4 border-b border-gray-100">
+          {product.image_url
+            ? <img src={product.image_url} alt="" className="w-14 h-14 object-contain rounded border border-gray-100 bg-gray-50 shrink-0" />
+            : <div className="w-14 h-14 bg-gray-100 rounded shrink-0" />}
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-gray-900 leading-snug line-clamp-2">{product.product_name || product.asin}</p>
+            <div className="flex flex-wrap gap-x-4 mt-1 text-xs text-gray-500">
+              <span><span className="text-gray-400">ASIN:</span> <span className="font-mono font-medium text-gray-700">{product.asin}</span></span>
+              <span><span className="text-gray-400">Condition:</span> New</span>
+              {product.keepa_bsr > 0 && <span><span className="text-gray-400">Sales Rank:</span> {product.keepa_bsr.toLocaleString()}</span>}
+            </div>
+            <div className="flex flex-wrap gap-x-4 mt-0.5 text-xs text-gray-500">
+              {product.seller_sku && <span><span className="text-gray-400">SKU:</span> <span className="font-mono">{product.seller_sku}</span></span>}
+              {product.upc && <span><span className="text-gray-400">UPC:</span> <span className="font-mono">{product.upc}</span></span>}
+            </div>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none shrink-0 ml-2">×</button>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex border-b border-gray-100">
+          {['add','offers'].map(t => (
+            <button key={t} onClick={() => setTab(t)}
+              className={`px-5 py-2.5 text-sm font-medium border-b-2 transition-colors capitalize ${tab === t ? 'border-orange-500 text-orange-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+              {t === 'add' ? 'Add product' : `Offers${offers.length ? ` ${offers.length}` : ''}`}
+            </button>
+          ))}
+        </div>
+
+        {tab === 'add' ? (
+          <div className="p-5 space-y-6">
+            {/* Pricing & Profit */}
+            <div>
+              <h3 className="text-sm font-semibold text-gray-800 mb-3">Pricing &amp; Profit</h3>
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">List price</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
+                    <input type="number" min="0" step="0.01" className={inp + ' pl-6'} value={listPrice}
+                      onChange={e => setListPrice(e.target.value)} placeholder="0.00" />
+                  </div>
+                  {!product.buy_box &&
+                    <p className="text-xs text-gray-400 mt-1">This listing doesn't have an FBA buy-box. Your list price was {fmt$(product.aria_live_price)}.</p>}
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Buy cost</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
+                    <input type="number" min="0" step="0.01" className={inp + ' pl-6'} value={buyCost}
+                      onChange={e => setBuyCost(e.target.value)} placeholder="0.00" />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Quantity</label>
+                  <div className={`flex items-center border rounded-lg overflow-hidden ${qtyErr ? 'border-red-500' : 'border-gray-300'}`}>
+                    <button onClick={() => { setQty(q => Math.max(0, q-1)); setQtyErr(false) }}
+                      className="px-4 py-2 text-gray-600 hover:bg-gray-50 text-lg font-bold border-r border-gray-300">−</button>
+                    <input type="number" min="0" className="flex-1 text-center text-sm py-2 focus:outline-none"
+                      value={qty} onChange={e => { setQty(Math.max(0, parseInt(e.target.value)||0)); setQtyErr(false) }} />
+                    <button onClick={() => { setQty(q => q+1); setQtyErr(false) }}
+                      className="px-4 py-2 text-gray-600 hover:bg-gray-50 text-lg font-bold border-l border-gray-300">+</button>
+                  </div>
+                  {qtyErr && <p className="text-xs text-red-500 mt-1">Quantity must be above 0</p>}
+                </div>
+              </div>
+            </div>
+
+            {/* Product Details & Prep */}
+            <div>
+              <h3 className="text-sm font-semibold text-gray-800 mb-3">Product Details &amp; Prep</h3>
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Expiration Date</label>
+                  <input type="date" className={inp} value={expDate} onChange={e => setExpDate(e.target.value)} />
+                  {needsExpiry && !expDate &&
+                    <p className="text-xs text-red-500 mt-1">Items in the category '{product.keepa_category || 'Grocery & Gourmet Food'}' require an expiration date.</p>}
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Prep Category</label>
+                  <select className={inp} value={prepCat} onChange={e => setPrepCat(e.target.value)}>
+                    {PREP_CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                  </select>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Prep Owner</label>
+                    <select className={inp} value={prepOwner} onChange={e => setPrepOwner(e.target.value)}>
+                      <option value="SELLER">Seller</option>
+                      <option value="AMAZON">Amazon</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Label Owner</label>
+                    <select className={inp} value={labelOwner} onChange={e => setLabelOwner(e.target.value)}>
+                      <option value="SELLER">Seller</option>
+                      <option value="AMAZON">Amazon</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="p-5 min-h-48">
+            {offerLoad
+              ? <div className="text-sm text-gray-400 text-center py-10">Loading offers…</div>
+              : offers.length === 0
+                ? <div className="text-sm text-gray-400 text-center py-10">No offer data available for this ASIN.</div>
+                : <div className="divide-y divide-gray-100">
+                    {offers.map((o, i) => (
+                      <div key={i} className="flex items-center justify-between py-2.5 text-sm">
+                        <div className="flex items-center gap-2">
+                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${o.is_fba ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-600'}`}>
+                            {o.is_fba ? 'FBA' : 'FBM'}
+                          </span>
+                          {o.seller_feedback_count > 0 && <span className="text-gray-400 text-xs">{o.seller_feedback_count} ratings</span>}
+                        </div>
+                        <span className="font-semibold text-gray-900">{fmt$(o.price)}</span>
+                      </div>
+                    ))}
+                  </div>
+            }
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="flex items-center justify-between px-5 py-4 border-t border-gray-100 bg-gray-50 rounded-b-xl">
+          <button onClick={onClose}
+            className="px-5 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+            Cancel
+          </button>
+          <button onClick={handleAdd} disabled={qty < 1}
+            className="px-6 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:bg-gray-200 disabled:text-gray-400 transition-colors">
+            Add to Shipment
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
+export default function ShipToAmazon() {
+  const [mode, setMode] = useState('fba') // 'fba' | 'listings' | 'fbm'
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">FBA Inbound</h1>
+          <p className="text-gray-500 text-sm mt-0.5">
+            Send inventory to Amazon FBA or create Merchant Fulfilled listings.
+          </p>
+        </div>
+      </div>
+
+      {/* Mode tabs */}
+      <div className="flex border-b border-gray-200">
+        {[
+          { key: 'fba',      label: 'Create FBA Shipment' },
+          { key: 'listings', label: 'Create FBA Listings' },
+          { key: 'fbm',      label: 'Create FBM Listing' },
+        ].map(({ key, label }) => (
+          <button
+            key={key}
+            onClick={() => setMode(key)}
+            className={`px-5 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+              mode === key
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {mode === 'fba'      && <FBAShipmentForm />}
+      {mode === 'listings' && <FBAListingsForm />}
+      {mode === 'fbm'      && <FBMListingForm />}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FBA SHIPMENT
+// ─────────────────────────────────────────────────────────────────────────────
+function FBAShipmentForm() {
+  // 'config' → 'pick' → 'boxes' → 'placement' → 'done'
+  const [stage, setStage] = useState('config')
+
+  const [addrForm, setAddrForm]       = useState({ name:'', line1:'', line2:'', city:'', state:'FL', zip:'', country:'US', phone:'' })
+  const [editingAddr, setEditingAddr] = useState(false)
+  const [addrLoading, setAddrLoading] = useState(true)
+  const [addrError, setAddrError]     = useState('')
+
+  const [inventory, setInventory]     = useState([])
+  const [invLoading, setInvLoading]   = useState(true)
+  const [search, setSearch]           = useState('')
+  const [shipment, setShipment]       = useState([])
+  const [shipmentName, setShipmentName] = useState(nowLabel)
+  const [labelPrep, setLabelPrep]     = useState('SELLER_LABEL')
+  const [shipMethod, setShipMethod]   = useState('spd')
+
+  // Auto Pricing config
+  const [autoPriceOpen, setAutoPriceOpen]       = useState(true)
+  const [autoFillPrice, setAutoFillPrice]       = useState(true)
+  const [priceMatchBasis, setPriceMatchBasis]   = useState('buy_box')
+  const [priceDirection, setPriceDirection]     = useState('increase')
+  const [priceBy, setPriceBy]                   = useState('25')
+  // Auto-Print FNSKU config
+  const [autoPrintOpen, setAutoPrintOpen]       = useState(true)
+  const [autoPrintOnBox, setAutoPrintOnBox]     = useState(false)
+  const [autoPrintOnQty, setAutoPrintOnQty]     = useState(false)
+  // Meta Data config
+  const [metaOpen, setMetaOpen]                 = useState(true)
+  const [buyCostInput, setBuyCostInput]         = useState(true)
+  const [supplierInput, setSupplierInput]       = useState(false)
+  const [datePurchInput, setDatePurchInput]     = useState(false)
+
+  const [boxes, setBoxes]             = useState([{ length: 22, width: 18, height: 18, weight: 40, count: 1 }])
+
+  const [plans, setPlans]             = useState([])
+  const [selectedPlan, setSelectedPlan] = useState(0)
+  const [shipmentRecord, setShipmentRecord] = useState(null)
+  const [transportOptions, setTransportOptions] = useState([])
+  const [selectedTransport, setSelectedTransport] = useState(0)
+  const [labelUrl, setLabelUrl]       = useState('')
+  const [readyDate, setReadyDate]     = useState(() => new Date().toISOString().slice(0,10))
+
+  const [loading, setLoading]         = useState(false)
+  const [error, setError]             = useState('')
+  const [modalProduct, setModalProduct] = useState(null)
+
+  useEffect(() => {
+    setAddrLoading(true)
+    Promise.all([
+      api.getAmazonCredentials().catch(() => null),
+      api.getShipFrom().catch(() => null),
+    ]).then(([c, sf]) => {
+      const addr = sf || c?.ship_from
+      if (addr) {
+        setAddrForm({
+          name:    addr.name || c?.store_name || '',
+          phone:   addr.phoneNumber || addr.phone || '',
+          line1:   addr.addressLine1 || addr.addressLine2 || '',
+          line2:   addr.addressLine1 ? (addr.addressLine2 || '') : '',
+          city:    addr.city || '',
+          state:   addr.stateOrProvinceCode || 'FL',
+          zip:     addr.postalCode || '',
+          country: addr.countryCode || 'US',
+        })
+      } else if (c?.store_name) {
+        setAddrForm(a => ({ ...a, name: c.store_name }))
+        setEditingAddr(true)
+      }
+    }).finally(() => setAddrLoading(false))
+  }, [])
+
+  const shipFromFilled = (addrForm.line1 || addrForm.line2) && addrForm.city && addrForm.zip
+
+  async function handleSaveAddress() {
+    const addr1 = addrForm.line1.trim() || addrForm.line2.trim()
+    if (!addr1 || !addrForm.city.trim() || !addrForm.zip.trim()) {
+      setAddrError('Please fill in Address, City, and ZIP.'); return
+    }
+    const payload = {
+      name: addrForm.name,
+      phoneNumber: addrForm.phone || '',
+      addressLine1: addr1,
+      ...(addrForm.line2.trim() && addr1 !== addrForm.line2.trim() ? { addressLine2: addrForm.line2 } : {}),
+      city: addrForm.city, stateOrProvinceCode: addrForm.state,
+      postalCode: addrForm.zip, countryCode: addrForm.country,
+    }
+    try {
+      await api.saveShipFrom(payload)
+      setAddrError(''); setEditingAddr(false)
+    } catch (e) { setAddrError(e.message || 'Failed to save address.') }
+  }
+
+  const filteredInv = inventory.filter(p => {
+    if (!search.trim()) return true
+    const q = search.toLowerCase()
+    return (p.product_name||'').toLowerCase().includes(q) ||
+           (p.asin||'').toLowerCase().includes(q) ||
+           (p.seller_sku||'').toLowerCase().includes(q)
+  })
+
+  const inShipment = asin => shipment.some(s => s.product.asin === asin)
+
+  function addToShipment({ product, qty, condition, listPrice, expDate, prepCategory, prepOwner, labelOwner }) {
+    if (inShipment(product.asin)) return
+    const initialSku = product.seller_sku || null
+    setShipment(prev => [...prev, {
+      product, qty, condition, fees: null, listPrice, expDate, prepCategory, prepOwner, labelOwner,
+      sku: initialSku, skuStatus: initialSku ? 'found' : 'loading',
+    }])
+    api.fbaFees(product.asin, listPrice || product.buy_box || product.aria_live_price || 19.99)
+      .then(f => setShipment(prev => prev.map(s => s.product.asin === product.asin ? {...s, fees: f} : s)))
+    if (!initialSku) {
+      api.fbaSkuForAsin(product.asin)
+        .then(r => setShipment(prev => prev.map(s =>
+          s.product.asin === product.asin
+            ? {...s, sku: r.seller_sku || null, skuStatus: r.found ? 'found' : 'missing'}
+            : s
+        )))
+        .catch(() => setShipment(prev => prev.map(s =>
+          s.product.asin === product.asin ? {...s, skuStatus: 'missing'} : s
+        )))
+    }
+  }
+  function removeFromShipment(asin) { setShipment(prev => prev.filter(s => s.product.asin !== asin)) }
+  function updateQty(asin, val) { setShipment(prev => prev.map(s => s.product.asin === asin ? {...s, qty: Math.max(1, val)} : s)) }
+
+  async function createSkuForItem(asin) {
+    setShipment(prev => prev.map(s => s.product.asin === asin ? {...s, skuStatus: 'creating'} : s))
+    try {
+      const r = await api.fbaCreateSku(asin)
+      setShipment(prev => prev.map(s =>
+        s.product.asin === asin ? {...s, sku: r.seller_sku, skuStatus: 'found'} : s
+      ))
+    } catch (e) {
+      setError(e.message)
+      setShipment(prev => prev.map(s => s.product.asin === asin ? {...s, skuStatus: 'missing'} : s))
+    }
+  }
+
+  const totalUnits  = shipment.reduce((sum, s) => sum + (s.qty || 1), 0)
+  const totalProfit = shipment.reduce((sum, s) => sum + ((s.fees?.net_proceeds || 0) - (s.product.buy_cost || 0)) * (s.qty || 1), 0)
+
+  // Build address in the format fba_shipping.py expects
+  function buildFrom() {
+    return {
+      name:        addrForm.name,
+      phone:       addrForm.phone || '555-000-0000',
+      address1:    addrForm.line1 || addrForm.line2,
+      ...(addrForm.line2 && addrForm.line1 ? { address2: addrForm.line2 } : {}),
+      city:        addrForm.city,
+      state:       addrForm.state,
+      postal_code: addrForm.zip,
+      country:     addrForm.country,
+    }
+  }
+
+  function handleCreateShipment() {
+    if (!shipFromFilled) { setError('Set your ship-from address first.'); return }
+    if (!shipment.length) { setError('Add at least one product to your shipment.'); return }
+    const stillLoading = shipment.filter(s => s.skuStatus === 'loading' || s.skuStatus === 'creating')
+    if (stillLoading.length) { setError('Still looking up SKUs — please wait a moment.'); return }
+    const missingSku = shipment.filter(s => !s.sku)
+    if (missingSku.length) {
+      setError(`These products need a SKU before shipping: ${missingSku.map(s => s.product.product_name || s.product.asin).join(', ')}. Click "New SKU" next to each product.`)
+      return
+    }
+    setError(''); setStage('boxes')
+  }
+
+  async function handleProceedFromBoxes() {
+    setError(''); setLoading(true)
+    const items = shipment.map(s => ({
+      sku: s.sku, asin: s.product.asin, qty: s.qty, condition: s.condition,
+      prepCategory: s.prepCategory, prepOwner: s.prepOwner, labelOwner: s.labelOwner,
+      expDate: s.expDate,
+    }))
+    try {
+      const result = await api.fbaPlan(items, buildFrom(), labelPrep, boxes)
+      setPlans(Array.isArray(result) ? result : [result])
+      setSelectedPlan(0); setStage('placement')
+    } catch (e) { setError(e.message) }
+    finally { setLoading(false) }
+  }
+
+  async function handleConfirmShipment() {
+    const thePlan = plans[selectedPlan]
+    if (!thePlan) { setError('Select a placement option.'); return }
+    setError(''); setLoading(true)
+    const from = buildFrom()
+    const items = shipment.map(s => ({ sku: s.product.seller_sku || s.product.asin, asin: s.product.asin, qty: s.qty, condition: s.condition }))
+    const p0 = shipment[0]
+    try {
+      const rec = await api.fbaCreateShipment({
+        plan: thePlan, shipment_name: shipmentName, from_address: from, items,
+        boxes,
+        asin: p0.product.asin, seller_sku: p0.product.seller_sku || p0.product.asin,
+        title: p0.product.product_name, quantity: totalUnits,
+        referral_fee: p0.fees?.referral_fee, fba_fee: p0.fees?.fba_fee,
+      })
+      setShipmentRecord(rec)
+      if (rec.transport_options && rec.transport_options.length > 0) {
+        setTransportOptions(rec.transport_options)
+        setSelectedTransport(0)
+        setStage('transport')
+      } else {
+        setStage('done')
+      }
+    } catch (e) { setError(e.message) }
+    finally { setLoading(false) }
+  }
+
+  async function handleConfirmTransport() {
+    const opt = transportOptions[selectedTransport]
+    if (!opt) { setError('Select a shipping option.'); return }
+    setError(''); setLoading(true)
+    try {
+      await api.fbaConfirmTransport(shipmentRecord.id, opt.transport_option_id)
+      setStage('done')
+    } catch (e) { setError(e.message) }
+    finally { setLoading(false) }
+  }
+
+  function handleStartShipment() {
+    setError('')
+    setStage('pick')
+    if (!inventory.length) {
+      setInvLoading(true)
+      api.getProducts({ limit: 500 })
+        .then(d => setInventory(Array.isArray(d) ? d : (d?.items || [])))
+        .catch(() => {})
+        .finally(() => setInvLoading(false))
+    }
+  }
+
+  function resetAll() {
+    setStage('config'); setShipment([]); setPlans([]); setShipmentRecord(null)
+    setLabelUrl(''); setError(''); setShipmentName(nowLabel())
+    setBoxes([{ length: 22, width: 18, height: 18, weight: 40, count: 1 }])
+    setTransportOptions([]); setSelectedTransport(0)
+  }
+
+  const addrLine    = [addrForm.line1 || addrForm.line2, addrForm.city, addrForm.state, addrForm.zip].filter(Boolean).join(', ')
+  const addrDisplay = shipFromFilled
+    ? `${addrForm.name ? addrForm.name + ' · ' : ''}${addrForm.line1 || addrForm.line2}, ${addrForm.city} ${addrForm.state} ${addrForm.zip}`
+    : null
+
+  const addrModal = editingAddr && (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-6">
+        <h3 className="text-base font-semibold text-gray-900 mb-4">Ship From Address</h3>
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Name / Company</label>
+            <input className={inp} value={addrForm.name} onChange={e => setAddrForm(a => ({...a, name: e.target.value}))} />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Phone Number</label>
+            <input className={inp} value={addrForm.phone} onChange={e => setAddrForm(a => ({...a, phone: e.target.value}))} placeholder="555-000-0000" type="tel" />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Address Line 1</label>
+            <input className={inp} value={addrForm.line1} onChange={e => setAddrForm(a => ({...a, line1: e.target.value}))} autoFocus />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Address Line 2 (optional)</label>
+            <input className={inp} value={addrForm.line2} onChange={e => setAddrForm(a => ({...a, line2: e.target.value}))} />
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">City</label>
+              <input className={inp} value={addrForm.city} onChange={e => setAddrForm(a => ({...a, city: e.target.value}))} />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">State</label>
+              <select className={inp} value={addrForm.state} onChange={e => setAddrForm(a => ({...a, state: e.target.value}))}>
+                {US_STATES.map(s => <option key={s}>{s}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">ZIP</label>
+              <input className={inp} value={addrForm.zip} onChange={e => setAddrForm(a => ({...a, zip: e.target.value}))} />
+            </div>
+          </div>
+        </div>
+        {addrError && <p className="text-red-600 text-xs mt-3">{addrError}</p>}
+        <div className="flex gap-2 mt-5 justify-end">
+          <button onClick={() => { setEditingAddr(false); setAddrError('') }} className="btn-secondary text-sm px-4">Cancel</button>
+          <button onClick={handleSaveAddress} className="btn-primary text-sm px-4">Save Address</button>
+        </div>
+      </div>
+    </div>
+  )
+
+  // ── CONFIG ───────────────────────────────────────────────────────────────
+  if (stage === 'config') {
+    return (
+      <div className="bg-white rounded-xl border border-gray-200">
+        {addrModal}
+        <div className="px-6 py-4 border-b border-gray-100">
+          <h2 className="text-sm font-semibold text-gray-700">Create New Shipment</h2>
+        </div>
+
+        <div className="p-6 grid grid-cols-1 lg:grid-cols-2 gap-10">
+
+          {/* ── LEFT COLUMN ── */}
+          <div className="space-y-7">
+
+            {/* Details */}
+            <div>
+              <p className="text-sm font-semibold text-gray-800 mb-3">Details</p>
+              <div className="divide-y divide-gray-100">
+                <CfgRow label="Shipment Name:">
+                  <input className={inp} value={shipmentName} onChange={e => setShipmentName(e.target.value)} />
+                </CfgRow>
+                <CfgRow label="Fulfillment Type:">
+                  <select className={inp} defaultValue="fba">
+                    <option value="fba">FBA (Fulfillment By Amazon)</option>
+                  </select>
+                </CfgRow>
+              </div>
+            </div>
+
+            <hr className="border-gray-100" />
+
+            {/* Shipping & Origin */}
+            <div>
+              <p className="text-sm font-semibold text-gray-800 mb-3">Shipping &amp; Origin</p>
+              <div className="divide-y divide-gray-100">
+                <CfgRow label="Ship From:">
+                  <div>
+                    <div className="flex items-center gap-3">
+                      <select
+                        className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-blue-500 bg-white"
+                        value={addrForm.name}
+                        readOnly
+                      >
+                        {addrForm.name
+                          ? <option value={addrForm.name}>{addrForm.name.toUpperCase()}</option>
+                          : <option value="">— not set —</option>
+                        }
+                      </select>
+                      <button
+                        onClick={() => setEditingAddr(true)}
+                        className="text-sm font-medium text-orange-500 hover:text-orange-600 whitespace-nowrap shrink-0"
+                      >
+                        Edit Address
+                      </button>
+                    </div>
+                    {addrLoading
+                      ? <p className="text-xs text-gray-400 mt-1">Loading…</p>
+                      : addrLine
+                        ? <p className="text-xs text-gray-500 mt-1.5">{addrLine}</p>
+                        : <p className="text-xs text-amber-600 mt-1.5">⚠ No address saved — click Edit Address</p>
+                    }
+                  </div>
+                </CfgRow>
+                <CfgRow label="Ship Method:">
+                  <select className={inp} value={shipMethod} onChange={e => setShipMethod(e.target.value)}>
+                    {SHIP_METHODS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+                  </select>
+                </CfgRow>
+              </div>
+            </div>
+
+            <hr className="border-gray-100" />
+
+            {/* Packaging & Labeling */}
+            <div>
+              <p className="text-sm font-semibold text-gray-800 mb-3">Packaging &amp; Labeling</p>
+              <div className="divide-y divide-gray-100">
+                <CfgRow label="Box Contents:">
+                  <select className={inp} value={labelPrep} onChange={e => setLabelPrep(e.target.value)}>
+                    {LABEL_PREPS.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
+                  </select>
+                </CfgRow>
+              </div>
+            </div>
+          </div>
+
+          {/* ── RIGHT COLUMN ── */}
+          <div className="space-y-3">
+
+            {/* Auto Pricing */}
+            <FbaCfgCard title="Auto Pricing" open={autoPriceOpen} onToggle={() => setAutoPriceOpen(v => !v)}>
+              <div className="space-y-3">
+                <div className="flex items-start gap-3">
+                  <FbaToggle value={autoFillPrice} onChange={setAutoFillPrice} />
+                  <div>
+                    <p className="text-sm font-medium text-gray-800">Auto-fill list price</p>
+                    <p className="text-xs text-gray-500 mt-0.5">Enable to configure the list price default.</p>
+                  </div>
+                </div>
+                {autoFillPrice && (
+                  <div className="flex items-center gap-2 flex-wrap text-sm text-gray-600 pl-1">
+                    <span>Match list price with</span>
+                    <select
+                      className="border border-gray-300 rounded-md px-2 py-1 text-xs focus:outline-none focus:border-blue-500"
+                      value={priceMatchBasis} onChange={e => setPriceMatchBasis(e.target.value)}
+                    >
+                      {PRICE_MATCH_BASIS.map(b => <option key={b.value} value={b.value}>{b.label}</option>)}
+                    </select>
+                    <span>and</span>
+                    <select
+                      className="border border-gray-300 rounded-md px-2 py-1 text-xs focus:outline-none focus:border-blue-500"
+                      value={priceDirection} onChange={e => setPriceDirection(e.target.value)}
+                    >
+                      {PRICE_DIRECTION.map(d => <option key={d.value} value={d.value}>{d.label}</option>)}
+                    </select>
+                    <span>by</span>
+                    <input
+                      type="number" min="0"
+                      className="border border-gray-300 rounded-md px-2 py-1 text-xs w-16 text-right focus:outline-none focus:border-blue-500"
+                      value={priceBy} onChange={e => setPriceBy(e.target.value)}
+                    />
+                    <span>%</span>
+                  </div>
+                )}
+              </div>
+            </FbaCfgCard>
+
+            {/* Auto-Print FNSKU */}
+            <FbaCfgCard title="Auto-Print FNSKU" open={autoPrintOpen} onToggle={() => setAutoPrintOpen(v => !v)}>
+              <div className="flex items-center gap-8 flex-wrap">
+                <FbaToggleLabel value={autoPrintOnBox} onChange={setAutoPrintOnBox} label="After assigning to boxes" />
+                <FbaToggleLabel value={autoPrintOnQty} onChange={setAutoPrintOnQty} label="On quantity update" />
+              </div>
+            </FbaCfgCard>
+
+            {/* Meta Data */}
+            <FbaCfgCard title="Meta Data" open={metaOpen} onToggle={() => setMetaOpen(v => !v)}>
+              <div className="flex items-center gap-8 flex-wrap">
+                <FbaToggleLabel value={buyCostInput}   onChange={setBuyCostInput}   label="Buy Cost Input" />
+                <FbaToggleLabel value={supplierInput}  onChange={setSupplierInput}  label="Supplier Input" />
+                <FbaToggleLabel value={datePurchInput} onChange={setDatePurchInput} label="Date Purchased Input" />
+              </div>
+            </FbaCfgCard>
+
+            {/* Create button */}
+            <div className="flex justify-end pt-4">
+              <button
+                onClick={handleStartShipment}
+                className="flex items-center gap-2 px-6 py-2.5 rounded-lg text-sm font-semibold text-white bg-red-600 hover:bg-red-700 transition-colors"
+              >
+                + Create Shipment
+              </button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    )
+  }
+
+  // ── DONE ─────────────────────────────────────────────────────────────────
+  if (stage === 'done') {
+    return (
+      <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
+        {addrModal}
+        <div className="w-14 h-14 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+          <span className="text-green-600 text-3xl">✓</span>
+        </div>
+        <h2 className="text-xl font-bold text-gray-900">Shipment Created!</h2>
+        <p className="text-gray-500 text-sm mt-2 mb-6">Your shipment has been submitted to Amazon FBA.</p>
+        <div className="inline-block bg-gray-50 rounded-xl p-5 text-left space-y-2 text-sm mb-6 min-w-64">
+          <InfoRow label="Amazon Shipment ID" value={shipmentRecord?.amazon_shipment_id} mono />
+          <InfoRow label="Destination FC"     value={plans[selectedPlan]?.destination_fc} />
+          <InfoRow label="Total Units"        value={totalUnits} />
+        </div>
+        <div className="flex gap-3 justify-center">
+          {shipmentRecord && !labelUrl && (
+            <button onClick={async () => { try { const r = await api.fbaGetLabels(shipmentRecord.id); setLabelUrl(r.label_url) } catch(_){} }}
+              className="btn-secondary text-sm">Download Labels (PDF)</button>
+          )}
+          {labelUrl && <a href={labelUrl} target="_blank" rel="noreferrer" className="btn-secondary text-sm">Open Labels PDF</a>}
+          <button onClick={resetAll} className="btn-primary text-sm">Create Another Shipment</button>
+        </div>
+      </div>
+    )
+  }
+
+  // ── BOX CONFIGURATION ────────────────────────────────────────────────────
+  if (stage === 'boxes') {
+    const box = boxes[0]
+    const numBoxes = box.count || 1
+    const totalUnitsForBox = shipment.reduce((s, i) => s + (i.qty || 1), 0)
+    const unitsPerBox = Math.ceil(totalUnitsForBox / numBoxes)
+    const inp2 = 'w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+    function setBox(field, val) {
+      setBoxes([{ ...box, [field]: val }])
+    }
+    return (
+      <div className="space-y-4">
+        {addrModal}
+        <button onClick={() => setStage('pick')} className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
+          ← Back to shipment
+        </button>
+        {error && <ErrorBanner msg={error} />}
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4 items-start">
+          {/* Box editor */}
+          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-100">
+              <p className="text-base font-semibold text-gray-900">Box Configuration</p>
+              <p className="text-xs text-gray-400 mt-0.5">
+                Enter your box dimensions so Amazon can calculate shipping rates for each placement option.
+              </p>
+            </div>
+            <div className="p-5 space-y-5">
+              {/* Number of boxes */}
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-2">Number of boxes</label>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setBox('count', Math.max(1, numBoxes - 1))}
+                    className="w-9 h-9 border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50 text-lg font-bold flex items-center justify-center">−</button>
+                  <input type="number" min="1" value={numBoxes}
+                    onChange={e => setBox('count', Math.max(1, parseInt(e.target.value) || 1))}
+                    className="w-16 text-center border border-gray-300 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  <button onClick={() => setBox('count', numBoxes + 1)}
+                    className="w-9 h-9 border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50 text-lg font-bold flex items-center justify-center">+</button>
+                  <span className="text-xs text-gray-400 ml-1">≈ {unitsPerBox} unit{unitsPerBox !== 1 ? 's' : ''} / box</span>
+                </div>
+              </div>
+              {/* Dimensions */}
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-2">Box dimensions (inches)</label>
+                <div className="grid grid-cols-3 gap-3">
+                  {[['length','L'],['width','W'],['height','H']].map(([f, label]) => (
+                    <div key={f}>
+                      <label className="block text-xs text-gray-400 mb-1">{label === 'L' ? 'Length' : label === 'W' ? 'Width' : 'Height'}</label>
+                      <div className="relative">
+                        <input type="number" min="1" step="0.5" value={box[f]}
+                          onChange={e => setBox(f, parseFloat(e.target.value) || 1)}
+                          className={inp2 + ' pr-7'} />
+                        <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-gray-400">in</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {/* Weight */}
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-2">Box weight (lbs)</label>
+                <div className="relative w-40">
+                  <input type="number" min="0.1" step="0.5" value={box.weight}
+                    onChange={e => setBox('weight', parseFloat(e.target.value) || 1)}
+                    className={inp2 + ' pr-7'} />
+                  <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-gray-400">lbs</span>
+                </div>
+              </div>
+              <p className="text-xs text-gray-400">
+                These dimensions are used to estimate shipping costs. You can change them per box after creating the shipment.
+              </p>
+            </div>
+          </div>
+
+          {/* Summary sidebar */}
+          <div className="space-y-3">
+            <div className="bg-white rounded-xl border border-gray-200 p-4">
+              <p className="text-sm font-semibold text-gray-900 mb-3 pb-2 border-b border-gray-100">Products in Shipment</p>
+              <div className="space-y-2">
+                {shipment.map(s => (
+                  <div key={s.product.asin} className="flex items-center gap-2 text-xs">
+                    {s.product.image_url
+                      ? <img src={s.product.image_url} alt="" className="w-8 h-8 object-contain rounded border border-gray-100 bg-gray-50 shrink-0" />
+                      : <div className="w-8 h-8 bg-gray-100 rounded shrink-0" />}
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-gray-900 truncate">{s.product.product_name || s.product.asin}</p>
+                      <p className="text-gray-400">× {s.qty} units</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 pt-3 border-t border-gray-100 text-xs text-gray-500 space-y-1">
+                <div className="flex justify-between"><span>Total units</span><strong className="text-gray-800">{totalUnitsForBox}</strong></div>
+                <div className="flex justify-between"><span>Boxes</span><strong className="text-gray-800">{numBoxes}</strong></div>
+                <div className="flex justify-between"><span>Per box</span><strong className="text-gray-800">{unitsPerBox} units · {box.weight} lbs · {box.length}×{box.width}×{box.height} in</strong></div>
+              </div>
+            </div>
+            <button
+              onClick={handleProceedFromBoxes}
+              disabled={loading}
+              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-40 transition-colors"
+            >
+              {loading && <SpinIcon className="w-4 h-4 animate-spin" />}
+              {loading ? 'Getting placement options…' : 'Get Placement Options →'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // ── TRANSPORT OPTIONS ────────────────────────────────────────────────────
+  if (stage === 'transport') {
+    const selOpt = transportOptions[selectedTransport]
+    return (
+      <div className="max-w-lg mx-auto space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-bold text-gray-900">Choose Shipping Method</h2>
+          <button onClick={() => setStage('placement')} className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
+            ← Back
+          </button>
+        </div>
+        {error && <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">{error}</div>}
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-100 bg-gray-50">
+            <p className="text-sm font-semibold text-gray-900">Available Shipping Options</p>
+          </div>
+          <div className="p-4 space-y-2">
+            {transportOptions.length === 0 && (
+              <p className="text-sm text-gray-400 text-center py-4">No shipping options available.</p>
+            )}
+            {transportOptions.map((opt, i) => (
+              <label key={i} className={`flex items-center gap-3 border-2 rounded-xl p-4 cursor-pointer transition-colors ${selectedTransport === i ? 'border-blue-600 bg-blue-50' : 'border-gray-200 hover:border-gray-300'}`}>
+                <input type="radio" name="transport" checked={selectedTransport === i} onChange={() => setSelectedTransport(i)} className="accent-blue-600" />
+                <div className="flex-1">
+                  <div className="flex justify-between items-center">
+                    <span className="font-semibold text-gray-900 text-sm">{opt.carrier || 'Amazon Partnered'}</span>
+                    <span className="text-sm font-bold text-blue-700">${opt.cost.toFixed(2)} {opt.currency}</span>
+                  </div>
+                  {opt.shipping_mode && <p className="text-xs text-gray-500 mt-0.5">{opt.shipping_mode}</p>}
+                </div>
+              </label>
+            ))}
+          </div>
+        </div>
+        <button
+          onClick={handleConfirmTransport}
+          disabled={loading || transportOptions.length === 0}
+          className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-40 transition-colors"
+        >
+          {loading && <SpinIcon className="w-4 h-4 animate-spin" />}
+          Confirm Shipment
+        </button>
+      </div>
+    )
+  }
+
+  // ── PLACEMENT OPTIONS ─────────────────────────────────────────────────────
+  if (stage === 'placement') {
+    const plan = plans[selectedPlan] || {}
+    const shipTo    = plan.ship_to_address || {}
+    const shipToStr = [shipTo.address1, shipTo.city, shipTo.state, shipTo.postal_code].filter(Boolean).join(', ')
+    return (
+      <div className="space-y-4">
+        {addrModal}
+        <button onClick={() => setStage('boxes')} className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
+          ← Back to box configuration
+        </button>
+        {error && <ErrorBanner msg={error} />}
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-4 items-start">
+          {/* Placement options */}
+          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-100">
+              <p className="text-base font-semibold text-gray-900">Select Fulfillment Center</p>
+              <p className="text-xs text-gray-400 mt-0.5">Amazon will route your shipment to the assigned fulfillment center based on your inventory.</p>
+            </div>
+            <div className="p-5 space-y-3">
+              <div className="flex items-center gap-3">
+                <label className="text-xs text-gray-500">Ready to ship:</label>
+                <input type="date" className="border border-gray-300 rounded px-2 py-1 text-xs" value={readyDate} onChange={e => setReadyDate(e.target.value)} />
+              </div>
+              {plans.map((p, i) => {
+                const fc        = p.destination_fc || `FC ${i+1}`
+                const labeling  = p.estimated_fees?.labeling_fee  || 0
+                const placement = p.estimated_fees?.placement_fee || 0
+                const shipping  = p.estimated_fees?.shipping_fee  ?? null
+                const total     = labeling + placement + (shipping || 0)
+                const dest      = p.ship_to_address || {}
+                const destStr   = [dest.address1, dest.city, dest.state, dest.postal_code].filter(Boolean).join(', ')
+                const numShips  = (p.shipment_ids?.length) || 1
+                return (
+                  <label key={i} className={`flex items-start gap-3 border-2 rounded-xl p-4 cursor-pointer transition-colors ${selectedPlan===i ? 'border-blue-600 bg-blue-50' : 'border-gray-200 hover:border-gray-300'}`}>
+                    <input type="radio" name="plan" checked={selectedPlan===i} onChange={() => setSelectedPlan(i)} className="mt-0.5 accent-blue-600" />
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-gray-900 text-sm">
+                          {numShips > 1 ? `${numShips} Shipments` : '1 Shipment'} — {fc}
+                        </span>
+                        {p.expires_at && <span className="text-xs text-amber-600">Expires {new Date(p.expires_at).toLocaleDateString()}</span>}
+                      </div>
+                      {destStr
+                        ? <p className="text-xs text-gray-500 mt-0.5">Ship to: <span className="font-medium text-gray-700">{fc}</span> · {destStr}</p>
+                        : fc !== `FC ${i+1}` && <p className="text-xs text-gray-500 mt-0.5">Ship to: <span className="font-medium text-gray-700">{fc}</span></p>
+                      }
+                      <div className="mt-2 space-y-1 text-xs text-gray-600">
+                        <div className="flex justify-between"><span>Prep &amp; labeling fees:</span><span>${labeling.toFixed(2)}</span></div>
+                        <div className="flex justify-between"><span>Placement fees:</span><span>${placement.toFixed(2)}</span></div>
+                        <div className="flex justify-between items-center"><span>Estimated shipping:</span>
+                          {shipping !== null
+                            ? <span>{`$${shipping.toFixed(2)}`}</span>
+                            : <span className="text-gray-400 flex items-center gap-1" title="Requires 'Amazon Partnered Carrier' role in your SP-API app (Seller Central → Developer Console → Edit App → Roles)">— <span className="text-blue-400 text-xs cursor-help">ⓘ</span></span>
+                          }
+                        </div>
+                      </div>
+                      <div className="flex justify-between mt-2 pt-2 border-t border-gray-200 text-sm font-semibold">
+                        <span>Total fees:</span><span>${total.toFixed(2)} USD</span>
+                      </div>
+                    </div>
+                  </label>
+                )
+              })}
+              {plans.length === 0 && <p className="text-sm text-gray-400 text-center py-4">No placement options returned by Amazon.</p>}
+            </div>
+          </div>
+
+          {/* Summary + confirm */}
+          <div className="space-y-3">
+            <div className="bg-white rounded-xl border border-gray-200 p-4">
+              <p className="text-sm font-semibold text-gray-900 mb-3 pb-2 border-b border-gray-100">Shipment Summary</p>
+              <div className="space-y-1.5 text-xs text-gray-600">
+                <div className="flex gap-2"><span className="text-gray-400 w-20 shrink-0">Ship from:</span><span className="font-medium text-gray-800">{addrDisplay || '—'}</span></div>
+                <div className="flex gap-2"><span className="text-gray-400 w-20 shrink-0">Ship to:</span><span className="font-medium text-gray-800">{shipToStr || (plan.destination_fc || '—')}</span></div>
+              </div>
+              <div className="flex gap-6 text-xs text-gray-600 pt-3 mt-3 border-t border-gray-100">
+                <span><strong className="text-gray-900">{totalUnits}</strong> Units</span>
+                <span><strong className="text-gray-900">{shipment.length}</strong> SKUs</span>
+              </div>
+              <div className="mt-3 space-y-1 text-xs text-gray-500">
+                {shipment.map(s => (
+                  <div key={s.product.asin} className="flex justify-between">
+                    <span className="truncate max-w-44">{s.product.product_name || s.product.asin}</span>
+                    <span className="font-semibold text-gray-700 ml-2">× {s.qty}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <button
+              onClick={handleConfirmShipment}
+              disabled={loading || !plans.length}
+              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-40 transition-colors"
+            >
+              {loading && <SpinIcon className="w-4 h-4 animate-spin" />}
+              Get Shipping Rates →
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // ── PICK PRODUCTS (main view) ─────────────────────────────────────────────
+  return (
+    <div className="space-y-2">
+      {modalProduct && (
+        <AddToShipmentModal
+          product={modalProduct}
+          onAdd={addToShipment}
+          onClose={() => setModalProduct(null)}
+        />
+      )}
+      {addrModal}
+      <button onClick={() => setStage('config')} className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
+        ← Back to shipment settings
+      </button>
+      {error && <div className="mb-1"><ErrorBanner msg={error} /></div>}
+
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] min-h-[520px] bg-white rounded-xl border border-gray-200 overflow-hidden">
+
+        {/* Left: product picker */}
+        <div className="border-r border-gray-100 flex flex-col">
+          <div className="px-4 py-3 border-b border-gray-100">
+            <div className="flex items-center gap-2 border border-gray-300 rounded-lg px-3 py-2">
+              <svg className="w-4 h-4 text-gray-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+              <input
+                className="flex-1 text-sm text-gray-900 placeholder-gray-400 focus:outline-none"
+                placeholder="Search by product name, SKU, ASIN…"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                autoFocus
+              />
+              {search && <button onClick={() => setSearch('')} className="text-gray-400 text-lg">×</button>}
+            </div>
+          </div>
+
+          {invLoading ? (
+            <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">Loading inventory…</div>
+          ) : filteredInv.length === 0 ? (
+            <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">
+              {search ? 'No products match your search.' : 'No products found. Run an Amazon sync first.'}
+            </div>
+          ) : (
+            <div className="divide-y divide-gray-100 overflow-y-auto flex-1">
+              {filteredInv.map(p => {
+                const already = inShipment(p.asin)
+                return (
+                  <div key={p.asin} className={`px-4 py-3 flex gap-3 transition-colors ${already ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>
+                    {p.image_url
+                      ? <img src={p.image_url} alt="" className="w-12 h-12 object-contain rounded border border-gray-100 bg-gray-50 shrink-0" />
+                      : <div className="w-12 h-12 bg-gray-100 rounded shrink-0" />
+                    }
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-900 line-clamp-2 leading-snug">{p.product_name || p.asin}</p>
+                      <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-xs text-gray-400">
+                        <span className="font-mono text-gray-500">{p.asin}</span>
+                        {p.seller_sku && <span>SKU: {p.seller_sku}</span>}
+                        {p.keepa_category && <span>{p.keepa_category}</span>}
+                        {p.keepa_bsr > 0 && <span>BSR #{p.keepa_bsr.toLocaleString()}</span>}
+                      </div>
+                    </div>
+                    <div className="flex flex-col items-end gap-1.5 shrink-0">
+                      <button
+                        onClick={() => already ? removeFromShipment(p.asin) : setModalProduct(p)}
+                        className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-lg font-bold transition-colors ${already ? 'bg-blue-500 hover:bg-blue-600' : 'bg-blue-600 hover:bg-blue-700'}`}
+                      >
+                        {already ? '✓' : '+'}
+                      </button>
+                      <span className="text-xs text-gray-400">{(p.quantity || 0)} in stock</span>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Right: shipment config */}
+        <div className="flex flex-col">
+          {/* Ship from */}
+          <div className="px-4 py-3 border-b border-gray-100">
+            <div className="flex items-center justify-between mb-1.5">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Ship From</p>
+              <button onClick={() => setEditingAddr(true)} className="text-xs text-blue-600 hover:text-blue-700 font-medium">
+                {shipFromFilled ? 'Edit' : 'Set address'}
+              </button>
+            </div>
+            {addrLoading
+              ? <p className="text-xs text-gray-400">Loading…</p>
+              : addrDisplay
+                ? <p className="text-xs text-gray-700 leading-relaxed">{addrDisplay}</p>
+                : <p className="text-xs text-amber-600">⚠ Address required before creating shipment</p>
+            }
+          </div>
+
+          {/* Shipment options */}
+          <div className="px-4 py-3 border-b border-gray-100 space-y-2">
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Shipment Name</label>
+              <input className={inp} value={shipmentName} onChange={e => setShipmentName(e.target.value)} />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Label Prep</label>
+                <select className={inp} value={labelPrep} onChange={e => setLabelPrep(e.target.value)}>
+                  {LABEL_PREPS.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Ship Method</label>
+                <select className={inp} value={shipMethod} onChange={e => setShipMethod(e.target.value)}>
+                  {SHIP_METHODS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Cart */}
+          <div className="flex-1 px-4 py-3 overflow-y-auto">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Products in Shipment</p>
+              {shipment.length > 0 && (
+                <span className="text-xs text-gray-400">{totalUnits} unit{totalUnits !== 1 ? 's' : ''}</span>
+              )}
+            </div>
+            {shipment.length === 0 ? (
+              <div className="text-center py-6">
+                <p className="text-xs text-gray-400">Click <strong>+</strong> on a product to add it to your shipment.</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {shipment.map(s => (
+                  <div key={s.product.asin} className="flex gap-2 items-start border border-gray-200 rounded-lg p-2">
+                    {s.product.image_url
+                      ? <img src={s.product.image_url} alt="" className="w-9 h-9 object-contain rounded shrink-0 mt-0.5" />
+                      : <div className="w-9 h-9 bg-gray-100 rounded shrink-0 mt-0.5" />
+                    }
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-gray-900 line-clamp-2 leading-snug">{s.product.product_name || s.product.asin}</p>
+                      <div className="flex items-center gap-1 mt-0.5">
+                        {s.skuStatus === 'loading' && (
+                          <span className="text-xs text-gray-400 italic">Looking up SKU…</span>
+                        )}
+                        {s.skuStatus === 'found' && (
+                          <span className="text-xs text-green-600 font-mono">{s.sku}</span>
+                        )}
+                        {(s.skuStatus === 'missing') && (
+                          <button onClick={() => createSkuForItem(s.product.asin)}
+                            className="text-xs bg-amber-500 hover:bg-amber-600 text-white px-2 py-0.5 rounded font-medium">
+                            New SKU
+                          </button>
+                        )}
+                        {s.skuStatus === 'creating' && (
+                          <span className="text-xs text-amber-600 italic">Creating SKU…</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1 mt-1">
+                        <button onClick={() => updateQty(s.product.asin, s.qty - 1)}
+                          className="w-5 h-5 border border-gray-300 rounded text-xs font-bold text-gray-600 flex items-center justify-center hover:bg-gray-50">−</button>
+                        <span className="text-xs w-6 text-center font-semibold">{s.qty}</span>
+                        <button onClick={() => updateQty(s.product.asin, s.qty + 1)}
+                          className="w-5 h-5 border border-gray-300 rounded text-xs font-bold text-gray-600 flex items-center justify-center hover:bg-gray-50">+</button>
+                        {s.fees?.net_proceeds != null && (
+                          <span className="text-xs text-gray-400 ml-1">{fmt$(s.fees.net_proceeds)} net</span>
+                        )}
+                      </div>
+                    </div>
+                    <button onClick={() => removeFromShipment(s.product.asin)} className="text-gray-300 hover:text-red-500 text-lg shrink-0 leading-none mt-0.5">×</button>
+                  </div>
+                ))}
+                {totalProfit !== 0 && (
+                  <div className="flex items-center justify-between pt-1 text-xs">
+                    <span className="text-gray-500">Est. total profit:</span>
+                    <span className={`font-semibold ${totalProfit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {totalProfit >= 0 ? '' : '-'}${Math.abs(totalProfit).toFixed(2)}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Action */}
+          <div className="px-4 py-3 border-t border-gray-100">
+            <button
+              onClick={handleCreateShipment}
+              disabled={loading || !shipment.length}
+              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-40 transition-colors"
+            >
+              {loading && <SpinIcon className="w-4 h-4 animate-spin" />}
+              {loading ? 'Getting placement options…' : 'Create Shipment →'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+// ─────────────────────────────────────────────────────────────────────────────
+// FBM LISTING — Create a Merchant Fulfilled listing on Amazon
+// ─────────────────────────────────────────────────────────────────────────────
+function FBMListingForm() {
+  const [asinInput, setAsinInput] = useState('')
+  const [product, setProduct]     = useState(null)
+  const [loading, setLoading]     = useState(false)
+  const [error, setError]         = useState('')
+  const [success, setSuccess]     = useState('')
+
+  // Listing fields
+  const [sku, setSku]               = useState('')
+  const [price, setPrice]           = useState('')
+  const [qty, setQty]               = useState(1)
+  const [condition, setCondition]   = useState('NewItem')
+  const [handlingDays, setHandling] = useState('2')
+
+  async function handleLookup() {
+    const asin = asinInput.trim().toUpperCase()
+    if (!asin) return
+    setError(''); setLoading(true); setProduct(null)
+    try {
+      const p = await api.fbaLookup(asin)
+      setProduct(p)
+      setSku(`${asin}-FBM-${Date.now().toString().slice(-6)}`)
+    } catch (e) { setError(e.message) }
+    finally { setLoading(false) }
+  }
+
+  async function handleCreate() {
+    if (!product || !price || !sku) return
+    setError(''); setLoading(true); setSuccess('')
+    try {
+      // Use Listings Items API to create FBM listing
+      await api.fbaCreateFbmListing?.({
+        asin: product.asin,
+        sku, price: parseFloat(price), quantity: qty, condition,
+        handling_days: parseInt(handlingDays),
+      })
+      setSuccess(`FBM listing created for ${product.asin} with SKU ${sku}`)
+      setProduct(null); setAsinInput(''); setSku(''); setPrice('')
+    } catch (e) { setError(e.message || 'Listing creation not yet configured — connect Amazon account first.') }
+    finally { setLoading(false) }
+  }
+
+  return (
+    <div className="max-w-2xl">
+      {error   && <div className="mb-4"><ErrorBanner msg={error} /></div>}
+      {success && <div className="mb-4 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-700">{success}</div>}
+
+      <div className="card overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-100">
+          <h2 className="text-base font-semibold text-gray-900">Create FBM Listing</h2>
+          <p className="text-gray-500 text-xs mt-0.5">Create a Merchant Fulfilled listing — you ship directly to the customer.</p>
+        </div>
+
+        <Section title="Find Product">
+          <div className="w-full space-y-3">
+            <div className="flex gap-2">
+              <input className={`${inp} flex-1`} placeholder="Enter ASIN"
+                value={asinInput}
+                onChange={e => setAsinInput(e.target.value.toUpperCase())}
+                onKeyDown={e => e.key === 'Enter' && handleLookup()} />
+              <button onClick={handleLookup} disabled={loading}
+                className="btn-primary text-sm flex items-center gap-2 shrink-0">
+                {loading && <SpinIcon className="w-3.5 h-3.5 animate-spin" />}
+                Look Up
+              </button>
+            </div>
+            {product && (
+              <div className="flex gap-3 p-3 border border-gray-200 rounded-lg bg-gray-50">
+                {product.image_url && (
+                  <img src={product.image_url} alt="" className="w-14 h-14 object-contain rounded border border-gray-100 bg-white shrink-0" />
+                )}
+                <div>
+                  <p className="text-sm font-medium text-gray-900 line-clamp-2">{product.title}</p>
+                  <p className="text-xs text-gray-400 mt-0.5">{product.brand} · {product.asin}</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </Section>
+
+        {product && (
+          <>
+            <Section title="Listing Details">
+              <FormRow label="Seller SKU">
+                <input className={inp} value={sku} onChange={e => setSku(e.target.value)} />
+              </FormRow>
+              <FormRow label="List Price ($)">
+                <input type="number" min="0" step="0.01" className={inp} value={price} onChange={e => setPrice(e.target.value)} />
+              </FormRow>
+              <FormRow label="Quantity">
+                <input type="number" min="1" className={inp} value={qty} onChange={e => setQty(parseInt(e.target.value) || 1)} />
+              </FormRow>
+              <FormRow label="Condition">
+                <select className={inp} value={condition} onChange={e => setCondition(e.target.value)}>
+                  {CONDITIONS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                </select>
+              </FormRow>
+              <FormRow label="Handling Days">
+                <select className={inp} value={handlingDays} onChange={e => setHandling(e.target.value)}>
+                  {['1','2','3','5','7','14'].map(d => <option key={d} value={d}>{d} day{d !== '1' ? 's' : ''}</option>)}
+                </select>
+              </FormRow>
+            </Section>
+
+            <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex justify-end">
+              <button onClick={handleCreate} disabled={loading || !price || !sku}
+                className="btn-primary flex items-center gap-2">
+                {loading && <SpinIcon className="w-4 h-4 animate-spin" />}
+                Create FBM Listing →
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FBA config helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function CfgRow({ label, children }) {
+  return (
+    <div className="flex items-start gap-4 py-3 first:pt-0">
+      <span className="text-sm text-gray-500 w-36 shrink-0 pt-2">{label}</span>
+      <div className="flex-1 min-w-0">{children}</div>
+    </div>
+  )
+}
+
+function FbaCfgCard({ title, open, onToggle, children }) {
+  return (
+    <div className="border border-gray-200 rounded-xl overflow-hidden">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full flex items-center justify-between px-4 py-3 bg-white hover:bg-gray-50 transition-colors"
+      >
+        <span className="text-sm font-semibold text-gray-900">{title}</span>
+        <svg
+          className={`w-4 h-4 text-gray-400 transition-transform ${open ? '' : 'rotate-180'}`}
+          fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
+        </svg>
+      </button>
+      {open && <div className="px-4 pb-4 border-t border-gray-100 pt-3">{children}</div>}
+    </div>
+  )
+}
+
+function FbaToggle({ value, onChange }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={value}
+      onClick={() => onChange(!value)}
+      className={`relative w-10 h-5 rounded-full shrink-0 transition-colors focus:outline-none ${value ? 'bg-red-500' : 'bg-gray-300'}`}
+    >
+      <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${value ? 'translate-x-5' : 'translate-x-0'}`} />
+    </button>
+  )
+}
+
+function FbaToggleLabel({ value, onChange, label }) {
+  return (
+    <label className="flex items-center gap-2 cursor-pointer select-none">
+      <FbaToggle value={value} onChange={onChange} />
+      <span className="text-sm text-gray-600">{label}</span>
+    </label>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared sub-components
+// ─────────────────────────────────────────────────────────────────────────────
+
+function Section({ title, children }) {
+  return (
+    <div className="border-t border-gray-100 first:border-t-0">
+      <div className="px-6 py-3 bg-gray-50 border-b border-gray-100">
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">{title}</p>
+      </div>
+      <div className="px-6 py-4 space-y-4">{children}</div>
+    </div>
+  )
+}
+
+function SectionHeader({ title }) {
+  return (
+    <div className="-mx-6 px-6 py-2 bg-gray-50 border-y border-gray-100 mb-3">
+      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">{title}</p>
+    </div>
+  )
+}
+
+function FormRow({ label, children }) {
+  return (
+    <div className="flex items-start gap-4">
+      {label && (
+        <label className="text-sm text-gray-600 font-medium w-36 shrink-0 pt-2">{label}</label>
+      )}
+      <div className="flex-1 min-w-0">{children}</div>
+    </div>
+  )
+}
+
+function Toggle({ value, onChange, label }) {
+  return (
+    <label className="flex items-center gap-3 cursor-pointer select-none">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={value}
+        onClick={() => onChange(!value)}
+        className={`relative w-9 h-5 rounded-full transition-colors focus:outline-none ${
+          value ? 'bg-blue-600' : 'bg-gray-300'
+        }`}
+      >
+        <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+          value ? 'translate-x-4' : 'translate-x-0'
+        }`} />
+      </button>
+      <span className="text-sm text-gray-700">{label}</span>
+    </label>
+  )
+}
+
+function InfoRow({ label, value, mono, valueClass }) {
+  return (
+    <div className="flex justify-between items-baseline gap-4 py-0.5">
+      <dt className="text-gray-500 text-sm shrink-0">{label}</dt>
+      <dd className={`text-sm text-right break-all ${mono ? 'font-mono text-gray-700' : 'text-gray-900'} ${valueClass || ''}`}>
+        {value ?? '—'}
+      </dd>
+    </div>
+  )
+}
+
+function ErrorBanner({ msg }) {
+  return (
+    <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">{msg}</div>
+  )
+}
+
+function SpinIcon({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+    </svg>
+  )
+}
+
+function DownloadIcon({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+    </svg>
+  )
+}
+
+function ChevronIcon() {
+  return (
+    <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
+    </svg>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FBA LISTINGS — search inventory, set price/condition, submit to Amazon
+// ─────────────────────────────────────────────────────────────────────────────
+function FBAListingsForm() {
+  const [step, setStep]         = useState(1) // 1=select, 2=review
+  const [inventory, setInventory] = useState([])
+  const [loadingInv, setLoadingInv] = useState(true)
+  const [search, setSearch]     = useState('')
+  const [selected, setSelected] = useState([]) // [{product, sku, price, condition}]
+  const [submitting, setSubmitting] = useState(false)
+  const [results, setResults]   = useState(null)
+  const [error, setError]       = useState('')
+
+  useEffect(() => {
+    api.getProducts({ limit: 500, status: 'approved' })
+      .then(data => setInventory(Array.isArray(data) ? data : (data?.items || [])))
+      .catch(e => setError(e.message))
+      .finally(() => setLoadingInv(false))
+  }, [])
+
+  const filtered = inventory.filter(p => {
+    if (!search.trim()) return true
+    const q = search.toLowerCase()
+    return (p.product_name || '').toLowerCase().includes(q) ||
+           (p.asin  || '').toLowerCase().includes(q) ||
+           (p.va_finder || '').toLowerCase().includes(q)
+  })
+
+  const isSelected = (asin) => selected.some(s => s.product.asin === asin)
+
+  function toggleSelect(product) {
+    if (isSelected(product.asin)) {
+      setSelected(prev => prev.filter(s => s.product.asin !== product.asin))
+    } else {
+      setSelected(prev => [...prev, {
+        product,
+        sku:       product.seller_sku || `${product.asin}-FBA`,
+        price:     product.aria_live_price || product.aria_suggested_price || '',
+        condition: 'NewItem',
+      }])
+    }
+  }
+
+  function updateSelected(asin, field, val) {
+    setSelected(prev => prev.map(s => s.product.asin === asin ? { ...s, [field]: val } : s))
+  }
+
+  async function handleSubmit() {
+    const invalid = selected.filter(s => !s.price || !s.sku)
+    if (invalid.length) { setError('All listings need a price and SKU.'); return }
+    setError(''); setSubmitting(true)
+    try {
+      const res = await api.createFbaListings(
+        selected.map(s => ({
+          asin:      s.product.asin,
+          sku:       s.sku,
+          price:     parseFloat(s.price),
+          condition: s.condition,
+        }))
+      )
+      setResults(res.results)
+    } catch (e) { setError(e.message) }
+    finally { setSubmitting(false) }
+  }
+
+  // ── Results view ─────────────────────────────────────────────────────────
+  if (results) {
+    const ok  = results.filter(r => r.success)
+    const bad = results.filter(r => !r.success)
+    return (
+      <div className="max-w-2xl space-y-4">
+        <div className="card p-5">
+          <h2 className="text-base font-semibold text-gray-900 mb-1">Submission Complete</h2>
+          <p className="text-sm text-gray-500 mb-4">
+            {ok.length} listing{ok.length !== 1 ? 's' : ''} submitted successfully
+            {bad.length > 0 && `, ${bad.length} failed`}.
+          </p>
+          <div className="space-y-2">
+            {results.map(r => (
+              <div key={r.sku} className={`flex items-start gap-3 px-3 py-2 rounded-lg text-sm ${
+                r.success ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'
+              }`}>
+                <span className={`mt-0.5 font-bold ${r.success ? 'text-green-600' : 'text-red-500'}`}>
+                  {r.success ? '✓' : '✗'}
+                </span>
+                <div>
+                  <span className="font-mono text-xs text-gray-600">{r.asin}</span>
+                  <span className="mx-2 text-gray-300">·</span>
+                  <span className="text-gray-700">{r.sku}</span>
+                  {r.success && r.status && (
+                    <span className="ml-2 text-xs text-green-600">{r.status}</span>
+                  )}
+                  {!r.success && (
+                    <p className="text-xs text-red-600 mt-0.5">{r.error}</p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+          <button onClick={() => { setResults(null); setSelected([]); setStep(1) }}
+            className="btn-secondary text-sm mt-4">
+            Submit More Listings
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      {error && <ErrorBanner msg={error} />}
+
+      {/* Step header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          {[
+            { n: 1, label: 'Create FBA Listings' },
+            { n: 2, label: 'Review FBA Listings' },
+          ].map(({ n, label }, i) => (
+            <div key={n} className="flex items-center gap-2">
+              <button
+                onClick={() => n < step ? setStep(n) : undefined}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
+                  step === n ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-500'
+                }`}
+              >
+                <span className={`w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold ${
+                  step === n ? 'bg-white text-blue-600' : 'bg-gray-300 text-gray-500'
+                }`}>{n}</span>
+                {label}
+              </button>
+              {i === 0 && <span className="text-gray-300">→</span>}
+            </div>
+          ))}
+        </div>
+
+        {step === 1 && (
+          <button
+            onClick={() => { if (!selected.length) { setError('Select at least one product.'); return } setError(''); setStep(2) }}
+            className="btn-primary text-sm"
+          >
+            Review ({selected.length}) →
+          </button>
+        )}
+        {step === 2 && (
+          <button onClick={handleSubmit} disabled={submitting}
+            className="btn-primary text-sm flex items-center gap-2">
+            {submitting && <SpinIcon className="w-4 h-4 animate-spin" />}
+            Submit FBA Listings
+          </button>
+        )}
+      </div>
+
+      {/* ── STEP 1: Select products ── */}
+      {step === 1 && (
+        <div className="card overflow-hidden">
+          {/* Search bar */}
+          <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
+            <svg className="w-4 h-4 text-gray-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input
+              className="flex-1 text-sm text-gray-900 placeholder-gray-400 focus:outline-none bg-transparent"
+              placeholder="Search by typing a search query above."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              autoFocus
+            />
+            {search && (
+              <button onClick={() => setSearch('')} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
+            )}
+          </div>
+
+          {/* Stats bar */}
+          <div className="px-4 py-2 bg-gray-50 border-b border-gray-100 flex items-center gap-3 text-xs text-gray-500">
+            <span className="font-semibold text-gray-700">{inventory.length}</span> products in inventory
+            {selected.length > 0 && (
+              <span className="ml-auto text-blue-600 font-medium">{selected.length} selected</span>
+            )}
+          </div>
+
+          {/* Product list */}
+          {loadingInv ? (
+            <div className="px-4 py-10 text-center text-gray-400 text-sm">Loading inventory…</div>
+          ) : filtered.length === 0 ? (
+            <div className="px-4 py-10 text-center text-gray-400 text-sm">
+              {search ? 'No products match your search.' : 'No products found.'}
+            </div>
+          ) : (
+            <div className="divide-y divide-gray-100 max-h-[60vh] overflow-y-auto">
+              {filtered.map(p => {
+                const sel = isSelected(p.asin)
+                return (
+                  <div
+                    key={p.asin}
+                    onClick={() => toggleSelect(p)}
+                    className={`flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors ${
+                      sel ? 'bg-blue-50' : 'hover:bg-gray-50'
+                    }`}
+                  >
+                    <input type="checkbox" readOnly checked={sel}
+                      className="rounded border-gray-300 text-blue-600 shrink-0" />
+                    {p.image_url ? (
+                      <img src={p.image_url} alt="" className="w-10 h-10 object-contain rounded border border-gray-100 bg-gray-50 shrink-0" />
+                    ) : (
+                      <div className="w-10 h-10 bg-gray-100 rounded shrink-0" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-900 truncate">{p.product_name || p.asin}</p>
+                      <p className="text-xs text-gray-400 font-mono mt-0.5">{p.asin}
+                        {p.seller_sku && <span className="ml-2 text-gray-400">· SKU: {p.seller_sku}</span>}
+                      </p>
+                    </div>
+                    {p.aria_live_price && (
+                      <span className="text-sm font-semibold text-gray-700 shrink-0">${Number(p.aria_live_price).toFixed(2)}</span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── STEP 2: Review & edit listings ── */}
+      {step === 2 && (
+        <div className="card overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-100">
+            <p className="text-sm font-semibold text-gray-800">{selected.length} listing{selected.length !== 1 ? 's' : ''} ready to submit</p>
+            <p className="text-xs text-gray-400 mt-0.5">Review SKU, price, and condition before submitting to Amazon.</p>
+          </div>
+          <div className="divide-y divide-gray-100">
+            {selected.map(s => (
+              <div key={s.product.asin} className="px-4 py-4 flex gap-3 items-start">
+                {s.product.image_url ? (
+                  <img src={s.product.image_url} alt="" className="w-12 h-12 object-contain rounded border border-gray-100 bg-gray-50 shrink-0" />
+                ) : (
+                  <div className="w-12 h-12 bg-gray-100 rounded shrink-0" />
+                )}
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-900 line-clamp-1">{s.product.product_name || s.product.asin}</p>
+                  <p className="text-xs text-gray-400 font-mono">{s.product.asin}</p>
+                  <div className="mt-2 flex gap-3 flex-wrap">
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Seller SKU</label>
+                      <input
+                        className="border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-blue-500 w-44"
+                        value={s.sku}
+                        onChange={e => updateSelected(s.product.asin, 'sku', e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">List Price ($)</label>
+                      <input
+                        type="number" min="0" step="0.01"
+                        className="border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-blue-500 w-24"
+                        value={s.price}
+                        onChange={e => updateSelected(s.product.asin, 'price', e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Condition</label>
+                      <select
+                        className="border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-blue-500"
+                        value={s.condition}
+                        onChange={e => updateSelected(s.product.asin, 'condition', e.target.value)}
+                      >
+                        {CONDITIONS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+                <button onClick={() => setSelected(prev => prev.filter(x => x.product.asin !== s.product.asin))}
+                  className="text-gray-300 hover:text-red-500 text-xl shrink-0">×</button>
+              </div>
+            ))}
+          </div>
+          <div className="px-4 py-3 bg-gray-50 border-t border-gray-100 flex items-center gap-3">
+            <button onClick={() => setStep(1)} className="btn-secondary text-sm">← Back</button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const inp   = 'w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500'
+const inpSm = 'w-full border border-gray-300 rounded px-2 py-1.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500'

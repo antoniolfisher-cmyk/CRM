@@ -24,11 +24,19 @@ import UpcScanner from './pages/UpcScanner'
 import Ungate from './pages/Ungate'
 import Profile from './pages/Profile'
 import Wholesale from './pages/Wholesale'
+import AuditLog from './pages/AuditLog'
+import ShipToAmazon from './pages/ShipToAmazon'
+import Terms from './pages/Terms'
+import Privacy from './pages/Privacy'
+import Waitlist from './pages/Waitlist'
 
 export default function App() {
   return (
     <AuthProvider>
       <Routes>
+        <Route path="/terms"             element={<Terms />} />
+        <Route path="/privacy"           element={<Privacy />} />
+        <Route path="/waitlist"          element={<Waitlist />} />
         <Route path="/login"             element={<PublicRoute><Login /></PublicRoute>} />
         <Route path="/register"          element={<PublicRoute><Register /></PublicRoute>} />
         <Route path="/forgot-password"   element={<PublicRoute><ForgotPassword /></PublicRoute>} />
@@ -85,11 +93,13 @@ function PrivateRoute() {
         <Route path="/support"     element={guard('support',     <Support />)} />
         <Route path="/upc-scanner" element={guard('upc_scanner', <UpcScanner />)} />
         <Route path="/ungate"      element={guard('ungate',      <Ungate />)} />
+        <Route path="/ship-to-amazon" element={guard('ship_to_amazon', <ShipToAmazon />)} />
         <Route path="/billing"        element={<Billing />} />
         <Route path="/approvals"      element={isAdmin ? <Approvals />    : <Navigate to="/" replace />} />
         <Route path="/repricer"       element={isAdmin ? <Repricer />     : <Navigate to="/" replace />} />
         <Route path="/admin"          element={isAdmin ? <Admin />        : <Navigate to="/" replace />} />
         <Route path="/admin-billing"  element={isSuperAdmin ? <AdminBilling /> : <Navigate to="/" replace />} />
+        <Route path="/audit-log"      element={isSuperAdmin ? <AuditLog />     : <Navigate to="/" replace />} />
         <Route path="/profile"        element={<Profile />} />
         <Route path="*"               element={<Navigate to="/" replace />} />
       </Routes>

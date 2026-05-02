@@ -1,13 +1,50 @@
 import os
 import asyncio
 import logging
+import logging.config
+import json
 import urllib.parse
 from fastapi import FastAPI, Depends, HTTPException, Request, BackgroundTasks, UploadFile, File, Body
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse as StarletteJSONResponse
+
+# ── Structured JSON logging ────────────────────────────────────────────────────
+class _JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "ts":      self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+            "level":   record.levelname,
+            "logger":  record.name,
+            "msg":     record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)
+        return json.dumps(payload)
+
+_log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.config.dictConfig({
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {"json": {"()": _JsonFormatter}},
+    "handlers": {
+        "stdout": {
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stdout",
+            "formatter": "json",
+        }
+    },
+    "root": {"level": _log_level, "handlers": ["stdout"]},
+    # Keep uvicorn's access log in JSON too
+    "loggers": {
+        "uvicorn":        {"level": _log_level, "propagate": True},
+        "uvicorn.access": {"level": _log_level, "propagate": True},
+        "uvicorn.error":  {"level": _log_level, "propagate": True},
+    },
+})
 
 log = logging.getLogger(__name__)
 
@@ -21,9 +58,10 @@ try:
         sentry_sdk.init(
             dsn=_sentry_dsn,
             integrations=[FastApiIntegration(), SqlalchemyIntegration()],
-            traces_sample_rate=0.1,
+            traces_sample_rate=0.05,
+            profiles_sample_rate=0.05,
             environment=os.getenv("RAILWAY_ENVIRONMENT", "production"),
-            send_default_pii=True,
+            send_default_pii=False,
         )
         log.info("Sentry initialised")
 except Exception as _sentry_err:
@@ -47,25 +85,54 @@ except Exception as _slowapi_err:
     RateLimitExceeded = Exception
     def _rate_limit_exceeded_handler(req, exc): pass
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, text
 from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
 import models
 import schemas
-from database import engine, get_db
+from database import engine, get_db, get_read_db
+from fastapi.security import HTTPAuthorizationCredentials
 from auth import (
     LoginRequest, RegisterRequest, create_token, require_auth, require_admin,
     require_superadmin, hash_password, verify_password, ensure_bootstrap_admin, get_tenant_id,
+    revoke_token, TOKEN_EXPIRE_HOURS, bearer,
 )
 from notifications import start_scheduler, stop_scheduler, send_daily_digests, send_email, build_digest_html, _smtp_configured, get_aria_schedule_info
 import aria_repricer
 import stripe_billing
+from fastapi.encoders import jsonable_encoder
+from cache import cache_get, cache_set, cache_bust, make_key
 
+# ── Background email queue ─────────────────────────────────────────────────────
+# Wraps send_email in a thread-pool executor so the request thread is never
+# blocked by SMTP/SendGrid/Resend latency (~200 ms–2 s per message).
+import concurrent.futures as _futures
+_email_pool = _futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="email")
+
+def _send_email_bg(to: str, subject: str, html: str, **kwargs):
+    """Fire-and-forget email — non-blocking, logs failures without raising."""
+    def _run():
+        try:
+            send_email(to, subject, html, **kwargs)
+        except Exception as _e:
+            log.warning("Background email failed to=%s subject=%r: %s", to, subject, _e)
+    _email_pool.submit(_run)
+
+# Create all tables using SQLAlchemy 2.0-compatible API
 try:
-    models.Base.metadata.create_all(bind=engine)
-except Exception as _create_all_err:
-    print(f"[startup] create_all warning: {_create_all_err}", flush=True)
+    with engine.begin() as _conn:
+        models.Base.metadata.create_all(_conn, checkfirst=True)
+    print("[startup] all tables created/verified", flush=True)
+except Exception as _tbl_err:
+    print(f"[startup] create_all failed: {_tbl_err}", flush=True)
+    # Fallback: create each table individually to isolate failures
+    for _tbl in models.Base.metadata.sorted_tables:
+        try:
+            with engine.begin() as _conn:
+                _tbl.create(_conn, checkfirst=True)
+        except Exception as _te:
+            print(f"[startup] create table {_tbl.name} failed: {_te}", flush=True)
 
 # ─── Migrations: add new columns to existing tables ───────────────────────────
 try:
@@ -97,45 +164,52 @@ try:
                     pass
     except Exception:
         pass
-    # Keepa + Aria columns on products — each in its own connection so one failure
-    # doesn't block the rest (PostgreSQL DDL is transactional).
+    # Products table — add every column the ORM model expects.
+    # No inspector check — always attempt ADD COLUMN IF NOT EXISTS (idempotent in PG).
+    # Each column runs in its own connection so one DDL error never blocks the rest.
+    for _col, _ddl in [
+        ("keepa_bsr",            "INTEGER"),
+        ("keepa_category",       "VARCHAR"),
+        ("keepa_last_synced",    "TIMESTAMP WITH TIME ZONE"),
+        ("price_90_high",        "DOUBLE PRECISION"),
+        ("price_90_low",         "DOUBLE PRECISION"),
+        ("price_90_median",      "DOUBLE PRECISION"),
+        ("fba_low",              "DOUBLE PRECISION"),
+        ("fba_high",             "DOUBLE PRECISION"),
+        ("fba_median",           "DOUBLE PRECISION"),
+        ("fbm_low",              "DOUBLE PRECISION"),
+        ("fbm_high",             "DOUBLE PRECISION"),
+        ("fbm_median",           "DOUBLE PRECISION"),
+        ("status",               "TEXT DEFAULT 'sourcing'"),
+        ("seller_sku",           "VARCHAR"),
+        ("aria_suggested_price", "DOUBLE PRECISION"),
+        ("aria_suggested_at",    "TIMESTAMP WITH TIME ZONE"),
+        ("aria_reasoning",       "TEXT"),
+        ("aria_last_buy_box",    "DOUBLE PRECISION"),
+        ("aria_strategy_id",     "INTEGER"),
+        ("aria_live_price",      "DOUBLE PRECISION"),
+        ("aria_live_pushed_at",  "TIMESTAMP WITH TIME ZONE"),
+        ("buy_box_winner",       "BOOLEAN"),
+        ("buy_box_checked_at",   "TIMESTAMP WITH TIME ZONE"),
+        ("fulfillment_channel",  "VARCHAR"),
+    ]:
+        try:
+            with engine.connect() as _conn:
+                _conn.execute(text(f"ALTER TABLE products ADD COLUMN IF NOT EXISTS {_col} {_ddl}"))
+                _conn.commit()
+        except Exception as _ce:
+            print(f"[startup] products.{_col}: {_ce}", flush=True)
+    # Fix product statuses — runs every startup, idempotent
     try:
-        _cols = [c["name"] for c in _inspector.get_columns("products")]
-        for _col, _ddl in [
-            ("keepa_bsr",           "INTEGER"),
-            ("keepa_category",      "VARCHAR"),
-            ("keepa_last_synced",   "TIMESTAMP WITH TIME ZONE"),
-            ("aria_suggested_price","DOUBLE PRECISION"),
-            ("aria_suggested_at",   "TIMESTAMP WITH TIME ZONE"),
-            ("aria_reasoning",      "TEXT"),
-            ("aria_last_buy_box",   "DOUBLE PRECISION"),
-            ("aria_strategy_id",    "INTEGER"),
-        ]:
-            if _col not in _cols:
-                try:
-                    with engine.connect() as _conn:
-                        _conn.execute(text(f"ALTER TABLE products ADD COLUMN {_col} {_ddl}"))
-                        _conn.commit()
-                except Exception as _ce:
-                    print(f"[migration] products.{_col}: {_ce}", flush=True)
-        # Ensure status column exists and default old rows
-        if "status" not in _cols:
-            try:
-                with engine.connect() as _conn:
-                    _conn.execute(text("ALTER TABLE products ADD COLUMN status TEXT DEFAULT 'sourcing'"))
-                    _conn.execute(text("UPDATE products SET status = 'approved' WHERE status IS NULL"))
-                    _conn.commit()
-            except Exception:
-                pass
-        else:
-            try:
-                with engine.connect() as _conn:
-                    _conn.execute(text("UPDATE products SET status = 'approved' WHERE status IS NULL"))
-                    _conn.commit()
-            except Exception:
-                pass
-    except Exception:
-        pass
+        with engine.connect() as _conn:
+            _conn.execute(text("UPDATE products SET status = 'approved' WHERE status IS NULL"))
+            _conn.execute(text(
+                "UPDATE products SET status = 'approved' "
+                "WHERE fulfillment_channel IN ('FBA', 'FBM') AND (status IS NULL OR status != 'approved')"
+            ))
+            _conn.commit()
+    except Exception as _ce:
+        print(f"[startup] products status fix: {_ce}", flush=True)
     # One-time migration: approve all pre-workflow sourcing products
     try:
         with engine.connect() as _conn:
@@ -204,9 +278,10 @@ try:
         with engine.connect() as _conn:
             _BF_FLAG = "backfill_tenant_id_v1"
             _conn.execute(text("CREATE TABLE IF NOT EXISTS _migration_flags (name TEXT PRIMARY KEY)"))
-            _already = _conn.execute(text(
-                f"SELECT 1 FROM _migration_flags WHERE name = '{_BF_FLAG}'"
-            )).fetchone()
+            _already = _conn.execute(
+                text("SELECT 1 FROM _migration_flags WHERE name = :name"),
+                {"name": _BF_FLAG}
+            ).fetchone()
             if not _already:
                 # Only if a tenant with id=1 will exist (bootstrap creates it)
                 for _t in ["users","accounts","contacts","follow_ups","orders",
@@ -218,7 +293,10 @@ try:
                         ))
                     except Exception:
                         pass
-                _conn.execute(text(f"INSERT INTO _migration_flags (name) VALUES ('{_BF_FLAG}') ON CONFLICT DO NOTHING"))
+                _conn.execute(
+                    text("INSERT INTO _migration_flags (name) VALUES (:name) ON CONFLICT DO NOTHING"),
+                    {"name": _BF_FLAG}
+                )
                 _conn.commit()
     except Exception:
         pass
@@ -416,12 +494,30 @@ if _limiter_enabled:
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception):
+    """Catch-all: ensures unhandled crashes always return JSON, never a blank body."""
+    log.error("Unhandled exception %s %s: %s", request.method, request.url.path, exc, exc_info=True)
+    print(f"[UNHANDLED] {request.method} {request.url.path}: {type(exc).__name__}: {exc}", flush=True)
+    return StarletteJSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {type(exc).__name__}: {exc}"},
+    )
+
+_ALLOWED_ORIGINS = [o.strip() for o in os.getenv(
+    "CORS_ORIGINS",
+    "https://sellers-pulse.com,https://www.sellers-pulse.com",
+).split(",") if o.strip()]
+# Always allow localhost in dev so the local Vite dev server works
+if os.getenv("RAILWAY_ENVIRONMENT") != "production":
+    _ALLOWED_ORIGINS += ["http://localhost:5173", "http://localhost:3000"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
 
 
@@ -477,6 +573,10 @@ class SubscriptionEnforcementMiddleware(BaseHTTPMiddleware):
         if tenant is None:
             return await call_next(request)
 
+        # Beta tenants have permanent access — no billing/trial checks ever
+        if getattr(tenant, 'is_beta', False):
+            return await call_next(request)
+
         stripe_status = tenant.stripe_status
 
         # Legacy/self-hosted tenants with no stripe_status — always allow
@@ -504,12 +604,413 @@ class SubscriptionEnforcementMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SubscriptionEnforcementMiddleware)
 
 
+# ─── Global rate limit middleware ─────────────────────────────────────────────
+
+class _RateLimiter:
+    """
+    Sliding-window rate limiter.
+    Uses Redis (fixed-window via INCR+EXPIRE) when REDIS_URL is set;
+    falls back to in-memory sliding window for single-replica deployments.
+    Limits: 300 req/min per IP by default; tighter for expensive paths.
+    """
+    RULES: list[tuple[str, int]] = [
+        ("/api/repricer/aria/run-all",       5),
+        ("/api/repricer/aria/run/",         20),
+        ("/api/keepa/bulk-refresh",          5),
+        ("/api/keepa/batch",                10),
+        ("/api/keepa/amazon-search",        10),
+        ("/api/amazon/inventory/sync-now",  10),
+        ("/api/",                          300),
+    ]
+
+    def __init__(self):
+        self._redis = None
+        self._redis_checked = False
+        # in-memory fallback
+        self._windows: dict[str, list[float]] = {}
+        self._lock = __import__("threading").Lock()
+
+    def _get_redis(self):
+        if self._redis_checked:
+            return self._redis
+        self._redis_checked = True
+        url = os.getenv("REDIS_URL", "").strip()
+        if not url:
+            return None
+        try:
+            import redis as _redis
+            r = _redis.from_url(url, socket_connect_timeout=2, socket_timeout=1, decode_responses=True)
+            r.ping()
+            self._redis = r
+            log.info("Rate limiter: using Redis at %s", url.split("@")[-1])
+        except Exception as e:
+            log.warning("Rate limiter: Redis unavailable (%s) — using in-memory fallback", e)
+        return self._redis
+
+    def _limit_for(self, path: str) -> int:
+        for prefix, lim in self.RULES:
+            if path.startswith(prefix):
+                return lim
+        return 300
+
+    def is_allowed(self, ip: str, path: str) -> bool:
+        import time
+        limit = self._limit_for(path)
+        key = f"rl:{ip}:{path.split('?')[0][:60]}"
+
+        r = self._get_redis()
+        if r is not None:
+            try:
+                pipe = r.pipeline()
+                pipe.incr(key)
+                pipe.expire(key, 60)
+                count, _ = pipe.execute()
+                return count <= limit
+            except Exception as e:
+                log.warning("Redis rate-limit error — falling back to in-memory: %s", e)
+
+        # In-memory fallback
+        now = time.monotonic()
+        cutoff = now - 60.0
+        with self._lock:
+            timestamps = [t for t in self._windows.get(key, []) if t > cutoff]
+            if len(timestamps) >= limit:
+                self._windows[key] = timestamps
+                return False
+            timestamps.append(now)
+            self._windows[key] = timestamps
+            if len(self._windows) > 50_000:
+                self._windows = {k: v for k, v in self._windows.items() if any(t > cutoff for t in v)}
+        return True
+
+
+_rate_limiter = _RateLimiter()
+
+
+class GlobalRateLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if not path.startswith("/api/"):
+            return await call_next(request)
+        # Skip health check from rate limiting
+        if path == "/api/health":
+            return await call_next(request)
+
+        # Use the LAST IP in X-Forwarded-For — Railway's load balancer appends the real client IP last.
+        # Taking the first value allows header spoofing to bypass rate limits.
+        _xff = request.headers.get("X-Forwarded-For", "")
+        ip = (_xff.split(",")[-1].strip() if _xff else None) or (request.client.host if request.client else "unknown")
+        if not _rate_limiter.is_allowed(ip, path):
+            return StarletteJSONResponse(
+                status_code=429,
+                content={"detail": "Too many requests. Please slow down."},
+            )
+        return await call_next(request)
+
+
+app.add_middleware(GlobalRateLimitMiddleware)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+
+# ─── Request timing + DB statement timeout middleware ─────────────────────────
+# Sets PostgreSQL statement_timeout per-request (safe: doesn't affect migrations
+# or background jobs). Also logs slow requests for performance monitoring.
+
+_SLOW_REQUEST_MS = int(os.getenv("SLOW_REQUEST_MS", "3000"))
+_DB_TIMEOUT_MS   = int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "15000"))
+
+@app.middleware("http")
+async def _request_timing(request: Request, call_next):
+    import time
+    start = time.monotonic()
+    response = await call_next(request)
+    ms = int((time.monotonic() - start) * 1000)
+    response.headers["X-Response-Time"] = f"{ms}ms"
+    if ms > _SLOW_REQUEST_MS and not request.url.path.startswith("/assets/"):
+        log.warning("slow_request path=%s method=%s ms=%d status=%d",
+                    request.url.path, request.method, ms, response.status_code)
+    return response
+
+
+@app.middleware("http")
+async def _db_timeout(request: Request, call_next):
+    """Set PostgreSQL statement_timeout for each request so runaway queries
+    can't hold a connection indefinitely. Skipped for SQLite (dev)."""
+    from database import engine as _engine, is_sqlite as _is_sqlite
+    if _is_sqlite or not request.url.path.startswith("/api/"):
+        return await call_next(request)
+    # Inject timeout into the DB session if one is opened for this request
+    request.state.db_timeout_ms = _DB_TIMEOUT_MS
+    return await call_next(request)
+
+
+# ─── Cache-Control headers middleware ─────────────────────────────────────────
+
+@app.middleware("http")
+async def _cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+
+    if path.startswith("/api/"):
+        # API responses must never be cached by proxies
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"]        = "no-cache"
+    elif path.startswith("/assets/") or path.endswith((".js", ".css", ".woff2", ".woff", ".ttf")):
+        # Vite hashes all asset filenames — safe to cache for 1 year
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif path in ("/", "/index.html") or not "." in path.split("/")[-1]:
+        # HTML entry point must never be cached so new deploys propagate instantly
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    else:
+        # Images and other static files — cache for 7 days
+        response.headers["Cache-Control"] = "public, max-age=604800"
+
+    return response
+
+
+# ─── Security headers middleware ──────────────────────────────────────────────
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"]  = "nosniff"
+    response.headers["X-Frame-Options"]          = "DENY"
+    response.headers["X-XSS-Protection"]         = "1; mode=block"
+    response.headers["Referrer-Policy"]           = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"]        = "camera=(), microphone=(), geolocation=()"
+    # HSTS — tells browsers to always use HTTPS (1 year)
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    # CSP — restrict resource loading; unsafe-inline needed for Vite-injected styles
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data: https:; "
+        "connect-src 'self' https://api.stripe.com https://*.sentry.io; "
+        "frame-src https://js.stripe.com https://hooks.stripe.com;"
+    )
+    return response
+
+
+# ─── Sentry request context middleware ────────────────────────────────────────
+
+@app.middleware("http")
+async def _sentry_context(request: Request, call_next):
+    """Tag Sentry errors with tenant_id and username from JWT."""
+    try:
+        import sentry_sdk as _sentry
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            from auth import require_auth as _ra
+            import jose.jwt as _jwt
+            payload = _jwt.decode(
+                auth[7:],
+                os.getenv("SECRET_KEY", "changeme"),
+                algorithms=["HS256"],
+            )
+            with _sentry.configure_scope() as scope:
+                scope.set_user({"username": payload.get("sub")})
+                scope.set_tag("tenant_id", str(payload.get("tenant_id", "")))
+    except Exception:
+        pass
+    return await call_next(request)
+
+
+# ─── Audit log helper ────────────────────────────────────────────────────────
+
+def _audit(db, action: str, *, request: Request = None, current: dict = None,
+           target: str = None, detail: str = None):
+    """Write one immutable audit log row. Never raises — errors are logged only."""
+    try:
+        ip = None
+        if request:
+            ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or (
+                request.client.host if request.client else None
+            )
+        tenant_id = current.get("tenant_id") if current else None
+        username  = current.get("sub")       if current else None
+        db.add(models.AuditLog(
+            tenant_id=tenant_id,
+            username=username,
+            action=action,
+            target=target,
+            detail=detail,
+            ip=ip,
+        ))
+        db.commit()
+    except Exception as _e:
+        log.warning("Audit log write failed: %s", _e)
+
+
+def _ensure_products_table():
+    """Create the products table on both primary and read-replica engines."""
+    from database import engine as _engine, is_sqlite as _is_sqlite
+    import database as _db_module
+    _rengine = getattr(_db_module, '_read_engine', _engine)
+    if _is_sqlite:
+        return
+    _DDL = """
+        CREATE TABLE IF NOT EXISTS public.products (
+            id SERIAL PRIMARY KEY, tenant_id INTEGER, created_by VARCHAR,
+            asin VARCHAR, product_name VARCHAR, amazon_url VARCHAR,
+            purchase_link VARCHAR, date_found TIMESTAMPTZ, va_finder VARCHAR,
+            date_purchased TIMESTAMPTZ, order_number VARCHAR,
+            quantity FLOAT DEFAULT 0, buy_cost FLOAT DEFAULT 0,
+            money_spent FLOAT DEFAULT 0, arrived_at_prep TIMESTAMPTZ,
+            date_sent_to_amazon TIMESTAMPTZ, amazon_tracking_number VARCHAR,
+            ungated BOOLEAN DEFAULT FALSE, ungating_quantity FLOAT DEFAULT 0,
+            total_bought FLOAT DEFAULT 0, replenish BOOLEAN DEFAULT FALSE,
+            amazon_fee FLOAT DEFAULT 0, total_cost FLOAT DEFAULT 0,
+            buy_box FLOAT DEFAULT 0, profit FLOAT DEFAULT 0,
+            profit_margin FLOAT DEFAULT 0, roi FLOAT DEFAULT 0,
+            estimated_sales FLOAT DEFAULT 0, num_sellers INTEGER DEFAULT 0,
+            notes TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ,
+            keepa_bsr INTEGER, keepa_category VARCHAR, keepa_last_synced TIMESTAMPTZ,
+            price_90_high FLOAT, price_90_low FLOAT, price_90_median FLOAT,
+            fba_low FLOAT, fba_high FLOAT, fba_median FLOAT,
+            fbm_low FLOAT, fbm_high FLOAT, fbm_median FLOAT,
+            status VARCHAR DEFAULT 'sourcing', seller_sku VARCHAR,
+            aria_suggested_price FLOAT, aria_suggested_at TIMESTAMPTZ,
+            aria_reasoning TEXT, aria_last_buy_box FLOAT, aria_strategy_id INTEGER,
+            aria_live_price FLOAT, aria_live_pushed_at TIMESTAMPTZ,
+            buy_box_winner BOOLEAN, buy_box_checked_at TIMESTAMPTZ,
+            fulfillment_channel VARCHAR
+        )
+    """
+    seen_ids = set()
+    for _label, _eng in [("primary", _engine), ("replica", _rengine)]:
+        if id(_eng) in seen_ids:
+            continue
+        seen_ids.add(id(_eng))
+        try:
+            with _eng.begin() as _c:
+                _c.execute(text("SET search_path = public"))
+                _c.execute(text(_DDL))
+            log.info("products table ensured on %s", _label)
+        except Exception as _e:
+            log.warning("products table ensure failed on %s: %s", _label, _e)
+        # Diagnostic
+        try:
+            with _eng.connect() as _dc:
+                sp = _dc.execute(text("SHOW search_path")).scalar()
+                rows = _dc.execute(text(
+                    "SELECT table_schema FROM information_schema.tables WHERE table_name='products'"
+                )).fetchall()
+                log.info("[%s] search_path=%s  products schema(s)=%s", _label, sp, [r[0] for r in rows])
+        except Exception as _de:
+            log.warning("[%s] products diagnostic failed: %s", _label, _de)
+
+
 @app.on_event("startup")
 def startup():
+    _check_production_config()
+    # Migrations run in prestart.py before workers spawn — skip here to avoid races.
+    # Fall back to running them if somehow prestart was not executed (local dev).
+    if not os.getenv("PRESTART_DONE"):
+        _run_alembic_migrations()
+    # Always ensure products table exists regardless of migration outcome
+    _ensure_products_table()
     if os.getenv("DISABLE_SCHEDULER", "").lower() in ("1", "true", "yes"):
         log.info("Scheduler disabled (DISABLE_SCHEDULER=true) — web-only mode")
     else:
+        # IMPORTANT: APScheduler runs inside this process. If Railway scales to
+        # multiple replicas, every replica will run the scheduler and trigger
+        # duplicate Amazon syncs and Aria repricer runs. Set DISABLE_SCHEDULER=true
+        # on all but one replica, or run the scheduler as a separate Railway service.
+        num_replicas = int(os.getenv("RAILWAY_NUM_REPLICAS", "1"))
+        replica_id   = os.getenv("RAILWAY_REPLICA_ID", "")
+        if num_replicas > 1 and replica_id:
+            # Only the lexicographically first replica ID runs the scheduler
+            all_replica_ids = sorted(os.getenv("RAILWAY_REPLICA_IDS", replica_id).split(","))
+            if replica_id != all_replica_ids[0]:
+                log.info("Scheduler suppressed on replica %s — only primary replica runs it", replica_id)
+                return
         start_scheduler()
+
+
+def _check_production_config():
+    """Warn loudly on startup if critical env vars are still at their insecure defaults."""
+    is_prod = os.getenv("RAILWAY_ENVIRONMENT") == "production"
+    warnings = []
+
+    sk = os.getenv("SECRET_KEY", "")
+    if not sk or sk in ("dev-secret-change-in-production", "changeme", "secret", "sellerpulse-oauth-secret"):
+        warnings.append("SECRET_KEY is not set or is using an insecure default — all JWTs are forgeable")
+
+    if os.getenv("CRM_PASSWORD", "changeme") == "changeme":
+        warnings.append("CRM_PASSWORD is still 'changeme' — change the admin password immediately")
+
+    if not os.getenv("STRIPE_SECRET_KEY", ""):
+        warnings.append("STRIPE_SECRET_KEY not set — billing is disabled")
+    elif os.getenv("STRIPE_SECRET_KEY", "").startswith("sk_test_") and is_prod:
+        warnings.append("STRIPE_SECRET_KEY is a test key in production — use sk_live_...")
+
+    for w in warnings:
+        log.warning("CONFIG WARNING: %s", w)
+
+
+def _run_alembic_migrations():
+    db_url = os.getenv("DATABASE_URL", "sqlite:///./crm.db").replace("postgres://", "postgresql://", 1)
+    try:
+        from alembic.config import Config
+        from alembic import command
+        from alembic.runtime.migration import MigrationContext
+        from sqlalchemy import create_engine as _ce
+
+        cfg = Config()
+        cfg.set_main_option("script_location", os.path.join(os.path.dirname(__file__), "alembic"))
+        cfg.set_main_option("sqlalchemy.url", db_url)
+
+        # Detect broken chain: if alembic_version has a stale revision that
+        # doesn't match any migration file, stamp it to the closest valid head
+        # so that subsequent migrations can run.
+        try:
+            _eng = _ce(db_url)
+            with _eng.connect() as _conn:
+                ctx = MigrationContext.configure(_conn)
+                current = ctx.get_current_heads()
+                if current and '0001_safe_new_tables' not in current and '0001' in current:
+                    log.warning("Fixing broken Alembic chain: stamping 0001_safe_new_tables")
+                    command.stamp(cfg, "0001_safe_new_tables")
+            _eng.dispose()
+        except Exception as _stamp_err:
+            log.warning("Alembic chain check skipped: %s", _stamp_err)
+
+        command.upgrade(cfg, "head")
+        log.info("Alembic migrations applied")
+    except Exception as e:
+        log.warning("Alembic migration skipped: %s", e)
+
+    # Emergency safety net: apply critical columns directly if migrations
+    # failed for any reason, so the app stays functional.
+    try:
+        from sqlalchemy import create_engine as _ce, text as _text
+        _eng = _ce(db_url)
+        with _eng.begin() as _conn:
+            # users — auth-critical columns
+            _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_count INTEGER DEFAULT 0"))
+            _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ"))
+            _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ"))
+            _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_email BOOLEAN DEFAULT true"))
+            _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT false"))
+            _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS dashboard_sections TEXT"))
+            _conn.execute(_text("ALTER TABLE users ADD COLUMN IF NOT EXISTS page_permissions TEXT"))
+            # tenants — auth + subscription-critical columns
+            _conn.execute(_text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ"))
+            _conn.execute(_text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS is_beta BOOLEAN DEFAULT false"))
+            _conn.execute(_text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_price_id TEXT"))
+            _conn.execute(_text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_status TEXT"))
+            _conn.execute(_text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS trial_ends_at TIMESTAMPTZ"))
+            _conn.execute(_text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT"))
+            _conn.execute(_text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT"))
+            # accounts — pipeline columns used on every list view
+            _conn.execute(_text("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS pipeline_stage VARCHAR DEFAULT 'new'"))
+            _conn.execute(_text("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS pipeline_updated_at TIMESTAMPTZ"))
+        _eng.dispose()
+        log.info("Emergency column safety-net applied")
+    except Exception as _e:
+        log.warning("Emergency column safety-net skipped: %s", _e)
 
 
 @app.on_event("shutdown")
@@ -519,73 +1020,101 @@ def shutdown():
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 
+_MAX_FAILED_LOGINS = 10       # lock after this many consecutive failures
+_LOCKOUT_MINUTES   = 30       # locked for this long
+
 @app.post("/api/auth/login")
 @limiter.limit("10/minute")
 def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
+    from datetime import timezone as _tz
     user = db.query(models.User).filter(models.User.username == data.username).first()
     if not user:
-        # Also allow login by email address
         user = db.query(models.User).filter(models.User.email == data.username).first()
+
+    # Check lockout before verifying password to avoid timing oracle
+    if user and user.locked_until:
+        if datetime.now(_tz.utc) < user.locked_until:
+            remaining = int((user.locked_until - datetime.now(_tz.utc)).total_seconds() // 60) + 1
+            raise HTTPException(status_code=429, detail=f"Account locked due to too many failed attempts. Try again in {remaining} minute(s).")
+        else:
+            # Lock expired — reset counter
+            user.failed_login_count = 0
+            user.locked_until = None
+
     if not user or not verify_password(data.password, user.password_hash):
+        if user:
+            try:
+                user.failed_login_count = (user.failed_login_count or 0) + 1
+                if user.failed_login_count >= _MAX_FAILED_LOGINS:
+                    user.locked_until = datetime.now(_tz.utc) + timedelta(minutes=_LOCKOUT_MINUTES)
+                    _audit(db, "auth.lockout", request=request,
+                           current={"sub": user.username, "tenant_id": user.tenant_id},
+                           detail=f"locked for {_LOCKOUT_MINUTES}min after {user.failed_login_count} failures")
+                db.commit()
+            except Exception:
+                db.rollback()
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is disabled")
+
+    # Block unverified emails — only if the user has an email set and verification
+    # is enabled (REQUIRE_EMAIL_VERIFICATION=true). Admin-created users with no email
+    # are always allowed through.
+    if (
+        os.getenv("REQUIRE_EMAIL_VERIFICATION", "").lower() in ("1", "true", "yes")
+        and user.email
+        and not getattr(user, "email_verified", True)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Please verify your email address before logging in. Check your inbox for the verification link.",
+        )
+
+    # Successful login — reset failure counter (guarded in case migration is pending)
+    try:
+        user.failed_login_count = 0
+        user.locked_until       = None
+        user.last_login_at      = datetime.now(_tz.utc)
+        db.commit()
+    except Exception:
+        db.rollback()
+
     tenant_id = user.tenant_id or 1
+    _audit(db, "auth.login", request=request,
+           current={"sub": user.username, "tenant_id": tenant_id},
+           detail=f"role={user.role}")
     return {"access_token": create_token(user.username, user.role, tenant_id), "token_type": "bearer"}
 
 
-@app.post("/api/auth/recover")
-def recover_account(db: Session = Depends(get_db)):
-    """
-    Emergency account recovery — only works when RESET_PASSWORD_FOR env var is set.
-    Format: RESET_PASSWORD_FOR=username:newpassword
-    Returns the username that was reset (no credentials required).
-    Remove the env var immediately after recovering access.
-    """
-    import os as _os
-    _reset = _os.getenv("RESET_PASSWORD_FOR", "").strip()
-    if not _reset or ":" not in _reset:
-        raise HTTPException(403, "Recovery not enabled. Set RESET_PASSWORD_FOR=username:newpassword in Railway Variables.")
-    _username, _new_pass = _reset.split(":", 1)
-    _username = _username.strip()
-    _new_pass = _new_pass.strip()
-    if not _username or not _new_pass:
-        raise HTTPException(400, "Invalid RESET_PASSWORD_FOR format. Use username:newpassword")
-    user = db.query(models.User).filter(models.User.username == _username).first()
-    if not user:
-        all_users = [u.username for u in db.query(models.User).all()]
-        raise HTTPException(404, f"User '{_username}' not found. Existing users: {all_users}")
-    user.password_hash = hash_password(_new_pass)
-    user.is_active = True
-    db.commit()
-    return {"ok": True, "recovered_user": _username, "message": "Password reset. Log in now, then REMOVE RESET_PASSWORD_FOR from Railway Variables."}
+@app.post("/api/auth/logout", status_code=200)
+def logout(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(bearer),
+    current: dict = Depends(require_auth),
+):
+    """Revoke the current JWT so it cannot be reused even before it expires."""
+    import time as _time
+    token = credentials.credentials
+    exp   = current.get("exp", int(_time.time()) + TOKEN_EXPIRE_HOURS * 3600)
+    revoke_token(token, exp)
+    return {"ok": True}
 
 
-@app.get("/api/auth/recover", include_in_schema=False)
-def recover_account_get(db: Session = Depends(get_db)):
-    """GET version — just visit the URL in a browser to trigger the reset."""
-    from fastapi.responses import HTMLResponse
-    import os as _os
-    _reset = _os.getenv("RESET_PASSWORD_FOR", "").strip()
-    if not _reset or ":" not in _reset:
-        return HTMLResponse("<h2 style='font-family:sans-serif;color:red'>&#10060; RESET_PASSWORD_FOR not set in Railway Variables.</h2>")
-    _username, _new_pass = _reset.split(":", 1)
-    _username = _username.strip()
-    _new_pass = _new_pass.strip()
-    user = db.query(models.User).filter(models.User.username == _username).first()
-    if not user:
-        all_users = [u.username for u in db.query(models.User).all()]
-        return HTMLResponse(f"<h2 style='font-family:sans-serif;color:red'>&#10060; User '{_username}' not found.<br>Existing users: {all_users}</h2>")
-    user.password_hash = hash_password(_new_pass)
-    user.is_active = True
-    db.commit()
-    return HTMLResponse(f"""
-    <div style='font-family:sans-serif;max-width:400px;margin:80px auto;padding:20px;background:#dcfce7;border:2px solid #86efac;border-radius:12px'>
-    <h2 style='color:#166534'>&#9989; Password Reset!</h2>
-    <p style='color:#166534'>Username: <strong>{_username}</strong><br>
-    You can now <a href='/login'>log in</a> with your new password.<br><br>
-    <strong>Important:</strong> Delete RESET_PASSWORD_FOR from Railway Variables now.</p>
-    </div>""")
+@app.post("/api/auth/refresh")
+def refresh_token(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer),
+    current: dict = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """Issue a new JWT with fresh 7-day expiry. Client should call when token < 24 h from expiry."""
+    user = db.query(models.User).filter_by(
+        username=current["sub"],
+        tenant_id=current.get("tenant_id"),
+    ).first()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="User not found or inactive")
+    return {"access_token": create_token(user.username, user.role, user.tenant_id), "token_type": "bearer"}
 
 
 @app.post("/api/auth/register")
@@ -644,11 +1173,7 @@ def register(request: Request, data: RegisterRequest, db: Session = Depends(get_
           </a>
           <p style="color:#999;font-size:11px">Link expires in 48 hours.</p>
         </div>"""
-        try:
-            from notifications import send_email as _send_email
-            _send_email(data.email, "Verify your SellerPulse email", _html)
-        except Exception as _e:
-            log.warning("Verification email failed: %s", _e)
+        _send_email_bg(data.email, "Verify your SellerPulse email", _html)
 
     db.commit()
 
@@ -754,10 +1279,7 @@ def forgot_password(request: Request, data: ForgotPasswordRequest, db: Session =
           <p style="color:#666;font-size:12px">If you didn't request this, ignore this email.</p>
           <p style="color:#999;font-size:11px">Link: {reset_url}</p>
         </div>"""
-        try:
-            send_email(user.email, "Reset your SellerPulse password", html)
-        except Exception as e:
-            log.warning("Password reset email failed: %s", e)
+        _send_email_bg(user.email, "Reset your SellerPulse password", html)
 
     return {"ok": True}
 
@@ -785,6 +1307,8 @@ def reset_password(request: Request, data: ResetPasswordRequest, db: Session = D
         raise HTTPException(400, "User not found")
 
     user.password_hash = hash_password(data.new_password)
+    user.failed_login_count = 0
+    user.locked_until = None
     row.used = True
     db.commit()
     return {"ok": True}
@@ -809,7 +1333,9 @@ def verify_email(token: str, db: Session = Depends(get_db)):
 
 @app.put("/api/auth/profile")
 def update_profile(
+    request: Request,
     data: ProfileUpdate,
+    credentials: HTTPAuthorizationCredentials = Depends(bearer),
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
 ):
@@ -818,7 +1344,7 @@ def update_profile(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Password change requires current password verification
+    password_changed = False
     if data.new_password:
         if not data.current_password:
             raise HTTPException(status_code=400, detail="current_password is required to change password")
@@ -827,6 +1353,7 @@ def update_profile(
         if len(data.new_password) < 8:
             raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
         user.password_hash = hash_password(data.new_password)
+        password_changed = True
 
     new_username = None
     if data.username and data.username.strip() and data.username.strip() != user.username:
@@ -846,9 +1373,12 @@ def update_profile(
 
     db.commit()
 
+    import time as _time
     new_token = None
-    if new_username:
-        new_token = create_token(new_username, user.role, user.tenant_id or 1)
+    if new_username or password_changed:
+        # Revoke old token and issue a fresh one
+        revoke_token(credentials.credentials, current.get("exp", int(_time.time()) + TOKEN_EXPIRE_HOURS * 3600))
+        new_token = create_token(user.username, user.role, user.tenant_id or 1)
 
     return {
         "message": "Profile updated",
@@ -860,7 +1390,7 @@ def update_profile(
 # ─── Debug (admin only) ───────────────────────────────────────────────────────
 
 @app.get("/api/debug/net")
-def debug_net():
+def debug_net(current: dict = Depends(require_superadmin)):
     import socket, httpx
     results = {}
     try:
@@ -869,6 +1399,7 @@ def debug_net():
     except Exception as e:
         results["tcp_443"] = str(e)
     key = os.getenv("SENDGRID_API_KEY", "").strip()
+    key_preview = (key[:8] + "…") if len(key) > 8 else "(not set)"
     try:
         r = httpx.post(
             "https://api.sendgrid.com/v3/mail/send",
@@ -882,6 +1413,7 @@ def debug_net():
         results["api_body"] = r.text[:300]
     except Exception as e:
         results["api_post"] = str(e)
+    results["key_preview"] = key_preview
     return results
 
 
@@ -1018,12 +1550,15 @@ def aria_status(db: Session = Depends(get_db), current: dict = Depends(require_a
 async def aria_run_one(product_id: int, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     if not aria_repricer.aria_configured():
         raise HTTPException(503, "ANTHROPIC_API_KEY is not configured")
-    product = db.query(models.Product).filter(models.Product.id == product_id).first()
+    tid = current.get("tenant_id")
+    product = db.query(models.Product).filter(
+        models.Product.id == product_id,
+        models.Product.tenant_id == tid,
+    ).first()
     if not product:
         raise HTTPException(404, "Product not found")
     if not product.buy_box:
         raise HTTPException(400, "Product needs a Buy Box price to reprice")
-    tid = current.get("tenant_id")
     strategy = aria_repricer._get_strategy(db, tenant_id=tid)
     result = await aria_repricer.price_product(product, strategy)
     product.aria_suggested_price = result["price"]
@@ -1049,15 +1584,113 @@ async def aria_run_all(force: bool = False, db: Session = Depends(get_db), curre
         raise HTTPException(500, detail=f"Aria run failed: {str(e)}")
 
 
+# ─── Waitlist ─────────────────────────────────────────────────────────────────
+
+class _WaitlistIn(BaseModel):
+    email:       str
+    name:        Optional[str] = None
+    company:     Optional[str] = None
+    monthly_gmv: Optional[str] = None
+    source:      Optional[str] = None
+    notes:       Optional[str] = None
+
+@app.post("/api/waitlist", status_code=201)
+@limiter.limit("5/minute")
+def join_waitlist(request: Request, data: _WaitlistIn, db: Session = Depends(get_db)):
+    """Public endpoint — no auth required. Captures waitlist signups."""
+    email = (data.email or "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(400, "Valid email required")
+    existing = db.query(models.WaitlistEntry).filter_by(email=email).first()
+    if existing:
+        return {"ok": True, "message": "You're already on the list!"}
+    entry = models.WaitlistEntry(
+        email=email,
+        name=(data.name or "").strip() or None,
+        company=(data.company or "").strip() or None,
+        monthly_gmv=data.monthly_gmv,
+        source=data.source,
+        notes=(data.notes or "").strip() or None,
+    )
+    db.add(entry)
+    db.commit()
+    log.info("Waitlist signup: %s", email)
+    return {"ok": True, "message": "You're on the list! We'll be in touch soon."}
+
+
+@app.get("/api/admin/waitlist")
+def get_waitlist(
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_superadmin),
+):
+    """Superadmin only — returns all waitlist entries newest-first."""
+    entries = db.query(models.WaitlistEntry).order_by(models.WaitlistEntry.created_at.desc()).all()
+    return [
+        {
+            "id":          e.id,
+            "email":       e.email,
+            "name":        e.name,
+            "company":     e.company,
+            "monthly_gmv": e.monthly_gmv,
+            "source":      e.source,
+            "notes":       e.notes,
+            "created_at":  e.created_at.isoformat() if e.created_at else None,
+        }
+        for e in entries
+    ]
+
+
+@app.get("/api/admin/waitlist/export.csv")
+def export_waitlist_csv(
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_superadmin),
+):
+    """Download all waitlist entries as CSV."""
+    import csv, io as _io
+    from fastapi.responses import StreamingResponse
+    entries = db.query(models.WaitlistEntry).order_by(models.WaitlistEntry.created_at.asc()).all()
+    buf = _io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["id", "email", "name", "company", "monthly_gmv", "source", "notes", "created_at"])
+    for e in entries:
+        writer.writerow([e.id, e.email, e.name or "", e.company or "", e.monthly_gmv or "",
+                         e.source or "", e.notes or "", e.created_at])
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.read()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=waitlist.csv"},
+    )
+
+
 @app.get("/api/health")
-def health_check():
-    """Simple health check — returns DB table list to confirm startup succeeded."""
+def health_check(db: Session = Depends(get_db)):
+    """Health check — tests DB and Redis. Returns 503 if either is down."""
+    issues = []
+
+    # DB check
     try:
-        from sqlalchemy import inspect as _si
-        tables = _si(engine).get_table_names()
-        return {"status": "ok", "tables": tables}
+        db.execute(text("SELECT 1"))
     except Exception as e:
-        return {"status": "error", "detail": str(e)}
+        issues.append(f"db: {e}")
+
+    # Redis check (optional — only fail if REDIS_URL is set)
+    redis_status = "not_configured"
+    redis_url = os.getenv("REDIS_URL", "")
+    if redis_url:
+        try:
+            import redis as _redis
+            r = _redis.from_url(redis_url, socket_connect_timeout=2, socket_timeout=2)
+            r.ping()
+            redis_status = "ok"
+        except Exception as e:
+            issues.append(f"redis: {e}")
+            redis_status = "error"
+
+    if issues:
+        raise HTTPException(status_code=503, detail={"status": "degraded", "issues": issues})
+
+    return {"status": "ok", "db": "ok", "redis": redis_status}
 
 
 @app.get("/api/repricer/logs")
@@ -1295,7 +1928,17 @@ def notification_status(db: Session = Depends(get_db), current: dict = Depends(r
     return {
         "smtp_configured": _smtp_configured(),
         "smtp_host": os.getenv("SMTP_HOST", ""),
-        "smtp_user": (os.getenv("SENDGRID_API_KEY") and "SendGrid API") or (os.getenv("RESEND_API_KEY") and "Resend API") or os.getenv("SMTP_USER", ""),
+        "smtp_user": (
+            (os.getenv("SENDGRID_API_KEY") and "SendGrid API") or
+            (os.getenv("RESEND_API_KEY") and "Resend API") or
+            os.getenv("SMTP_USER", "")
+        ),
+        "email_provider": (
+            "sendgrid" if os.getenv("SENDGRID_API_KEY") else
+            "resend"   if os.getenv("RESEND_API_KEY")   else
+            "smtp"     if (os.getenv("SMTP_HOST") and os.getenv("SMTP_USER")) else
+            "none"
+        ),
         "notify_hour_utc": int(os.getenv("NOTIFY_HOUR", "8")),
         "admin_email": user.email if user else None,
         "inbound_configured": bool(inbound_email),
@@ -1320,6 +1963,11 @@ def list_users(db: Session = Depends(get_db), current: dict = Depends(require_ad
 
 @app.post("/api/users", response_model=schemas.UserOut, status_code=201)
 def create_user(data: schemas.UserCreate, db: Session = Depends(get_db), current: dict = Depends(require_admin)):
+    tid = current.get("tenant_id")
+    if tid:
+        allowed, msg = stripe_billing.check_plan_limit(db, tid, "users")
+        if not allowed:
+            raise HTTPException(status_code=403, detail=msg)
     if db.query(models.User).filter(models.User.username == data.username).first():
         raise HTTPException(status_code=409, detail="Username already exists")
     if data.role not in ("admin", "user"):
@@ -1338,6 +1986,8 @@ def create_user(data: schemas.UserCreate, db: Session = Depends(get_db), current
     db.add(user)
     db.commit()
     db.refresh(user)
+    _audit(db, "user.create", current=current,
+           target=f"user:{user.id}", detail=f"username={user.username} role={user.role}")
     return user
 
 
@@ -1401,6 +2051,8 @@ def delete_user(user_id: int, db: Session = Depends(get_db), payload: dict = Dep
         raise HTTPException(status_code=404, detail="User not found")
     if user.username == payload["sub"]:
         raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    _audit(db, "user.delete", current=payload,
+           target=f"user:{user_id}", detail=f"username={user.username}")
     db.delete(user)
     db.commit()
 
@@ -1511,6 +2163,181 @@ async def billing_webhook(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(400, str(e))
 
 
+# ─── Audit Log ────────────────────────────────────────────────────────────────
+
+@app.get("/api/admin/audit-log")
+def get_audit_log(
+    tenant_id: int = None,
+    action: str = None,
+    limit: int = 200,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_superadmin),
+):
+    """Platform-wide audit log (superadmin only). Filter by tenant or action."""
+    q = db.query(models.AuditLog).order_by(models.AuditLog.created_at.desc())
+    if tenant_id:
+        q = q.filter(models.AuditLog.tenant_id == tenant_id)
+    if action:
+        q = q.filter(models.AuditLog.action.ilike(f"%{action}%"))
+    rows = q.offset(offset).limit(min(limit, 500)).all()
+    return [
+        {
+            "id":        r.id,
+            "tenant_id": r.tenant_id,
+            "username":  r.username,
+            "action":    r.action,
+            "target":    r.target,
+            "detail":    r.detail,
+            "ip":        r.ip,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+
+
+# ─── GDPR / Data Export ───────────────────────────────────────────────────────
+
+@app.get("/api/tenant/export")
+def export_tenant_data(
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_admin),
+):
+    """
+    Export all data belonging to the current tenant as a single JSON document.
+    Tenants can use this to satisfy GDPR/CCPA data portability requests.
+    """
+    from sqlalchemy.orm import joinedload
+    tid = current.get("tenant_id")
+    if not tid:
+        raise HTTPException(400, "No tenant context")
+
+    tenant = db.query(models.Tenant).filter_by(id=tid).first()
+    users  = db.query(models.User).filter_by(tenant_id=tid).all()
+    accounts = db.query(models.Account).filter_by(tenant_id=tid).all()
+    contacts = db.query(models.Contact).filter(
+        models.Contact.account_id.in_([a.id for a in accounts])
+    ).all()
+    follow_ups = db.query(models.FollowUp).filter_by(tenant_id=tid).all()
+    products = db.query(models.Product).filter_by(tenant_id=tid).all()
+    orders   = db.query(models.Order).filter_by(tenant_id=tid).all()
+
+    def _dt(v):
+        return v.isoformat() if v else None
+
+    payload = {
+        "exported_at": datetime.utcnow().isoformat(),
+        "tenant": {
+            "id": tenant.id, "name": tenant.name, "slug": tenant.slug,
+            "plan": tenant.plan, "created_at": _dt(tenant.created_at),
+        },
+        "users": [
+            {"id": u.id, "username": u.username, "email": u.email,
+             "role": u.role, "created_at": _dt(u.created_at)}
+            for u in users
+        ],
+        "accounts": [
+            {"id": a.id, "name": a.name, "email": a.email, "phone": a.phone,
+             "status": a.status, "account_type": a.account_type,
+             "pipeline_stage": a.pipeline_stage, "created_at": _dt(a.created_at)}
+            for a in accounts
+        ],
+        "contacts": [
+            {"id": c.id, "account_id": c.account_id,
+             "first_name": c.first_name, "last_name": c.last_name,
+             "email": c.email, "phone": c.phone}
+            for c in contacts
+        ],
+        "follow_ups": [
+            {"id": f.id, "account_id": f.account_id, "subject": f.subject,
+             "status": f.status, "priority": f.priority,
+             "due_date": _dt(f.due_date), "created_at": _dt(f.created_at)}
+            for f in follow_ups
+        ],
+        "products": [
+            {"id": p.id, "name": p.product_name, "asin": p.asin, "sku": p.seller_sku,
+             "status": p.status, "cost": p.buy_cost, "created_at": _dt(p.created_at)}
+            for p in products
+        ],
+        "orders": [
+            {"id": o.id, "status": o.status,
+             "total_amount": o.total, "created_at": _dt(o.created_at)}
+            for o in orders
+        ],
+    }
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        content=payload,
+        headers={"Content-Disposition": f'attachment; filename="sellerpulse-export-{tid}.json"'},
+    )
+
+
+@app.delete("/api/tenant/me", status_code=200)
+def delete_tenant_account(
+    body: dict = {},
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_admin),
+):
+    """
+    GDPR right to erasure — permanently anonymise all tenant data.
+    Requires confirmation: {"confirm": "DELETE MY ACCOUNT"}.
+    Soft-deletes the tenant and scrubs PII from all related records.
+    Superadmins cannot delete their own platform account this way.
+    """
+    if current.get("role") == "superadmin":
+        raise HTTPException(403, "Platform admin account cannot be self-deleted.")
+    if body.get("confirm") != "DELETE MY ACCOUNT":
+        raise HTTPException(400, 'Send {"confirm": "DELETE MY ACCOUNT"} to confirm erasure.')
+
+    tid = current.get("tenant_id")
+    if not tid:
+        raise HTTPException(400, "No tenant context")
+
+    from datetime import timezone as _tz
+
+    tenant = db.query(models.Tenant).filter_by(id=tid).first()
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+
+    # Scrub PII from all users
+    for u in db.query(models.User).filter_by(tenant_id=tid).all():
+        u.email         = None
+        u.password_hash = "DELETED"
+        u.is_active     = False
+
+    # Scrub PII from accounts and contacts
+    for a in db.query(models.Account).filter_by(tenant_id=tid).all():
+        a.email   = None
+        a.phone   = None
+        a.website = None
+
+    for c in db.query(models.Contact).filter(
+        models.Contact.account_id.in_(
+            db.query(models.Account.id).filter_by(tenant_id=tid)
+        )
+    ).all():
+        c.email = None
+        c.phone = None
+
+    # Remove Amazon credentials
+    cred = db.query(models.AmazonCredential).filter_by(tenant_id=tid).first()
+    if cred:
+        cred.sp_refresh_token  = None
+        cred.lwa_client_secret = None
+
+    # Soft-delete tenant
+    tenant.is_active  = False
+    tenant.deleted_at = datetime.now(_tz.utc)
+    tenant.name       = f"[Deleted Tenant {tid}]"
+
+    _audit(db, "tenant.gdpr_erasure", current=current,
+           target=f"tenant:{tid}", detail="Self-requested GDPR erasure")
+    db.commit()
+
+    return {"ok": True, "message": "Your account and associated data have been scheduled for deletion."}
+
+
 # ─── Super-Admin Billing Dashboard (platform owner only) ─────────────────────
 
 @app.get("/api/admin/billing/overview")
@@ -1578,6 +2405,7 @@ def admin_billing_tenants(
             "slug":              t.slug,
             "plan":              t.plan,
             "is_active":         t.is_active,
+            "is_beta":           getattr(t, 'is_beta', False),
             "stripe_status":     t.stripe_status,
             "stripe_customer_id": t.stripe_customer_id,
             "trial_ends_at":     t.trial_ends_at.isoformat() if t.trial_ends_at else None,
@@ -1651,6 +2479,8 @@ def admin_suspend_tenant(
         raise HTTPException(404, "Tenant not found")
     tenant.is_active = False
     db.commit()
+    _audit(db, "tenant.suspend", current=current,
+           target=f"tenant:{tenant_id}", detail=f"name={tenant.name}")
     return {"ok": True, "tenant_id": tenant_id, "is_active": False}
 
 
@@ -1666,7 +2496,101 @@ def admin_activate_tenant(
         raise HTTPException(404, "Tenant not found")
     tenant.is_active = True
     db.commit()
+    _audit(db, "tenant.activate", current=current,
+           target=f"tenant:{tenant_id}", detail=f"name={tenant.name}")
     return {"ok": True, "tenant_id": tenant_id, "is_active": True}
+
+
+@app.post("/api/admin/billing/tenants/{tenant_id}/grant-access")
+def admin_grant_access(
+    tenant_id: int,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_superadmin),
+):
+    """Clear stripe_status so the tenant bypasses the paywall (permanent free access)."""
+    tenant = db.query(models.Tenant).filter_by(id=tenant_id).first()
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+    tenant.is_active = True
+    tenant.stripe_status = None
+    tenant.trial_ends_at = None
+    db.commit()
+    _audit(db, "tenant.grant_access", current=current,
+           target=f"tenant:{tenant_id}", detail=f"name={tenant.name}")
+    return {"ok": True, "tenant_id": tenant_id}
+
+
+@app.post("/api/admin/billing/tenants/{tenant_id}/beta")
+def admin_set_beta(
+    tenant_id: int,
+    body: dict = {},
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_superadmin),
+):
+    """Toggle beta status. Beta tenants get permanent full access regardless of billing."""
+    tenant = db.query(models.Tenant).filter_by(id=tenant_id).first()
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+    is_beta = body.get("is_beta", True)
+    tenant.is_beta   = is_beta
+    tenant.is_active = True
+    if is_beta:
+        tenant.plan          = "enterprise"
+        tenant.stripe_status = None
+        tenant.trial_ends_at = None
+    db.commit()
+    _audit(db, "tenant.beta_set", current=current,
+           target=f"tenant:{tenant_id}",
+           detail=f"name={tenant.name} is_beta={is_beta}")
+    return {"ok": True, "tenant_id": tenant_id, "is_beta": is_beta}
+
+
+@app.get("/api/admin/billing/tenants/{tenant_id}/users")
+def admin_tenant_users(
+    tenant_id: int,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_superadmin),
+):
+    """List all users for a tenant with their login status."""
+    users = db.query(models.User).filter_by(tenant_id=tenant_id).order_by(models.User.created_at).all()
+    return [
+        {
+            "id":             u.id,
+            "username":       u.username,
+            "email":          u.email,
+            "role":           u.role,
+            "is_active":      u.is_active,
+            "email_verified": u.email_verified,
+            "created_at":     u.created_at.isoformat() if u.created_at else None,
+        }
+        for u in users
+    ]
+
+
+@app.post("/api/admin/billing/tenants/{tenant_id}/users/{user_id}/unlock")
+def admin_unlock_user(
+    tenant_id: int,
+    user_id: int,
+    body: dict = {},
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_superadmin),
+):
+    """Enable a disabled user and optionally reset their password."""
+    user = db.query(models.User).filter_by(id=user_id, tenant_id=tenant_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    user.is_active = True
+    user.email_verified = True
+    user.failed_login_count = 0
+    user.locked_until = None
+    new_password = body.get("new_password", "").strip()
+    if new_password:
+        user.password_hash = hash_password(new_password)
+    db.commit()
+    _audit(db, "user.unlock", current=current,
+           target=f"user:{user_id}",
+           detail=f"username={user.username} tenant={tenant_id} password_reset={bool(new_password)}")
+    return {"ok": True, "user_id": user_id, "username": user.username, "password_reset": bool(new_password)}
 
 
 @app.put("/api/admin/billing/tenants/{tenant_id}/plan")
@@ -1683,8 +2607,11 @@ def admin_change_plan(
     new_plan = body.get("plan", "starter")
     if new_plan not in stripe_billing.PLANS:
         raise HTTPException(400, f"Unknown plan: {new_plan}")
+    old_plan = tenant.plan
     tenant.plan = new_plan
     db.commit()
+    _audit(db, "tenant.plan_change", current=current,
+           target=f"tenant:{tenant_id}", detail=f"name={tenant.name} {old_plan}->{new_plan}")
     return {"ok": True, "tenant_id": tenant_id, "plan": new_plan}
 
 
@@ -1827,16 +2754,16 @@ async def _amazon_fetch_orders(access_token: str, params_first: list, sp_base: s
                     print(f"[orders] 429 QuotaExceeded — returning {len(orders)} orders fetched so far", flush=True)
                     break
                 if resp.status_code != 200:
-                    raise HTTPException(502, f"Amazon Orders API {resp.status_code}: {resp.text[:400]}")
+                    raise HTTPException(422, f"Amazon Orders API {resp.status_code}: {resp.text[:400]}")
                 body = resp.json().get("payload", {})
                 orders.extend(body.get("Orders", []))
                 next_token = body.get("NextToken")
                 if not next_token:
                     break
     except _httpx.TimeoutException:
-        raise HTTPException(502, "Amazon Orders API request timed out — try again in a moment")
+        raise HTTPException(422, "Amazon Orders API request timed out — try again in a moment")
     except _httpx.RequestError as exc:
-        raise HTTPException(502, f"Amazon Orders API network error: {exc}")
+        raise HTTPException(422, f"Amazon Orders API network error: {exc}")
     return orders
 
 
@@ -2132,25 +3059,71 @@ async def get_dashboard_amazon_sales(
     }
 
 
+# Per-tenant cache for FBA live inventory — keyed by tenant_id
+# {tenant_id: {"payload": dict, "fetched_at": datetime}}
+_fba_live_cache: dict = {}
+_FBA_LIVE_CACHE_TTL = 90  # seconds
+
+
 @app.get("/api/dashboard/amazon-live")
 async def get_dashboard_amazon_live(db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     """
     Real-time Amazon FBA inventory snapshot for the Dashboard.
-    Hits Amazon SP-API directly; returns 503 if not configured.
+    Serves a 90-second per-tenant cache to avoid hammering Amazon at scale.
+    On any Amazon error, returns the last cached payload (or zeros) — never 502s the client.
     """
+    from datetime import timezone as _tz_live
+    import httpx as _httpx
+
     tenant_id = current.get("tenant_id", 1)
+    now = datetime.now(_tz_live.utc)
+
+    # ── Buy-box stats come from DB — always fresh, no Amazon call needed ──────
+    approved_products = db.query(models.Product).filter(
+        models.Product.status == "approved",
+        models.Product.tenant_id == tenant_id,
+    ).all()
+    approved_with_bb = [p for p in approved_products if p.buy_box and p.buy_box > 0]
+    competitive = sum(
+        1 for p in approved_with_bb
+        if p.aria_suggested_price and p.aria_suggested_price <= p.buy_box
+    )
+    buy_box_pct = round(competitive / len(approved_with_bb) * 100, 1) if approved_with_bb else 0.0
+
+    # ── Serve cache if still fresh ────────────────────────────────────────────
+    _cached = _fba_live_cache.get(tenant_id)
+    if _cached and (now - _cached["fetched_at"]).total_seconds() < _FBA_LIVE_CACHE_TTL:
+        payload = dict(_cached["payload"])
+        payload["buy_box_pct"] = buy_box_pct
+        payload["approved_skus"] = len(approved_products)
+        payload["from_cache"] = True
+        return payload
+
+    # ── Credentials check ─────────────────────────────────────────────────────
     cred = _get_tenant_amazon_creds(tenant_id, db)
     if not cred or not cred.sp_refresh_token:
-        raise HTTPException(503, "Amazon SP-API credentials are not configured")
+        # Return zeros — don't crash the dashboard
+        return {
+            "fetched_at":        now.isoformat(),
+            "total_skus":        0,
+            "total_units":       0,
+            "total_fulfillable": 0,
+            "total_inbound":     0,
+            "total_reserved":    0,
+            "buy_box_pct":       buy_box_pct,
+            "approved_skus":     len(approved_products),
+            "top_items":         [],
+            "error":             "Amazon SP-API credentials are not configured",
+        }
 
-    import httpx as _httpx
-    access_token = await _get_tenant_access_token(cred)
-    mkt_id = cred.marketplace_id or _AMAZON_MKT_ID
-
+    # ── Fetch from Amazon ─────────────────────────────────────────────────────
+    amazon_error = None
     items = []
-    next_token = None
     try:
-        async with _httpx.AsyncClient(timeout=30) as client:
+        access_token = await _get_tenant_access_token(cred)
+        mkt_id = cred.marketplace_id or _AMAZON_MKT_ID
+        next_token = None
+        async with _httpx.AsyncClient(timeout=25) as client:
             while True:
                 params = {
                     "granularityType": "Marketplace",
@@ -2166,77 +3139,108 @@ async def get_dashboard_amazon_live(db: Session = Depends(get_db), current: dict
                     params=params,
                     headers={"x-amz-access-token": access_token},
                 )
-                if resp.status_code == 403:
-                    raise HTTPException(403, "Amazon SP-API access denied — check Seller Central permissions include FBA Inventory")
                 if resp.status_code == 429:
-                    print("[amazon-live] FBA inventory rate-limited (429) — returning partial results", flush=True)
+                    print(f"[amazon-live] tenant={tenant_id} rate-limited (429) — serving cache/partial", flush=True)
+                    amazon_error = "Amazon rate-limited — showing latest available data"
+                    break
+                if resp.status_code == 403:
+                    amazon_error = "Amazon SP-API access denied — check FBA Inventory permission in Seller Central"
                     break
                 if resp.status_code != 200:
-                    raise HTTPException(502, f"Amazon SP-API error {resp.status_code}: {resp.text[:300]}")
+                    amazon_error = f"Amazon SP-API returned {resp.status_code}"
+                    print(f"[amazon-live] tenant={tenant_id} SP-API {resp.status_code}: {resp.text[:200]}", flush=True)
+                    break
 
                 body = resp.json().get("payload", {})
                 for s in body.get("inventorySummaries", []):
                     details = s.get("inventoryDetails") or {}
-                    fulfillable = details.get("fulfillableQuantity") or 0
-                    inbound_shipped = details.get("inboundShippedQuantity") or 0
+                    fulfillable      = details.get("fulfillableQuantity") or 0
+                    inbound_shipped  = details.get("inboundShippedQuantity") or 0
                     inbound_receiving = details.get("inboundReceivingQuantity") or 0
-                    inbound_working = details.get("inboundWorkingQuantity") or 0
-                    reserved = (details.get("reservedQuantity") or {})
+                    inbound_working  = details.get("inboundWorkingQuantity") or 0
+                    reserved_obj     = details.get("reservedQuantity") or {}
                     reserved_qty = (
-                        (reserved.get("pendingCustomerOrderQuantity") or 0)
-                        + (reserved.get("pendingTransshipmentQuantity") or 0)
-                        + (reserved.get("fcProcessingQuantity") or 0)
+                        (reserved_obj.get("pendingCustomerOrderQuantity") or 0)
+                        + (reserved_obj.get("pendingTransshipmentQuantity") or 0)
+                        + (reserved_obj.get("fcProcessingQuantity") or 0)
                     )
                     total = fulfillable + inbound_shipped + inbound_receiving + inbound_working
                     asin = (s.get("asin") or "").upper()
                     items.append({
-                        "asin":              asin,
-                        "product_name":      s.get("productName") or s.get("sellerSku") or asin,
-                        "seller_sku":        s.get("sellerSku", ""),
-                        "fulfillable":       fulfillable,
-                        "inbound":           inbound_shipped + inbound_receiving + inbound_working,
-                        "reserved":          reserved_qty,
-                        "total":             total,
+                        "asin":         asin,
+                        "product_name": s.get("productName") or s.get("sellerSku") or asin,
+                        "seller_sku":   s.get("sellerSku", ""),
+                        "fulfillable":  fulfillable,
+                        "inbound":      inbound_shipped + inbound_receiving + inbound_working,
+                        "reserved":     reserved_qty,
+                        "total":        total,
                     })
 
                 next_token = body.get("nextToken")
                 if not next_token:
                     break
+
     except _httpx.TimeoutException:
-        raise HTTPException(502, "Amazon FBA Inventory API request timed out — try again in a moment")
+        amazon_error = "Amazon API timed out — showing latest available data"
+        print(f"[amazon-live] tenant={tenant_id} timeout", flush=True)
     except _httpx.RequestError as exc:
-        raise HTTPException(502, f"Amazon FBA Inventory API network error: {exc}")
+        amazon_error = f"Amazon API network error — showing latest available data"
+        print(f"[amazon-live] tenant={tenant_id} network error: {exc}", flush=True)
+    except HTTPException as exc:
+        amazon_error = exc.detail
+        print(f"[amazon-live] tenant={tenant_id} token error: {exc.detail}", flush=True)
+    except Exception as exc:
+        amazon_error = "Unexpected error fetching FBA inventory"
+        print(f"[amazon-live] tenant={tenant_id} unexpected: {exc}", flush=True)
 
-    total_skus = len(items)
-    total_fulfillable = sum(i["fulfillable"] for i in items)
-    total_inbound = sum(i["inbound"] for i in items)
-    total_reserved = sum(i["reserved"] for i in items)
-    total_units = sum(i["total"] for i in items)
+    # ── If Amazon call failed, serve stale cache rather than erroring ─────────
+    if amazon_error and not items:
+        if _cached:
+            payload = dict(_cached["payload"])
+            payload["buy_box_pct"]   = buy_box_pct
+            payload["approved_skus"] = len(approved_products)
+            payload["from_cache"]    = True
+            payload["error"]         = amazon_error
+            return payload
+        # No cache at all — return zeros with error message (never 502)
+        return {
+            "fetched_at":        now.isoformat(),
+            "total_skus":        0,
+            "total_units":       0,
+            "total_fulfillable": 0,
+            "total_inbound":     0,
+            "total_reserved":    0,
+            "buy_box_pct":       buy_box_pct,
+            "approved_skus":     len(approved_products),
+            "top_items":         [],
+            "error":             amazon_error,
+        }
 
-    # Top 10 SKUs by total quantity
+    # ── Build response and update cache ──────────────────────────────────────
     top_items = sorted(items, key=lambda x: x["total"], reverse=True)[:10]
-
-    # Pull buy-box stats from DB for approved products
-    approved_products = db.query(models.Product).filter(
-        models.Product.status == "approved"
-    ).all()
-    approved_with_bb = [p for p in approved_products if p.buy_box and p.buy_box > 0]
-    competitive = sum(
-        1 for p in approved_with_bb
-        if p.aria_suggested_price and p.aria_suggested_price <= p.buy_box
-    )
-    buy_box_pct = round(competitive / len(approved_with_bb) * 100, 1) if approved_with_bb else 0.0
-
-    from datetime import timezone
-    fetched_at = datetime.now(timezone.utc).isoformat()
+    result = {
+        "fetched_at":        now.isoformat(),
+        "total_skus":        len(items),
+        "total_units":       sum(i["total"] for i in items),
+        "total_fulfillable": sum(i["fulfillable"] for i in items),
+        "total_inbound":     sum(i["inbound"] for i in items),
+        "total_reserved":    sum(i["reserved"] for i in items),
+        "buy_box_pct":       buy_box_pct,
+        "approved_skus":     len(approved_products),
+        "top_items":         top_items,
+    }
+    if amazon_error:
+        result["error"] = amazon_error
+    else:
+        _fba_live_cache[tenant_id] = {"payload": result, "fetched_at": now}
 
     return {
-        "fetched_at":        fetched_at,
-        "total_skus":        total_skus,
-        "total_units":       total_units,
-        "total_fulfillable": total_fulfillable,
-        "total_inbound":     total_inbound,
-        "total_reserved":    total_reserved,
+        "fetched_at":        now.isoformat(),
+        "total_skus":        len(items),
+        "total_units":       sum(i["total"] for i in items),
+        "total_fulfillable": sum(i["fulfillable"] for i in items),
+        "total_inbound":     sum(i["inbound"] for i in items),
+        "total_reserved":    sum(i["reserved"] for i in items),
         "buy_box_pct":       buy_box_pct,
         "approved_skus":     len(approved_products),
         "top_items":         top_items,
@@ -2322,7 +3326,7 @@ async def get_dashboard_amazon_orders(
 
 @app.get("/api/debug/amazon-orders-tenant")
 async def debug_amazon_orders_tenant(
-    current: dict = Depends(require_auth),
+    current: dict = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     """
@@ -2447,9 +3451,17 @@ def list_accounts(
     status: Optional[str] = None,
     account_type: Optional[str] = None,
     territory: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
 ):
+    tid = current.get("tenant_id")
+    ck = make_key(tid, "accounts", search=search, status=status,
+                  account_type=account_type, territory=territory, limit=limit, offset=offset)
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
     q = db.query(models.Account)
     q = _filter_owned(q, models.Account, current)
     if search:
@@ -2464,7 +3476,9 @@ def list_accounts(
         q = q.filter(models.Account.account_type == account_type)
     if territory:
         q = q.filter(models.Account.territory == territory)
-    return q.order_by(models.Account.name).all()
+    result = q.order_by(models.Account.name).offset(offset).limit(min(limit, 1000)).all()
+    cache_set(ck, jsonable_encoder(result), ttl=30)
+    return result
 
 
 @app.get("/api/accounts/{account_id}", response_model=schemas.AccountOut)
@@ -2478,10 +3492,16 @@ def get_account(account_id: int, db: Session = Depends(get_db), current: dict = 
 
 @app.post("/api/accounts", response_model=schemas.AccountOut, status_code=201)
 def create_account(data: schemas.AccountCreate, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
-    acc = models.Account(**data.model_dump(), created_by=current["sub"], tenant_id=current.get("tenant_id"))
+    tid = current.get("tenant_id")
+    if tid:
+        allowed, msg = stripe_billing.check_plan_limit(db, tid, "accounts")
+        if not allowed:
+            raise HTTPException(status_code=403, detail=msg)
+    acc = models.Account(**data.model_dump(), created_by=current["sub"], tenant_id=tid)
     db.add(acc)
     db.commit()
     db.refresh(acc)
+    cache_bust(tid, "accounts")
     return acc
 
 
@@ -2671,7 +3691,7 @@ def send_account_email(
     """Send a branded wholesale email and log it to the account thread."""
     from notifications import send_email as _send_email, _smtp_configured
     if not _smtp_configured():
-        raise HTTPException(status_code=400, detail="Email not configured — add SENDGRID_API_KEY in Railway")
+        raise HTTPException(status_code=400, detail="Email not configured — add SENDGRID_API_KEY, RESEND_API_KEY, or SMTP_HOST+SMTP_USER+SMTP_PASS in Railway")
     acc = db.query(models.Account).filter(models.Account.id == account_id).first()
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -2693,8 +3713,8 @@ def send_account_email(
     # Resolve tenant store name so the From display name shows the seller's brand
     _from_name = None
     if _tid:
-        _t_cred = db.query(models.AmazonCredentials).filter(
-            models.AmazonCredentials.tenant_id == _tid
+        _t_cred = db.query(models.AmazonCredential).filter(
+            models.AmazonCredential.tenant_id == _tid
         ).first()
         _t_obj  = db.query(models.Tenant).filter(models.Tenant.id == _tid).first()
         _from_name = (
@@ -2758,7 +3778,10 @@ def get_account_emails(account_id: int, db: Session = Depends(get_db), current: 
     _check_owner(acc, current)
     msgs = (
         db.query(models.EmailMessage)
-        .filter(models.EmailMessage.account_id == account_id)
+        .filter(
+            models.EmailMessage.account_id == account_id,
+            models.EmailMessage.tenant_id == current.get("tenant_id"),
+        )
         .order_by(models.EmailMessage.created_at.asc())
         .all()
     )
@@ -2937,15 +3960,14 @@ async def inbound_email_webhook(request: Request, db: Session = Depends(get_db))
                 models.User.username == acc.created_by
             ).first()
             if owner and owner.email:
-                from notifications import send_email as _send_email, _smtp_configured
                 if _smtp_configured():
                     try:
                         # Resolve tenant store name for branded notification email
                         _notif_tid = inbound_tenant_id
                         _notif_store = None
                         if _notif_tid:
-                            _nc = db.query(models.AmazonCredentials).filter(
-                                models.AmazonCredentials.tenant_id == _notif_tid
+                            _nc = db.query(models.AmazonCredential).filter(
+                                models.AmazonCredential.tenant_id == _notif_tid
                             ).first()
                             _nt = db.query(models.Tenant).filter(
                                 models.Tenant.id == _notif_tid
@@ -2964,7 +3986,7 @@ async def inbound_email_webhook(request: Request, db: Session = Depends(get_db))
                             body_preview=body_text[:400],
                             store_name=_notif_store,
                         )
-                        _send_email(
+                        _send_email_bg(
                             owner.email,
                             f"New reply from {acc.name}: {subject}",
                             notif,
@@ -2979,12 +4001,18 @@ async def inbound_email_webhook(request: Request, db: Session = Depends(get_db))
 # ─── Contacts ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/contacts", response_model=List[schemas.ContactOut])
-def list_contacts(account_id: Optional[int] = None, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
+def list_contacts(
+    account_id: Optional[int] = None,
+    limit: int = 100,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_auth),
+):
     q = db.query(models.Contact)
     q = _filter_owned(q, models.Contact, current)
     if account_id:
         q = q.filter(models.Contact.account_id == account_id)
-    return q.all()
+    return q.order_by(models.Contact.id).offset(offset).limit(min(limit, 1000)).all()
 
 
 @app.post("/api/contacts", response_model=schemas.ContactOut, status_code=201)
@@ -3034,9 +4062,17 @@ def list_follow_ups(
     priority: Optional[str] = None,
     follow_up_type: Optional[str] = None,
     overdue_only: bool = False,
+    limit: int = 100,
+    offset: int = 0,
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
 ):
+    tid = current.get("tenant_id")
+    ck = make_key(tid, "follow_ups", account_id=account_id, status=status, priority=priority,
+                  follow_up_type=follow_up_type, overdue_only=overdue_only, limit=limit, offset=offset)
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
     q = db.query(models.FollowUp).options(joinedload(models.FollowUp.account), joinedload(models.FollowUp.contact))
     q = _filter_owned(q, models.FollowUp, current)
     if account_id:
@@ -3049,7 +4085,9 @@ def list_follow_ups(
         q = q.filter(models.FollowUp.follow_up_type == follow_up_type)
     if overdue_only:
         q = q.filter(models.FollowUp.status == "pending", models.FollowUp.due_date < datetime.utcnow())
-    return q.order_by(models.FollowUp.due_date.asc()).all()
+    result = q.order_by(models.FollowUp.due_date.asc()).offset(offset).limit(min(limit, 1000)).all()
+    cache_set(ck, jsonable_encoder(result), ttl=30)
+    return result
 
 
 @app.get("/api/follow-ups/{follow_up_id}", response_model=schemas.FollowUpOut)
@@ -3063,10 +4101,11 @@ def get_follow_up(follow_up_id: int, db: Session = Depends(get_db), current: dic
 
 @app.post("/api/follow-ups", response_model=schemas.FollowUpOut, status_code=201)
 def create_follow_up(data: schemas.FollowUpCreate, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
-    fu = models.FollowUp(**data.model_dump(), created_by=current["sub"])
+    fu = models.FollowUp(**data.model_dump(), created_by=current["sub"], tenant_id=current.get("tenant_id"))
     db.add(fu)
     db.commit()
     db.refresh(fu)
+    cache_bust(current.get("tenant_id"), "follow_ups")
     return db.query(models.FollowUp).options(joinedload(models.FollowUp.account), joinedload(models.FollowUp.contact)).filter(models.FollowUp.id == fu.id).first()
 
 
@@ -3101,16 +4140,25 @@ def delete_follow_up(follow_up_id: int, db: Session = Depends(get_db), current: 
 def list_orders(
     account_id: Optional[int] = None,
     status: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
 ):
+    tid = current.get("tenant_id")
+    ck = make_key(tid, "orders", account_id=account_id, status=status, limit=limit, offset=offset)
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
     q = db.query(models.Order).options(joinedload(models.Order.account), joinedload(models.Order.items))
     q = _filter_owned(q, models.Order, current)
     if account_id:
         q = q.filter(models.Order.account_id == account_id)
     if status:
         q = q.filter(models.Order.status == status)
-    return q.order_by(models.Order.order_date.desc()).all()
+    result = q.order_by(models.Order.order_date.desc()).offset(offset).limit(min(limit, 1000)).all()
+    cache_set(ck, jsonable_encoder(result), ttl=30)
+    return result
 
 
 @app.get("/api/orders/{order_id}", response_model=schemas.OrderOut)
@@ -3126,8 +4174,8 @@ def get_order(order_id: int, db: Session = Depends(get_db), current: dict = Depe
 def create_order(data: schemas.OrderCreate, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
     order_data = data.model_dump(exclude={"items"})
     if not order_data.get("order_number"):
-        count = db.query(func.count(models.Order.id)).scalar() + 1
-        order_data["order_number"] = f"ORD-{datetime.utcnow().year}-{count:04d}"
+        import uuid as _uuid
+        order_data["order_number"] = f"ORD-{datetime.utcnow().year}-{_uuid.uuid4().hex[:8].upper()}"
     order = models.Order(**order_data, created_by=current["sub"], tenant_id=current.get("tenant_id"))
     db.add(order)
     db.flush()
@@ -3141,6 +4189,7 @@ def create_order(data: schemas.OrderCreate, db: Session = Depends(get_db), curre
     order.total = round(subtotal - order.discount, 2)
     db.commit()
     db.refresh(order)
+    cache_bust(current.get("tenant_id"), "orders")
     return db.query(models.Order).options(joinedload(models.Order.account), joinedload(models.Order.items)).filter(models.Order.id == order.id).first()
 
 
@@ -3185,25 +4234,47 @@ def list_products(
     replenish: Optional[bool] = None,
     ungated: Optional[bool] = None,
     status: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
     db: Session = Depends(get_db),
     current: dict = Depends(require_auth),
 ):
-    q = db.query(models.Product)
-    q = _filter_owned(q, models.Product, current)
-    if search:
-        q = q.filter(or_(
-            models.Product.product_name.ilike(f"%{search}%"),
-            models.Product.asin.ilike(f"%{search}%"),
-            models.Product.order_number.ilike(f"%{search}%"),
-            models.Product.va_finder.ilike(f"%{search}%"),
-        ))
-    if replenish is not None:
-        q = q.filter(models.Product.replenish == replenish)
-    if ungated is not None:
-        q = q.filter(models.Product.ungated == ungated)
-    if status is not None:
-        q = q.filter(models.Product.status == status)
-    return q.order_by(models.Product.created_at.desc()).all()
+    tid = current.get("tenant_id")
+    ck = make_key(tid, "products", search=search, replenish=replenish, ungated=ungated,
+                  status=status, limit=limit, offset=offset)
+    try:
+        cached = cache_get(ck)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+    try:
+        q = db.query(models.Product)
+        q = _filter_owned(q, models.Product, current)
+        if search:
+            q = q.filter(or_(
+                models.Product.product_name.ilike(f"%{search}%"),
+                models.Product.asin.ilike(f"%{search}%"),
+                models.Product.order_number.ilike(f"%{search}%"),
+                models.Product.va_finder.ilike(f"%{search}%"),
+            ))
+        if replenish is not None:
+            q = q.filter(models.Product.replenish == replenish)
+        if ungated is not None:
+            q = q.filter(models.Product.ungated == ungated)
+        if status is not None:
+            q = q.filter(models.Product.status == status)
+        result = q.order_by(models.Product.created_at.desc()).offset(offset).limit(min(limit, 1000)).all()
+        log.info("[products] tenant=%s status=%s returned=%d", tid, status, len(result))
+        try:
+            cache_set(ck, jsonable_encoder(result), ttl=30)
+        except Exception:
+            pass
+        return result
+    except Exception as _e:
+        import traceback
+        print(f"[products] list failed: {_e}\n{traceback.format_exc()}", flush=True)
+        raise HTTPException(status_code=500, detail=f"Products query failed: {_e}")
 
 
 @app.get("/api/products/{product_id}", response_model=schemas.ProductOut)
@@ -3217,10 +4288,16 @@ def get_product(product_id: int, db: Session = Depends(get_db), current: dict = 
 
 @app.post("/api/products", response_model=schemas.ProductOut, status_code=201)
 def create_product(data: schemas.ProductCreate, db: Session = Depends(get_db), current: dict = Depends(require_auth)):
-    p = models.Product(**data.model_dump(), created_by=current["sub"], tenant_id=current.get("tenant_id"))
+    tid = current.get("tenant_id")
+    if tid:
+        allowed, msg = stripe_billing.check_plan_limit(db, tid, "products")
+        if not allowed:
+            raise HTTPException(status_code=403, detail=msg)
+    p = models.Product(**data.model_dump(), created_by=current["sub"], tenant_id=tid)
     db.add(p)
     db.commit()
     db.refresh(p)
+    cache_bust(tid, "products")
     return p
 
 
@@ -3329,6 +4406,53 @@ def approve_all_sourcing(db: Session = Depends(get_db), current: dict = Depends(
     updated = q.update({"status": "approved"}, synchronize_session=False)
     db.commit()
     return {"approved": updated}
+
+
+@app.post("/api/admin/fix-products-table")
+def fix_products_table(current: dict = Depends(require_superadmin)):
+    """Manually create products table if missing — superadmin only."""
+    import database as _db_module
+    _rengine = getattr(_db_module, '_read_engine', engine)
+    _ensure_products_table()
+    result = {}
+    for _label, _eng in [("primary", engine), ("replica", _rengine)]:
+        try:
+            with _eng.connect() as _c:
+                sp = _c.execute(text("SHOW search_path")).scalar()
+                rows = _c.execute(text(
+                    "SELECT table_schema FROM information_schema.tables WHERE table_name='products'"
+                )).fetchall()
+                schemas = [r[0] for r in rows]
+                count = _c.execute(text("SELECT COUNT(*) FROM public.products")).scalar() if schemas else None
+            result[_label] = {"search_path": sp, "schemas": schemas, "count": count}
+        except Exception as _e:
+            result[_label] = {"error": str(_e)}
+    result["same_engine"] = id(engine) == id(_rengine)
+    return result
+
+
+@app.get("/api/admin/products-debug")
+def products_debug(current: dict = Depends(require_superadmin)):
+    """Raw SQL diagnostic: what's actually in public.products — superadmin only."""
+    try:
+        with engine.connect() as _c:
+            total = _c.execute(text("SELECT COUNT(*) FROM public.products")).scalar()
+            by_tenant = _c.execute(text(
+                "SELECT tenant_id, status, COUNT(*) as n, SUM(quantity) as qty "
+                "FROM public.products GROUP BY tenant_id, status ORDER BY tenant_id, status"
+            )).fetchall()
+            sample = _c.execute(text(
+                "SELECT id, tenant_id, asin, status, quantity, fulfillment_channel, created_by "
+                "FROM public.products ORDER BY id DESC LIMIT 5"
+            )).fetchall()
+        return {
+            "total_rows": total,
+            "by_tenant_status": [{"tenant_id": r[0], "status": r[1], "count": r[2], "total_qty": r[3]} for r in by_tenant],
+            "sample_rows": [{"id": r[0], "tenant_id": r[1], "asin": r[2], "status": r[3], "quantity": r[4], "channel": r[5], "created_by": r[6]} for r in sample],
+            "current_user_tenant_id": current.get("tenant_id"),
+        }
+    except Exception as e:
+        raise HTTPException(500, detail=str(e))
 
 
 @app.post("/api/admin/purge-system-products")
@@ -4297,7 +5421,7 @@ async def keepa_amazon_search(body: dict, current: dict = Depends(require_auth))
         )
 
     if resp.status_code != 200:
-        raise HTTPException(502, f"Amazon catalog search failed ({resp.status_code})")
+        raise HTTPException(422, f"Amazon catalog search failed ({resp.status_code})")
 
     items = resp.json().get("items") or []
     asins = [item.get("asin") for item in items if item.get("asin")]
@@ -4344,11 +5468,11 @@ async def keepa_refresh_one(
         except Exception:
             raise HTTPException(429, "Keepa token limit reached. Please wait before syncing again.")
     if resp.status_code != 200:
-        raise HTTPException(502, f"Keepa returned {resp.status_code}: {resp.text[:200]}")
+        raise HTTPException(422, f"Keepa returned {resp.status_code}: {resp.text[:200]}")
 
     data = resp.json()
     if data.get("error"):
-        raise HTTPException(502, f"Keepa error: {data.get('status', 'unknown')}")
+        raise HTTPException(422, f"Keepa error: {data.get('status', 'unknown')}")
 
     products_data = data.get("products") or []
     if not products_data:
@@ -4485,7 +5609,7 @@ async def _get_amazon_access_token() -> str:
             },
         )
     if resp_data.status_code != 200:
-        raise HTTPException(502, f"Amazon LWA token error: {resp_data.text[:200]}")
+        raise HTTPException(422, f"Amazon LWA token error: {resp_data.text[:200]}")
     return resp_data.json()["access_token"]
 
 
@@ -4545,14 +5669,14 @@ async def _get_tenant_access_token(cred: models.AmazonCredential) -> str:
                 },
             )
     except _httpx.TimeoutException:
-        raise HTTPException(502, "Amazon LWA token request timed out — check network connectivity")
+        raise HTTPException(422, "Amazon LWA token request timed out — check network connectivity")
     except _httpx.RequestError as exc:
-        raise HTTPException(502, f"Amazon LWA token request failed: {exc}")
+        raise HTTPException(422, f"Amazon LWA token request failed: {exc}")
     if r.status_code != 200:
-        raise HTTPException(502, f"Amazon LWA token error {r.status_code}: {r.text[:200]}")
+        raise HTTPException(422, f"Amazon LWA token error {r.status_code}: {r.text[:200]}")
     token = r.json().get("access_token")
     if not token:
-        raise HTTPException(502, f"Amazon LWA response missing access_token: {r.text[:200]}")
+        raise HTTPException(422, f"Amazon LWA response missing access_token: {r.text[:200]}")
     return token
 
 
@@ -4592,8 +5716,8 @@ def _get_oauth_callback_url() -> str:
 
 
 @app.get("/api/debug/db-status")
-def debug_db_status(db: Session = Depends(get_db)):
-    """Public endpoint — shows tenant and user counts to diagnose bootstrap issues."""
+def debug_db_status(current: dict = Depends(require_superadmin), db: Session = Depends(get_db)):
+    """Superadmin only — shows tenant and user counts."""
     tenants = db.query(models.Tenant).all()
     users   = db.query(models.User).all()
     return {
@@ -4605,8 +5729,8 @@ def debug_db_status(db: Session = Depends(get_db)):
 
 
 @app.get("/api/debug/oauth-config")
-def debug_oauth_config():
-    """Public endpoint — shows exactly what redirect URI the app will send to Amazon."""
+def debug_oauth_config(current: dict = Depends(require_superadmin)):
+    """Superadmin only — shows OAuth redirect URI and app ID."""
     return {
         "app_url_env":    os.getenv("APP_URL", "(not set)"),
         "callback_url":   _get_oauth_callback_url(),
@@ -4742,7 +5866,7 @@ async def amazon_oauth_callback(
 
         tokens        = r.json()
         refresh_token = tokens.get("refresh_token", "")
-        print(f"[oauth_callback] refresh_token present={bool(refresh_token)} prefix={refresh_token[:8] if refresh_token else 'NONE'}", flush=True)
+        log.info("[oauth_callback] refresh_token present=%s", bool(refresh_token))
         if not refresh_token:
             return RedirectResponse("/onboarding/amazon?error=no_refresh_token")
 
@@ -4820,6 +5944,13 @@ def get_amazon_credentials(
     """Return current Amazon connection status for the tenant."""
     tenant_id = current.get("tenant_id", 1)
     cred = db.query(models.AmazonCredential).filter_by(tenant_id=tenant_id).first()
+    import json as _json
+    ship_from = None
+    if cred and cred.ship_from_json:
+        try:
+            ship_from = _json.loads(cred.ship_from_json)
+        except Exception:
+            pass
     return {
         "connected":      bool(cred and cred.sp_refresh_token),
         "seller_id":      cred.seller_id if cred else None,
@@ -4827,6 +5958,7 @@ def get_amazon_credentials(
         "marketplace_id": cred.marketplace_id if cred else "ATVPDKIKX0DER",
         "connected_at":   cred.connected_at.isoformat() if cred and cred.connected_at else None,
         "is_sandbox":     cred.is_sandbox if cred else False,
+        "ship_from":      ship_from,
     }
 
 
@@ -4935,11 +6067,42 @@ def save_amazon_credentials(
     if "is_sandbox" in body:          cred.is_sandbox        = bool(body["is_sandbox"])
     cred.connected_at  = datetime.utcnow()
     cred.connected_by  = current["sub"]
-    # Default store_name to tenant company name if not provided
     if not cred.store_name:
         _t = db.query(models.Tenant).filter_by(id=tenant_id).first()
         if _t:
             cred.store_name = _t.name
+    db.commit()
+    _audit(db, "amazon.credentials.save", current=current,
+           detail=f"seller_id={body.get('seller_id')} store={cred.store_name}")
+    return {"ok": True}
+
+
+@app.get("/api/amazon/ship-from")
+def get_ship_from(current: dict = Depends(require_auth), db: Session = Depends(get_db)):
+    """Return the saved ship-from address for this tenant."""
+    import json as _json
+    cred = db.query(models.AmazonCredential).filter_by(
+        tenant_id=current.get("tenant_id", 1)
+    ).first()
+    if cred and cred.ship_from_json:
+        try:
+            return _json.loads(cred.ship_from_json)
+        except Exception:
+            pass
+    # Return the store name as a hint even if no address saved yet
+    return {"store_name": cred.store_name if cred else None}
+
+
+@app.put("/api/amazon/ship-from")
+def save_ship_from(body: dict, current: dict = Depends(require_auth),
+                   db: Session = Depends(get_db)):
+    """Save the ship-from address for this tenant's FBA shipments."""
+    import json as _json
+    tid = current.get("tenant_id", 1)
+    cred = db.query(models.AmazonCredential).filter_by(tenant_id=tid).first()
+    if not cred:
+        raise HTTPException(404, "Amazon account not connected")
+    cred.ship_from_json = _json.dumps(body)
     db.commit()
     return {"ok": True}
 
@@ -5067,7 +6230,7 @@ async def _fetch_fba_inventory() -> list:
             if resp.status_code == 403:
                 raise HTTPException(403, "Amazon SP-API access denied — check Seller Central permissions include FBA Inventory")
             if resp.status_code != 200:
-                raise HTTPException(502, f"Amazon SP-API error {resp.status_code}: {resp.text[:300]}")
+                raise HTTPException(422, f"Amazon SP-API error {resp.status_code}: {resp.text[:300]}")
 
             body = resp.json().get("payload", {})
             for s in body.get("inventorySummaries", []):
@@ -5109,6 +6272,7 @@ async def import_amazon_inventory(current: dict = Depends(require_auth)):
         raise HTTPException(503, "Amazon SP-API credentials are not configured")
     try:
         result = await amazon_sync.run_sync(tid)
+        cache_bust(tid, "products")
         return {
             "imported": result["created"] + result["updated"],
             "created":  result["created"],
@@ -5116,7 +6280,7 @@ async def import_amazon_inventory(current: dict = Depends(require_auth)):
             "skipped":  result["skipped"],
         }
     except Exception as e:
-        raise HTTPException(502, str(e))
+        raise HTTPException(422, str(e))
 
 
 @app.get("/api/amazon/inventory/sync-status")
@@ -5140,9 +6304,11 @@ async def amazon_inventory_sync_now(current: dict = Depends(require_auth)):
     if amazon_sync.get_sync_state(tid or 0).get("running"):
         raise HTTPException(409, "Sync already in progress")
     try:
-        return await amazon_sync.run_sync(tid)
+        result = await amazon_sync.run_sync(tid)
+        cache_bust(tid, "products")   # invalidate stale product cache immediately
+        return result
     except Exception as e:
-        raise HTTPException(502, str(e))
+        raise HTTPException(422, str(e))
 
 
 @app.post("/api/amazon/fbm-upload")
@@ -5160,6 +6326,8 @@ async def upload_fbm_listings(
     import csv, io as _io
     tid = current.get("tenant_id")
     data = await file.read()
+    if len(data) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large — maximum size is 50 MB")
     text = data.decode("utf-8-sig", errors="replace")   # strip BOM if present
 
     # Detect delimiter — Amazon reports are tab-delimited
@@ -5596,7 +6764,7 @@ Output ONLY the subject line and email body, no other text."""
         email_body = "\n".join(lines[body_start:]).strip()
         return {"subject": subject, "body": email_body}
     except Exception as e:
-        raise HTTPException(502, f"AI error: {str(e)}")
+        raise HTTPException(422, f"AI error: {str(e)}")
 
 
 # ── Ungate requirements ───────────────────────────────────────────────────────
@@ -5725,8 +6893,13 @@ def _ungate_req_query(db, current):
 
 
 @app.get("/api/ungate/requests")
-def list_ungate_requests(db: Session = Depends(get_db), current: dict = Depends(require_auth)):
-    return _ungate_req_query(db, current).order_by(models.UngateRequest.created_at.desc()).all()
+def list_ungate_requests(
+    limit: int = 100,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_auth),
+):
+    return _ungate_req_query(db, current).order_by(models.UngateRequest.created_at.desc()).offset(offset).limit(min(limit, 1000)).all()
 
 
 @app.post("/api/ungate/requests")
@@ -5981,10 +7154,10 @@ async def send_ungate_email(req_id: int, body: dict, db: Session = Depends(get_d
 
     smtp_host = os.getenv("SMTP_HOST", "").strip()
     smtp_user = os.getenv("SMTP_USER", "").strip()
-    smtp_pass = os.getenv("SMTP_PASS", "").strip()
+    smtp_pass = (os.getenv("SMTP_PASS") or os.getenv("SMTP_PASSWORD") or "").strip()
     smtp_port = int(os.getenv("SMTP_PORT", "587"))
     if not all([smtp_host, smtp_user, smtp_pass]):
-        raise HTTPException(503, "SMTP not configured — add SMTP_HOST, SMTP_USER, SMTP_PASS to environment")
+        raise HTTPException(503, "SMTP not configured — add SMTP_HOST, SMTP_USER, and SMTP_PASS to Railway environment variables")
 
     to_email        = body.get("to_email", "seller-performance@amazon.com")
     subject         = body.get("subject", "")
@@ -5998,9 +7171,10 @@ async def send_ungate_email(req_id: int, body: dict, db: Session = Depends(get_d
     inv = db.query(models.UngateInvoice).filter_by(req_id=req_id).first() if include_invoice else None
     has_invoice = bool(inv and inv.data_b64)
 
+    smtp_from = os.getenv("SMTP_FROM", smtp_user)
     msg = MIMEMultipart("mixed" if has_invoice else "alternative")
     msg["Subject"] = subject
-    msg["From"]    = smtp_user
+    msg["From"]    = smtp_from
     msg["To"]      = to_email
     msg.attach(MIMEText(email_body, "plain"))
 
@@ -6016,9 +7190,9 @@ async def send_ungate_email(req_id: int, body: dict, db: Session = Depends(get_d
             server.ehlo()
             server.starttls()
             server.login(smtp_user, smtp_pass)
-            server.sendmail(smtp_user, [to_email], msg.as_string())
+            server.sendmail(smtp_from, [to_email], msg.as_string())
     except Exception as e:
-        raise HTTPException(502, f"Failed to send email: {str(e)}")
+        raise HTTPException(422, f"Failed to send email: {str(e)}")
 
     # Record the send in history
     history = _json.loads(req.history or "[]")
@@ -6127,7 +7301,7 @@ Be concise, friendly, and specific. If you don't know something about their spec
         )
         return {"response": result.choices[0].message.content}
     except Exception as e:
-        raise HTTPException(502, f"AI error: {str(e)}")
+        raise HTTPException(422, f"AI error: {str(e)}")
 
 
 @app.get("/api/amazon/check-asin/{asin}")
@@ -6155,7 +7329,7 @@ async def check_asin_ungated(asin: str, current: dict = Depends(require_auth)):
     if resp.status_code == 403:
         raise HTTPException(403, "Amazon SP-API access denied — check credentials and app permissions")
     if resp.status_code != 200:
-        raise HTTPException(502, f"Amazon SP-API error {resp.status_code}: {resp.text[:300]}")
+        raise HTTPException(422, f"Amazon SP-API error {resp.status_code}: {resp.text[:300]}")
 
     restrictions = resp.json().get("restrictions", [])
     return {"asin": asin.upper(), "ungated": len(restrictions) == 0, "restrictions": restrictions}
@@ -6362,56 +7536,638 @@ def timeclock_export(
     )
 
 
+# ─── FBA Inbound Shipments ────────────────────────────────────────────────────
+
+@app.post("/api/fba/lookup")
+async def fba_lookup(body: dict = Body(...), current: dict = Depends(require_auth)):
+    """Catalog Items API: title, dims, weight, BSR for an ASIN."""
+    asin = (body.get("asin") or "").strip().upper()
+    if not asin:
+        raise HTTPException(400, "asin required")
+    try:
+        import fba_shipping
+        return await fba_shipping.lookup_asin(asin, tenant_id=current["tenant_id"])
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[fba_lookup] tenant={current.get('tenant_id')} asin={asin} error: {e}", flush=True)
+        raise HTTPException(422, f"ASIN lookup error: {e}")
+
+
+@app.post("/api/fba/fees")
+async def fba_fees(body: dict = Body(...), current: dict = Depends(require_auth)):
+    """Product Fees API: referral + FBA fulfillment fee estimate."""
+    asin  = (body.get("asin") or "").strip().upper()
+    price = float(body.get("price") or 0)
+    if not asin or price <= 0:
+        raise HTTPException(400, "asin and price required")
+    try:
+        import fba_shipping
+        return await fba_shipping.estimate_fees(asin, price, tenant_id=current["tenant_id"])
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[fba_fees] tenant={current.get('tenant_id')} asin={asin} error: {e}", flush=True)
+        raise HTTPException(422, f"Fee estimate error: {e}")
+
+
+@app.get("/api/fba/sku-for-asin")
+async def fba_sku_for_asin(asin: str, current: dict = Depends(require_auth),
+                            db: Session = Depends(get_db)):
+    """Look up the seller's MSKU for a given ASIN — CRM DB first, then Amazon FBA Inventory API."""
+    import httpx as _hx
+    asin = asin.strip().upper()
+    tenant_id = current["tenant_id"]
+
+    # 1. CRM DB — fastest path (already synced from Amazon)
+    product = (db.query(models.Product)
+               .filter(models.Product.tenant_id == tenant_id,
+                       models.Product.asin == asin,
+                       models.Product.seller_sku.isnot(None),
+                       models.Product.seller_sku != "")
+               .first())
+    if product:
+        return {"seller_sku": product.seller_sku, "found": True, "source": "db"}
+
+    # 2. Amazon FBA Inventory API
+    try:
+        from amazon_sync import _get_access_token_for_tenant as _gat
+        token, mkt_id, base = await _gat(tenant_id)
+        async with _hx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{base}/fba/inventory/v1/summaries",
+                headers={"x-amz-access-token": token},
+                params={
+                    "granularityType": "Marketplace",
+                    "granularityId":   mkt_id,
+                    "marketplaceIds":  mkt_id,
+                    "asins":           asin,
+                    "details":         "true",
+                },
+            )
+        if resp.status_code == 200:
+            for s in resp.json().get("payload", {}).get("inventorySummaries", []):
+                sku = s.get("sellerSku", "")
+                if sku:
+                    # Write back to DB so future lookups skip the API call
+                    p = (db.query(models.Product)
+                         .filter(models.Product.tenant_id == tenant_id,
+                                 models.Product.asin == asin)
+                         .first())
+                    if p:
+                        p.seller_sku = sku
+                        db.commit()
+                    return {"seller_sku": sku, "found": True, "source": "fba_inventory"}
+    except Exception as _e:
+        print(f"[fba_sku_for_asin] FBA inventory lookup failed: {_e}", flush=True)
+
+    return {"seller_sku": None, "found": False, "source": None}
+
+
+@app.post("/api/fba/create-sku")
+async def fba_create_sku(body: dict = Body(...), current: dict = Depends(require_auth),
+                          db: Session = Depends(get_db)):
+    """Create a new listing offer on Amazon for an ASIN and return the generated MSKU."""
+    import httpx as _hx, uuid as _uuid
+    asin      = (body.get("asin") or "").strip().upper()
+    if not asin:
+        raise HTTPException(400, "asin required")
+    tenant_id = current["tenant_id"]
+
+    try:
+        from amazon_sync import _get_access_token_for_tenant as _gat
+        token, mkt_id, base = await _gat(tenant_id)
+
+        # Get seller ID from marketplace participations
+        async with _hx.AsyncClient(timeout=15) as client:
+            r = await client.get(f"{base}/sellers/v1/marketplaceParticipations",
+                                 headers={"x-amz-access-token": token})
+        if r.status_code != 200:
+            raise RuntimeError(f"Cannot get seller ID ({r.status_code}): {r.text[:200]}")
+        participations = r.json().get("payload", [])
+        seller_id = ""
+        for p in participations:
+            seller_id = (p.get("seller") or {}).get("sellerId", "")
+            if seller_id:
+                break
+        if not seller_id:
+            raise RuntimeError("Seller ID not found — ensure SP-API credentials are correct")
+
+        # Generate unique SKU: ASIN-XXXXXXXX
+        generated_sku = f"{asin}-{_uuid.uuid4().hex[:8].upper()}"
+
+        # Create listing offer via Listings Items API v2021-08-01
+        async with _hx.AsyncClient(timeout=15) as client:
+            r = await client.put(
+                f"{base}/listings/2021-08-01/items/{seller_id}/{generated_sku}",
+                headers={"x-amz-access-token": token, "Content-Type": "application/json"},
+                params={"marketplaceIds": mkt_id},
+                json={
+                    "productType": "PRODUCT",
+                    "attributes": {
+                        "condition_type": [
+                            {"value": "new_new", "marketplace_id": mkt_id}
+                        ],
+                        "merchant_suggested_asin": [
+                            {"value": asin, "marketplace_id": mkt_id}
+                        ],
+                    },
+                },
+            )
+        if r.status_code not in (200, 201):
+            issues = r.json().get("issues", []) or r.json().get("errors", [])
+            msgs   = "; ".join(i.get("message", "") for i in issues) or r.text[:300]
+            raise RuntimeError(f"Amazon listing creation failed: {msgs}")
+
+        # Save SKU to CRM DB
+        product = (db.query(models.Product)
+                   .filter(models.Product.tenant_id == tenant_id,
+                           models.Product.asin == asin)
+                   .first())
+        if product:
+            product.seller_sku = generated_sku
+            db.commit()
+
+        return {"seller_sku": generated_sku, "created": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[fba_create_sku] tenant={tenant_id} asin={asin} error: {e}", flush=True)
+        raise HTTPException(422, f"Create SKU error: {e}")
+
+
+@app.post("/api/fba/plan")
+async def fba_plan(body: dict = Body(...), current: dict = Depends(require_auth)):
+    """FBA Inbound v0: create shipment plan — returns FC assignment."""
+    items        = body.get("items") or []
+    from_address = body.get("from_address") or {}
+    label_prep   = body.get("label_prep", "SELLER_LABEL")
+    boxes        = body.get("boxes") or []
+    if not items or not from_address:
+        raise HTTPException(400, "items and from_address required")
+    try:
+        import fba_shipping
+        return await fba_shipping.create_plan(items, from_address,
+                                              tenant_id=current["tenant_id"],
+                                              label_prep=label_prep,
+                                              boxes=boxes)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[fba_plan] tenant={current.get('tenant_id')} error: {e}", flush=True)
+        raise HTTPException(422, f"FBA plan error: {e}")
+
+
+@app.post("/api/fba/shipments")
+async def fba_create_shipment(body: dict = Body(...), current: dict = Depends(require_auth),
+                               db: Session = Depends(get_db)):
+    """Create FBA shipment record in Amazon + persist to DB."""
+    import json as _json
+    plan          = body.get("plan") or {}
+    shipment_name = body.get("shipment_name", "")
+    from_address  = body.get("from_address") or {}
+    items         = body.get("items") or []
+    boxes         = body.get("boxes") or []
+    asin          = (body.get("asin") or "").strip().upper()
+    seller_sku    = body.get("seller_sku", "")
+    title         = body.get("title", "")
+    quantity      = int(body.get("quantity") or 1)
+    referral_fee  = body.get("referral_fee")
+    fba_fee       = body.get("fba_fee")
+
+    if not plan or not from_address or not items:
+        raise HTTPException(400, "plan, from_address and items required")
+
+    try:
+        import fba_shipping
+        result    = await fba_shipping.create_shipment(
+            plan, shipment_name, from_address, items,
+            tenant_id=current["tenant_id"],
+            boxes=boxes,
+        )
+        amazon_id         = result["shipment_id"]
+        transport_options = result.get("transport_options", [])
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[fba_create_shipment] tenant={current.get('tenant_id')} error: {e}", flush=True)
+        raise HTTPException(422, f"FBA create shipment error: {e}")
+
+    try:
+        optimized = await fba_shipping.check_optimized_eligible(
+            amazon_id, tenant_id=current["tenant_id"]
+        )
+    except Exception:
+        optimized = None
+
+    shipment = models.FBAShipment(
+        tenant_id           = current["tenant_id"],
+        user_id             = current.get("user_id"),
+        asin                = asin,
+        seller_sku          = seller_sku,
+        title               = title,
+        quantity            = quantity,
+        shipment_name       = shipment_name,
+        amazon_shipment_id  = amazon_id,
+        inbound_plan_id     = plan.get("inbound_plan_id"),
+        placement_option_id = plan.get("placement_option_id"),
+        destination_fc      = plan.get("destination_fc"),
+        ship_to_address     = _json.dumps(plan.get("ship_to_address") or {}),
+        referral_fee        = referral_fee,
+        fba_fee             = fba_fee,
+        optimized_eligible  = optimized,
+        from_address        = _json.dumps(from_address),
+        status              = "submitted",
+    )
+    db.add(shipment)
+    db.commit()
+    db.refresh(shipment)
+
+    return {
+        "id":                  shipment.id,
+        "amazon_shipment_id":  amazon_id,
+        "destination_fc":      plan.get("destination_fc"),
+        "optimized_eligible":  optimized,
+        "status":              shipment.status,
+        "transport_options":   transport_options,
+        "inbound_plan_id":     plan.get("inbound_plan_id"),
+    }
+
+
+@app.post("/api/fba/shipments/{shipment_id}/confirm-transport")
+async def fba_confirm_transport_option(shipment_id: int, body: dict = Body(...),
+                                        current: dict = Depends(require_auth),
+                                        db: Session = Depends(get_db)):
+    """Confirm the selected transportation option for a shipment."""
+    transport_option_id = body.get("transport_option_id", "")
+    if not transport_option_id:
+        raise HTTPException(400, "transport_option_id required")
+
+    row = (db.query(models.FBAShipment)
+           .filter(models.FBAShipment.id == shipment_id,
+                   models.FBAShipment.tenant_id == current["tenant_id"])
+           .first())
+    if not row:
+        raise HTTPException(404, "Shipment not found")
+
+    inbound_plan_id = row.inbound_plan_id
+    if not inbound_plan_id:
+        raise HTTPException(422, "Shipment has no inbound_plan_id — cannot confirm transport")
+
+    try:
+        import fba_shipping
+        await fba_shipping.confirm_transport_option(
+            inbound_plan_id, transport_option_id,
+            tenant_id=current["tenant_id"],
+        )
+        row.status = "transport_confirmed"
+        db.commit()
+        return {"status": "transport_confirmed"}
+    except Exception as e:
+        print(f"[fba_confirm_transport] error: {e}", flush=True)
+        raise HTTPException(422, f"Confirm transport error: {e}")
+
+
+@app.get("/api/fba/shipments")
+async def fba_list_shipments(current: dict = Depends(require_auth),
+                              db: Session = Depends(get_db)):
+    """List all FBA shipments for this tenant."""
+    rows = (db.query(models.FBAShipment)
+            .filter(models.FBAShipment.tenant_id == current["tenant_id"])
+            .order_by(models.FBAShipment.created_at.desc())
+            .limit(200)
+            .all())
+    return [
+        {
+            "id":                  r.id,
+            "asin":                r.asin,
+            "seller_sku":          r.seller_sku,
+            "title":               r.title,
+            "quantity":            r.quantity,
+            "shipment_name":       r.shipment_name,
+            "amazon_shipment_id":  r.amazon_shipment_id,
+            "destination_fc":      r.destination_fc,
+            "transport_status":    r.transport_status,
+            "estimated_cost":      r.estimated_cost,
+            "status":              r.status,
+            "optimized_eligible":  r.optimized_eligible,
+            "created_at":          r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+
+
+@app.get("/api/fba/shipments/{shipment_id}")
+async def fba_get_shipment(shipment_id: int, current: dict = Depends(require_auth),
+                            db: Session = Depends(get_db)):
+    row = (db.query(models.FBAShipment)
+           .filter(models.FBAShipment.id == shipment_id,
+                   models.FBAShipment.tenant_id == current["tenant_id"])
+           .first())
+    if not row:
+        raise HTTPException(404, "Shipment not found")
+    import json as _json
+    return {
+        "id":                  row.id,
+        "asin":                row.asin,
+        "seller_sku":          row.seller_sku,
+        "title":               row.title,
+        "quantity":            row.quantity,
+        "shipment_name":       row.shipment_name,
+        "amazon_shipment_id":  row.amazon_shipment_id,
+        "destination_fc":      row.destination_fc,
+        "ship_to_address":     _json.loads(row.ship_to_address or "{}"),
+        "from_address":        _json.loads(row.from_address or "{}"),
+        "packages_json":       _json.loads(row.packages_json or "[]"),
+        "transport_status":    row.transport_status,
+        "estimated_cost":      row.estimated_cost,
+        "transport_currency":  row.transport_currency,
+        "referral_fee":        row.referral_fee,
+        "fba_fee":             row.fba_fee,
+        "optimized_eligible":  row.optimized_eligible,
+        "status":              row.status,
+        "label_url":           row.label_url,
+        "created_at":          row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+@app.post("/api/fba/shipments/{shipment_id}/transport")
+async def fba_set_transport(shipment_id: int, body: dict = Body(...),
+                             current: dict = Depends(require_auth),
+                             db: Session = Depends(get_db)):
+    """Submit box dims/weight to Amazon and poll for rate estimate."""
+    import json as _json
+    row = (db.query(models.FBAShipment)
+           .filter(models.FBAShipment.id == shipment_id,
+                   models.FBAShipment.tenant_id == current["tenant_id"])
+           .first())
+    if not row:
+        raise HTTPException(404, "Shipment not found")
+    if not row.amazon_shipment_id:
+        raise HTTPException(400, "No Amazon shipment ID on record")
+
+    packages     = body.get("packages") or []
+    is_partnered = body.get("is_partnered", True)
+    if not packages:
+        raise HTTPException(400, "packages required")
+
+    try:
+        import fba_shipping
+        await fba_shipping.set_transport(row.amazon_shipment_id, packages,
+                                         tenant_id=current["tenant_id"],
+                                         is_partnered=is_partnered,
+                                         inbound_plan_id=row.inbound_plan_id)
+        rate = await fba_shipping.get_transport(row.amazon_shipment_id,
+                                                tenant_id=current["tenant_id"],
+                                                inbound_plan_id=row.inbound_plan_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[fba_set_transport] shipment={shipment_id} error: {e}", flush=True)
+        raise HTTPException(422, f"Transport error: {e}")
+
+    row.packages_json      = _json.dumps(packages)
+    row.transport_status   = rate.get("status")
+    row.estimated_cost     = rate.get("estimated_cost")
+    row.transport_currency = rate.get("currency")
+    row.status             = "transport_pending"
+    db.commit()
+
+    return rate
+
+
+@app.get("/api/fba/shipments/{shipment_id}/transport")
+async def fba_get_transport(shipment_id: int, current: dict = Depends(require_auth),
+                             db: Session = Depends(get_db)):
+    """Poll Amazon for current transport rate status."""
+    row = (db.query(models.FBAShipment)
+           .filter(models.FBAShipment.id == shipment_id,
+                   models.FBAShipment.tenant_id == current["tenant_id"])
+           .first())
+    if not row:
+        raise HTTPException(404, "Shipment not found")
+    try:
+        import fba_shipping
+        rate = await fba_shipping.get_transport(row.amazon_shipment_id,
+                                                tenant_id=current["tenant_id"],
+                                                max_polls=1,
+                                                inbound_plan_id=row.inbound_plan_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(422, f"Transport poll error: {e}")
+    row.transport_status   = rate.get("status")
+    row.estimated_cost     = rate.get("estimated_cost")
+    row.transport_currency = rate.get("currency")
+    db.commit()
+    return rate
+
+
+@app.post("/api/fba/shipments/{shipment_id}/transport/confirm")
+async def fba_confirm_transport(shipment_id: int, current: dict = Depends(require_auth),
+                                 db: Session = Depends(get_db)):
+    """Confirm (pay for) the partnered carrier rate."""
+    row = (db.query(models.FBAShipment)
+           .filter(models.FBAShipment.id == shipment_id,
+                   models.FBAShipment.tenant_id == current["tenant_id"])
+           .first())
+    if not row:
+        raise HTTPException(404, "Shipment not found")
+    try:
+        import fba_shipping
+        await fba_shipping.confirm_transport(row.amazon_shipment_id,
+                                             tenant_id=current["tenant_id"],
+                                             inbound_plan_id=row.inbound_plan_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(422, f"Transport confirm error: {e}")
+    row.transport_status = "CONFIRMED"
+    row.status           = "transport_confirmed"
+    db.commit()
+    return {"ok": True, "status": "CONFIRMED"}
+
+
+@app.post("/api/fba/shipments/{shipment_id}/transport/void")
+async def fba_void_transport(shipment_id: int, current: dict = Depends(require_auth),
+                              db: Session = Depends(get_db)):
+    """Void the partnered carrier rate (before it ships)."""
+    row = (db.query(models.FBAShipment)
+           .filter(models.FBAShipment.id == shipment_id,
+                   models.FBAShipment.tenant_id == current["tenant_id"])
+           .first())
+    if not row:
+        raise HTTPException(404, "Shipment not found")
+    try:
+        import fba_shipping
+        await fba_shipping.void_transport(row.amazon_shipment_id,
+                                          tenant_id=current["tenant_id"],
+                                          inbound_plan_id=row.inbound_plan_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[fba_void_transport] tenant={current.get('tenant_id')} error: {e}", flush=True)
+        raise HTTPException(422, f"Transport void error: {e}")
+    row.transport_status = "VOIDED"
+    row.status           = "voided"
+    db.commit()
+    return {"ok": True, "status": "VOIDED"}
+
+
+@app.get("/api/fba/shipments/{shipment_id}/labels")
+async def fba_get_labels(shipment_id: int, current: dict = Depends(require_auth),
+                          db: Session = Depends(get_db),
+                          label_type: str = "UNIQUE",
+                          page_type: str = "PackageLabel_Letter_2"):
+    """Fetch box label download URL from Amazon."""
+    row = (db.query(models.FBAShipment)
+           .filter(models.FBAShipment.id == shipment_id,
+                   models.FBAShipment.tenant_id == current["tenant_id"])
+           .first())
+    if not row:
+        raise HTTPException(404, "Shipment not found")
+    try:
+        import fba_shipping
+        url = await fba_shipping.get_labels(row.amazon_shipment_id,
+                                            tenant_id=current["tenant_id"],
+                                            label_type=label_type,
+                                            page_type=page_type,
+                                            inbound_plan_id=row.inbound_plan_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[fba_get_labels] tenant={current.get('tenant_id')} error: {e}", flush=True)
+        raise HTTPException(422, f"Labels fetch error: {e}")
+    row.label_url = url
+    row.status    = "labeled"
+    db.commit()
+    return {"label_url": url}
+
+
+@app.post("/api/amazon/fba-listings")
+async def create_fba_listings(
+    body: dict,
+    db: Session = Depends(get_db),
+    current: dict = Depends(require_auth),
+):
+    """Create FBA offer-only listings on Amazon via Listings Items API."""
+    import httpx as _httpx
+
+    tenant_id = current.get("tenant_id")
+    cred = _get_tenant_amazon_creds(tenant_id, db)
+    if not cred or not cred.sp_refresh_token:
+        raise HTTPException(400, "Amazon account not connected")
+
+    seller_id = cred.seller_id or os.getenv("AMAZON_SELLER_ID", "")
+    if not seller_id:
+        raise HTTPException(400, "AMAZON_SELLER_ID not configured — add it in Amazon Settings")
+
+    marketplace_id = cred.marketplace_id or os.getenv("AMAZON_MARKETPLACE_ID", "ATVPDKIKX0DER")
+    access_token = await _get_tenant_access_token(cred)
+    sp_base = _sp_base(cred.is_sandbox)
+
+    condition_map = {
+        "NewItem":       "new_new",
+        "UsedLikeNew":   "used_like_new",
+        "UsedVeryGood":  "used_very_good",
+        "UsedGood":      "used_good",
+        "UsedAcceptable": "used_acceptable",
+    }
+
+    listings = body.get("listings", [])
+    if not listings:
+        raise HTTPException(400, "No listings provided")
+
+    results = []
+    async with _httpx.AsyncClient(timeout=30) as client:
+        for item in listings:
+            asin      = (item.get("asin") or "").strip().upper()
+            sku       = (item.get("sku") or "").strip()
+            price     = float(item.get("price") or 0)
+            condition = item.get("condition", "NewItem")
+
+            if not asin or not sku or not price:
+                results.append({"asin": asin, "sku": sku, "success": False,
+                                 "error": "Missing asin, sku, or price"})
+                continue
+
+            payload = {
+                "productType": "PRODUCT",
+                "requirements": "LISTING_OFFER_ONLY",
+                "attributes": {
+                    "condition_type": [{"value": condition_map.get(condition, "new_new"),
+                                        "marketplace_id": marketplace_id}],
+                    "merchant_suggested_asin": [{"value": asin, "marketplace_id": marketplace_id}],
+                    "fulfillment_availability": [{
+                        "fulfillment_channel_code": "AMAZON_NA",
+                        "marketplace_id": marketplace_id,
+                    }],
+                    "purchasable_offer": [{
+                        "currency": "USD",
+                        "marketplace_id": marketplace_id,
+                        "our_price": [{"schedule": [{"value_with_tax": price}]}],
+                    }],
+                },
+            }
+
+            try:
+                resp = await client.put(
+                    f"{sp_base}/listings/2021-08-01/items/{seller_id}/{sku}",
+                    params={"marketplaceIds": marketplace_id},
+                    json=payload,
+                    headers={"x-amz-access-token": access_token,
+                             "Content-Type": "application/json"},
+                )
+                if resp.status_code in (200, 201, 202):
+                    rd = resp.json()
+                    results.append({
+                        "asin": asin, "sku": sku, "success": True,
+                        "status": rd.get("status", "ACCEPTED"),
+                        "submission_id": rd.get("submissionId"),
+                    })
+                else:
+                    try:
+                        rd = resp.json()
+                        msg = (rd.get("errors") or [{}])[0].get("message", f"HTTP {resp.status_code}")
+                    except Exception:
+                        msg = resp.text[:200]
+                    results.append({"asin": asin, "sku": sku, "success": False, "error": msg})
+            except Exception as _e:
+                results.append({"asin": asin, "sku": sku, "success": False, "error": str(_e)})
+
+    return {"results": results, "submitted": len(listings), "succeeded": sum(1 for r in results if r["success"])}
+
+
 @app.get("/api/health")
-def health():
-    """Lightweight healthcheck — just verifies the process is alive."""
-    return {"status": "ok"}
+def health(db: Session = Depends(get_db)):
+    """Healthcheck — verifies process is alive and DB is reachable."""
+    try:
+        db.execute(text("SELECT 1"))
+        return {"status": "ok", "db": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"DB unavailable: {e}")
+
+
+@app.get("/api/debug/schema", include_in_schema=False)
+def debug_schema(current: dict = Depends(require_auth)):
+    """Returns actual DB columns for products table — superadmin only."""
+    if not current.get("is_superadmin"):
+        raise HTTPException(403, "superadmin only")
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT column_name, data_type FROM information_schema.columns "
+                "WHERE table_name = 'products' ORDER BY ordinal_position"
+            )).fetchall()
+        return {"columns": [{"name": r[0], "type": r[1]} for r in rows]}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # ─── Serve React SPA (must be last) ───────────────────────────────────────────
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
-
-@app.get("/recover", include_in_schema=False)
-@app.get("/recover.html", include_in_schema=False)
-def recover_page():
-    from fastapi.responses import HTMLResponse
-    return HTMLResponse(content="""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Account Recovery</title>
-<style>
-  body{font-family:sans-serif;max-width:420px;margin:80px auto;padding:20px;background:#f8fafc}
-  h2{color:#1e293b}p{color:#64748b;font-size:14px}
-  button{background:#2563eb;color:#fff;border:none;padding:12px 24px;border-radius:8px;font-size:15px;cursor:pointer;width:100%;margin-top:12px}
-  button:hover{background:#1d4ed8}button:disabled{background:#94a3b8;cursor:not-allowed}
-  #result{margin-top:16px;padding:14px;border-radius:8px;font-size:14px;display:none;white-space:pre-wrap;word-break:break-all}
-  .ok{background:#dcfce7;color:#166534;border:1px solid #86efac}
-  .err{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5}
-</style>
-</head>
-<body>
-<h2>&#128273; Emergency Account Recovery</h2>
-<p>Resets your password using the <code>RESET_PASSWORD_FOR</code> variable you set in Railway Variables.<br><br>Make sure you added that variable first, then click the button.</p>
-<button onclick="recover()" id="btn">Reset My Password Now</button>
-<div id="result"></div>
-<script>
-async function recover(){
-  const btn=document.getElementById('btn'),box=document.getElementById('result');
-  btn.textContent='Resetting\u2026';btn.disabled=true;box.style.display='none';
-  try{
-    const r=await fetch('/api/auth/recover',{method:'POST'});
-    const d=await r.json();
-    box.style.display='block';
-    if(r.ok){box.className='ok';box.textContent='SUCCESS!\n\n'+JSON.stringify(d,null,2)+'\n\nLog in now, then REMOVE RESET_PASSWORD_FOR from Railway Variables.';}
-    else{box.className='err';box.textContent='Error: '+(d.detail||JSON.stringify(d));}
-  }catch(e){box.style.display='block';box.className='err';box.textContent='Request failed: '+e.message;}
-  btn.textContent='Reset My Password Now';btn.disabled=false;
-}
-</script>
-</body>
-</html>""")
 
 if os.path.isdir(STATIC_DIR):
     assets_dir = os.path.join(STATIC_DIR, "assets")

@@ -1,12 +1,21 @@
-import { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
 
 const AuthContext = createContext(null)
 const TOKEN_KEY = 'crm_token'
+
+function _tokenExp(token) {
+  try {
+    return JSON.parse(atob(token.split('.')[1])).exp
+  } catch {
+    return null
+  }
+}
 
 export function AuthProvider({ children }) {
   const [token, setToken]     = useState(() => localStorage.getItem(TOKEN_KEY))
   const [user, setUser]       = useState(null)   // { username, role, tenant_id, tenant_name, plan }
   const [checking, setChecking] = useState(true)
+  const refreshTimer = useRef(null)
 
   const fetchMe = useCallback(async (t) => {
     const r = await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${t}` } })
@@ -14,27 +23,49 @@ export function AuthProvider({ children }) {
     return r.json()
   }, [])
 
+  const scheduleRefresh = useCallback((t) => {
+    if (refreshTimer.current) clearTimeout(refreshTimer.current)
+    const exp = _tokenExp(t)
+    if (!exp) return
+    // Refresh when 24 h remain (or immediately if already within 24 h)
+    const msUntilRefresh = Math.max((exp - Date.now() / 1000 - 86400) * 1000, 0)
+    refreshTimer.current = setTimeout(async () => {
+      try {
+        const res = await fetch('/api/auth/refresh', { method: 'POST', headers: { Authorization: `Bearer ${t}` } })
+        if (!res.ok) return
+        const { access_token } = await res.json()
+        localStorage.setItem(TOKEN_KEY, access_token)
+        setToken(access_token)
+        scheduleRefresh(access_token)
+      } catch { /* network error — will retry on next load */ }
+    }, msUntilRefresh)
+  }, [])
+
   useEffect(() => {
     if (!token) { setChecking(false); return }
     fetchMe(token)
-      .then((data) => setUser({
-        username:           data.username,
-        role:               data.role,
-        is_superadmin:      data.is_superadmin || false,
-        tenant_id:          data.tenant_id,
-        tenant_name:        data.tenant_name,
-        tenant_slug:        data.tenant_slug,
-        plan:               data.plan,
-        stripe_status:      data.stripe_status,
-        trial_ends_at:      data.trial_ends_at || null,
-        email:              data.email || '',
-        notify_email:       data.notify_email !== false,
-        dashboard_sections: data.dashboard_sections || null,
-        page_permissions:   data.page_permissions || null,
-      }))
+      .then((data) => {
+        setUser({
+          username:           data.username,
+          role:               data.role,
+          is_superadmin:      data.is_superadmin || false,
+          tenant_id:          data.tenant_id,
+          tenant_name:        data.tenant_name,
+          tenant_slug:        data.tenant_slug,
+          plan:               data.plan,
+          stripe_status:      data.stripe_status,
+          trial_ends_at:      data.trial_ends_at || null,
+          email:              data.email || '',
+          notify_email:       data.notify_email !== false,
+          dashboard_sections: data.dashboard_sections || null,
+          page_permissions:   data.page_permissions || null,
+        })
+        scheduleRefresh(token)
+      })
       .catch(() => { localStorage.removeItem(TOKEN_KEY); setToken(null) })
       .finally(() => setChecking(false))
-  }, [token, fetchMe])
+    return () => { if (refreshTimer.current) clearTimeout(refreshTimer.current) }
+  }, [token, fetchMe, scheduleRefresh])
 
   const login = async (username, password) => {
     const res = await fetch('/api/auth/login', {
@@ -49,6 +80,7 @@ export function AuthProvider({ children }) {
     const data = await res.json()
     localStorage.setItem(TOKEN_KEY, data.access_token)
     setToken(data.access_token)
+    scheduleRefresh(data.access_token)
     const me = await fetchMe(data.access_token)
     setUser({
       username:           me.username,
@@ -74,7 +106,15 @@ export function AuthProvider({ children }) {
     setUser(userInfo)
   }
 
-  const logout = () => {
+  const logout = async () => {
+    if (refreshTimer.current) clearTimeout(refreshTimer.current)
+    const t = localStorage.getItem(TOKEN_KEY)
+    if (t) {
+      fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${t}` },
+      }).catch(() => {})
+    }
     localStorage.removeItem(TOKEN_KEY)
     setToken(null)
     setUser(null)

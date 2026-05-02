@@ -535,6 +535,7 @@ const ALL_PAGES = [
   { key: 'accounts',    label: 'Accounts' },
   { key: 'follow_ups',  label: 'Follow-Ups' },
   { key: 'orders',      label: 'Orders' },
+  { key: 'wholesale',   label: 'Wholesale' },
   { key: 'sourcing',    label: 'Sourcing' },
   { key: 'inventory',   label: 'Current Inventory' },
   { key: 'timeclock',   label: 'Time Clock' },

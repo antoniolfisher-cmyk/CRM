@@ -9,9 +9,53 @@ from sqlalchemy.orm import Session
 from database import get_db
 import models
 
-SECRET_KEY          = os.getenv("SECRET_KEY", "dev-secret-change-in-production")
+_RAW_SECRET = os.getenv("SECRET_KEY", "")
+_INSECURE_DEFAULTS = {"dev-secret-change-in-production", "changeme", "secret", ""}
+if not _RAW_SECRET or _RAW_SECRET in _INSECURE_DEFAULTS:
+    import sys
+    print(
+        "FATAL: SECRET_KEY env var is missing or is an insecure default value. "
+        "Set a strong random SECRET_KEY (e.g. `openssl rand -hex 32`) before starting.",
+        flush=True,
+    )
+    sys.exit(1)
+SECRET_KEY          = _RAW_SECRET
 ALGORITHM           = "HS256"
 TOKEN_EXPIRE_HOURS  = 24 * 7   # 7 days
+
+# ── Token blacklist (revoked tokens stored in Redis until their natural expiry) ─
+def _get_redis():
+    url = os.getenv("REDIS_URL", "")
+    if not url:
+        return None
+    try:
+        import redis as _redis
+        r = _redis.from_url(url, socket_connect_timeout=1, socket_timeout=1, decode_responses=True)
+        r.ping()
+        return r
+    except Exception:
+        return None
+
+def revoke_token(token: str, exp: int) -> None:
+    """Add a token to the blacklist until it expires naturally."""
+    r = _get_redis()
+    if not r:
+        return
+    import time
+    ttl = max(int(exp - time.time()), 1)
+    try:
+        r.setex(f"revoked:{token}", ttl, "1")
+    except Exception:
+        pass
+
+def is_token_revoked(token: str) -> bool:
+    r = _get_redis()
+    if not r:
+        return False
+    try:
+        return bool(r.exists(f"revoked:{token}"))
+    except Exception:
+        return False
 
 BOOTSTRAP_USERNAME   = os.getenv("CRM_USERNAME", "admin")
 BOOTSTRAP_PASSWORD   = os.getenv("CRM_PASSWORD", "changeme")
@@ -61,10 +105,13 @@ def create_token(username: str, role: str, tenant_id: int) -> str:
 def _decode(credentials: HTTPAuthorizationCredentials):
     if not credentials:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    token = credentials.credentials
     try:
-        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         if not payload.get("sub"):
             raise HTTPException(status_code=401, detail="Invalid token")
+        if is_token_revoked(token):
+            raise HTTPException(status_code=401, detail="Token has been revoked")
         return payload
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
@@ -106,29 +153,7 @@ def ensure_bootstrap_admin(db: Session):
     1. Create the default Tenant (id auto-assigned)
     2. Create the admin user tied to that tenant
     3. If Amazon env vars are set, migrate them into AmazonCredential for tenant 1
-
-    Emergency recovery:
-    Set RESET_PASSWORD_FOR=username:newpassword in Railway Variables.
-    On next deploy the password is reset, then remove the variable.
     """
-    # ── Emergency password reset via env var ─────────────────────────────────
-    _reset = os.getenv("RESET_PASSWORD_FOR", "").strip()
-    if _reset and ":" in _reset:
-        _reset_user, _reset_pass = _reset.split(":", 1)
-        _reset_user = _reset_user.strip()
-        _reset_pass = _reset_pass.strip()
-        if _reset_user and _reset_pass:
-            _u = db.query(models.User).filter(models.User.username == _reset_user).first()
-            if _u:
-                _u.password_hash = hash_password(_reset_pass)
-                _u.is_active = True
-                db.commit()
-                print(f"[recovery] Password reset for user '{_reset_user}' via RESET_PASSWORD_FOR env var. REMOVE THIS VARIABLE NOW.")
-            else:
-                # List all users to help debug
-                _all = db.query(models.User).all()
-                print(f"[recovery] User '{_reset_user}' not found. Existing users: {[u.username for u in _all]}")
-
     if db.query(models.Tenant).count() == 0:
         tenant = models.Tenant(
             name="Default",

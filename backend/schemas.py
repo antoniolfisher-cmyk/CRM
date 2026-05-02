@@ -221,7 +221,7 @@ class OrderOut(OrderBase):
 # Product schemas
 class ProductBase(BaseModel):
     asin: Optional[str] = None
-    product_name: str
+    product_name: Optional[str] = None
     amazon_url: Optional[str] = None
     purchase_link: Optional[str] = None
     date_found: Optional[datetime] = None
