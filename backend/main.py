@@ -7728,6 +7728,7 @@ async def fba_create_shipment(body: dict = Body(...), current: dict = Depends(re
     shipment_name = body.get("shipment_name", "")
     from_address  = body.get("from_address") or {}
     items         = body.get("items") or []
+    boxes         = body.get("boxes") or []
     asin          = (body.get("asin") or "").strip().upper()
     seller_sku    = body.get("seller_sku", "")
     title         = body.get("title", "")
@@ -7740,10 +7741,13 @@ async def fba_create_shipment(body: dict = Body(...), current: dict = Depends(re
 
     try:
         import fba_shipping
-        amazon_id = await fba_shipping.create_shipment(
+        result    = await fba_shipping.create_shipment(
             plan, shipment_name, from_address, items,
-            tenant_id=current["tenant_id"]
+            tenant_id=current["tenant_id"],
+            boxes=boxes,
         )
+        amazon_id         = result["shipment_id"]
+        transport_options = result.get("transport_options", [])
     except HTTPException:
         raise
     except Exception as e:
@@ -7786,7 +7790,43 @@ async def fba_create_shipment(body: dict = Body(...), current: dict = Depends(re
         "destination_fc":      plan.get("destination_fc"),
         "optimized_eligible":  optimized,
         "status":              shipment.status,
+        "transport_options":   transport_options,
+        "inbound_plan_id":     plan.get("inbound_plan_id"),
     }
+
+
+@app.post("/api/fba/shipments/{shipment_id}/confirm-transport")
+async def fba_confirm_transport_option(shipment_id: int, body: dict = Body(...),
+                                        current: dict = Depends(require_auth),
+                                        db: Session = Depends(get_db)):
+    """Confirm the selected transportation option for a shipment."""
+    transport_option_id = body.get("transport_option_id", "")
+    if not transport_option_id:
+        raise HTTPException(400, "transport_option_id required")
+
+    row = (db.query(models.FBAShipment)
+           .filter(models.FBAShipment.id == shipment_id,
+                   models.FBAShipment.tenant_id == current["tenant_id"])
+           .first())
+    if not row:
+        raise HTTPException(404, "Shipment not found")
+
+    inbound_plan_id = row.inbound_plan_id
+    if not inbound_plan_id:
+        raise HTTPException(422, "Shipment has no inbound_plan_id — cannot confirm transport")
+
+    try:
+        import fba_shipping
+        await fba_shipping.confirm_transport_option(
+            inbound_plan_id, transport_option_id,
+            tenant_id=current["tenant_id"],
+        )
+        row.status = "transport_confirmed"
+        db.commit()
+        return {"status": "transport_confirmed"}
+    except Exception as e:
+        print(f"[fba_confirm_transport] error: {e}", flush=True)
+        raise HTTPException(422, f"Confirm transport error: {e}")
 
 
 @app.get("/api/fba/shipments")

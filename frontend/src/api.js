@@ -267,7 +267,8 @@ export const api = {
   fbaSetTransport: (id, packages, is_partnered = true) =>
     req('POST', `/fba/shipments/${id}/transport`, { packages, is_partnered }),
   fbaGetTransport: (id) => req('GET', `/fba/shipments/${id}/transport`),
-  fbaConfirmTransport: (id) => req('POST', `/fba/shipments/${id}/transport/confirm`, {}),
+  fbaConfirmTransport: (id, transport_option_id) =>
+    req('POST', `/fba/shipments/${id}/confirm-transport`, { transport_option_id }),
   fbaVoidTransport: (id) => req('POST', `/fba/shipments/${id}/transport/void`, {}),
   fbaGetLabels: (id, label_type = 'UNIQUE', page_type = 'PackageLabel_Letter_2') =>
     req('GET', `/fba/shipments/${id}/labels?label_type=${label_type}&page_type=${page_type}`),

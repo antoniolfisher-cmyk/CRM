@@ -548,6 +548,7 @@ async def create_plan(
 
         return {
             "shipment_id":     shipment_id,
+            "shipment_ids":    shipment_ids,
             "destination_fc":  fc_code,
             "ship_to_address": {
                 "name":        dest_addr.get("name", ""),
@@ -585,10 +586,13 @@ async def create_shipment(
     items: list[dict],
     tenant_id: Optional[int] = None,
     label_prep: str = "SELLER_LABEL",
-) -> str:
+    boxes: Optional[list[dict]] = None,
+) -> dict:
     """
-    Confirms the chosen placement option, then returns the Amazon ShipmentId.
-    `plan` must contain inbound_plan_id and placement_option_id from create_plan().
+    1. Confirms the chosen placement option.
+    2. Sets packing information for each shipment (works after placement confirmation).
+    3. Generates transportation options and returns them for user selection.
+    Returns {shipment_id, transport_options: [{transport_option_id, carrier, cost, ...}]}.
     """
     token, mkt_id, base = await _get_access_token_for_tenant(tenant_id)
 
@@ -601,7 +605,7 @@ async def create_shipment(
             "please re-run the plan step before creating a shipment."
         )
 
-    # Confirm placement option
+    # 1. Confirm placement option
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
             f"{base}{_V2}/inboundPlans/{plan_id}/placementOptions/{placement_id}/confirmation",
@@ -613,15 +617,146 @@ async def create_shipment(
         raise RuntimeError(f"Confirm placement {resp.status_code}: {resp.text[:400]}")
     await _poll_op(base, token, resp.json()["operationId"])
 
-    # The shipment ID was captured from the placement option's shipmentIds list
-    # during create_plan — no need to call GET /shipments (that endpoint requires
-    # an extra SP-API scope that not all apps have).
-    shipment_id = plan.get("shipment_id", "")
+    shipment_id  = plan.get("shipment_id", "")
+    shipment_ids = plan.get("shipment_ids") or ([shipment_id] if shipment_id else [])
     if not shipment_id:
         raise RuntimeError(
             "No shipment ID in plan — please re-run the plan step before creating a shipment."
         )
-    return shipment_id
+
+    transport_options = []
+    if boxes and shipment_ids:
+        box_def     = boxes[0]
+        total_qty   = sum(int(i.get("qty", 1)) for i in items)
+        num_boxes   = max(1, int(box_def.get("count", 1)))
+        qty_per_box = max(1, round(total_qty / num_boxes))
+
+        # 2. Set packing information (requires confirmed placement)
+        for sid in shipment_ids:
+            packing_body = {
+                "packageGroupings": [{
+                    "boxes": [{
+                        "contentInformationSource": "BOX_CONTENT_PROVIDED",
+                        "dimensions": {
+                            "unitOfMeasurement": "IN",
+                            "length": float(box_def.get("length", 12)),
+                            "width":  float(box_def.get("width", 10)),
+                            "height": float(box_def.get("height", 8)),
+                        },
+                        "weight": {"unit": "LB", "value": float(box_def.get("weight", 5))},
+                        "quantity": num_boxes,
+                        "items": [_box_item(i, qty_per_box) for i in items],
+                    }],
+                    "shipmentId": sid,
+                }]
+            }
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    pr = await client.put(
+                        f"{base}{_V2}/inboundPlans/{plan_id}/shipments/{sid}/packingInformation",
+                        headers={"x-amz-access-token": token, "Content-Type": "application/json"},
+                        json=packing_body,
+                    )
+                if pr.status_code in (200, 202):
+                    op_id = pr.json().get("operationId")
+                    if op_id:
+                        await _poll_op(base, token, op_id, max_polls=10)
+                else:
+                    print(f"[FBA packingInfo] {sid} {pr.status_code}: {pr.text[:200]}", flush=True)
+            except Exception as pe:
+                print(f"[FBA packingInfo error] {pe}", flush=True)
+
+        # 3. Generate transportation options
+        from datetime import datetime, timezone, timedelta
+        ready_start = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        ready_end   = (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        configs = [{
+            "shipmentId": sid,
+            "contactInformation": {
+                "name":        from_address.get("name", "Seller"),
+                "phoneNumber": from_address.get("phone") or from_address.get("phoneNumber") or "555-000-0000",
+            },
+            "boxes": [{
+                "dimensions": {
+                    "unitOfMeasurement": "IN",
+                    "length": float(box_def.get("length", 12)),
+                    "width":  float(box_def.get("width", 10)),
+                    "height": float(box_def.get("height", 8)),
+                },
+                "weight": {"unit": "LB", "value": float(box_def.get("weight", 5))},
+                "quantity": num_boxes,
+            }],
+        } for sid in shipment_ids]
+
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.post(
+                    f"{base}{_V2}/inboundPlans/{plan_id}/transportationOptions",
+                    headers={"x-amz-access-token": token, "Content-Type": "application/json"},
+                    json={
+                        "placementOptionId": placement_id,
+                        "shipmentTransportationConfigurations": configs,
+                        "readyToShipWindow": {"start": ready_start, "end": ready_end},
+                    },
+                )
+            if r.status_code in (200, 202):
+                op_id = r.json().get("operationId")
+                if op_id:
+                    await _poll_op(base, token, op_id, max_polls=15)
+            elif r.status_code == 400:
+                op_id = r.json().get("operationId")
+                if op_id:
+                    await _poll_op(base, token, op_id, max_polls=15)
+                else:
+                    print(f"[FBA transport] POST 400 no opId: {r.text[:300]}", flush=True)
+            else:
+                print(f"[FBA transport] POST {r.status_code}: {r.text[:300]}", flush=True)
+
+            # GET transport options
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(
+                    f"{base}{_V2}/inboundPlans/{plan_id}/transportationOptions",
+                    headers={"x-amz-access-token": token},
+                    params={"placementOptionId": placement_id},
+                )
+            if r.status_code == 200:
+                for o in r.json().get("transportationOptions", []):
+                    quote = o.get("quote") or {}
+                    cost_info = quote.get("cost") or {}
+                    transport_options.append({
+                        "transport_option_id": o.get("transportationOptionId"),
+                        "shipment_id":         o.get("shipmentId"),
+                        "carrier":             (o.get("carrier") or {}).get("name", "Amazon Partnered"),
+                        "shipping_mode":       o.get("shippingMode", ""),
+                        "cost":                float(cost_info.get("amount", 0) or 0),
+                        "currency":            cost_info.get("currencyCode", "USD"),
+                    })
+        except Exception as te:
+            print(f"[FBA transport error] {te}", flush=True)
+
+    return {
+        "shipment_id":       shipment_id,
+        "transport_options": transport_options,
+    }
+
+
+async def confirm_transport_option(
+    inbound_plan_id: str,
+    transport_option_id: str,
+    tenant_id: Optional[int] = None,
+) -> None:
+    """Confirm the selected transportation option."""
+    token, mkt_id, base = await _get_access_token_for_tenant(tenant_id)
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{base}{_V2}/inboundPlans/{inbound_plan_id}/transportationOptions/{transport_option_id}/confirmation",
+            headers={"x-amz-access-token": token},
+        )
+    if resp.status_code == 403:
+        raise RuntimeError(_fmt_403())
+    if resp.status_code not in (200, 202):
+        raise RuntimeError(f"Confirm transport {resp.status_code}: {resp.text[:300]}")
+    await _poll_op(base, token, resp.json()["operationId"])
 
 
 # ─────────────────────────────────────────────────────────────────────────────

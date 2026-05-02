@@ -341,6 +341,8 @@ function FBAShipmentForm() {
   const [plans, setPlans]             = useState([])
   const [selectedPlan, setSelectedPlan] = useState(0)
   const [shipmentRecord, setShipmentRecord] = useState(null)
+  const [transportOptions, setTransportOptions] = useState([])
+  const [selectedTransport, setSelectedTransport] = useState(0)
   const [labelUrl, setLabelUrl]       = useState('')
   const [readyDate, setReadyDate]     = useState(() => new Date().toISOString().slice(0,10))
 
@@ -496,11 +498,30 @@ function FBAShipmentForm() {
     try {
       const rec = await api.fbaCreateShipment({
         plan: thePlan, shipment_name: shipmentName, from_address: from, items,
+        boxes,
         asin: p0.product.asin, seller_sku: p0.product.seller_sku || p0.product.asin,
         title: p0.product.product_name, quantity: totalUnits,
         referral_fee: p0.fees?.referral_fee, fba_fee: p0.fees?.fba_fee,
       })
-      setShipmentRecord(rec); setStage('done')
+      setShipmentRecord(rec)
+      if (rec.transport_options && rec.transport_options.length > 0) {
+        setTransportOptions(rec.transport_options)
+        setSelectedTransport(0)
+        setStage('transport')
+      } else {
+        setStage('done')
+      }
+    } catch (e) { setError(e.message) }
+    finally { setLoading(false) }
+  }
+
+  async function handleConfirmTransport() {
+    const opt = transportOptions[selectedTransport]
+    if (!opt) { setError('Select a shipping option.'); return }
+    setError(''); setLoading(true)
+    try {
+      await api.fbaConfirmTransport(shipmentRecord.id, opt.transport_option_id)
+      setStage('done')
     } catch (e) { setError(e.message) }
     finally { setLoading(false) }
   }
@@ -521,6 +542,7 @@ function FBAShipmentForm() {
     setStage('config'); setShipment([]); setPlans([]); setShipmentRecord(null)
     setLabelUrl(''); setError(''); setShipmentName(nowLabel())
     setBoxes([{ length: 22, width: 18, height: 18, weight: 40, count: 1 }])
+    setTransportOptions([]); setSelectedTransport(0)
   }
 
   const addrLine    = [addrForm.line1 || addrForm.line2, addrForm.city, addrForm.state, addrForm.zip].filter(Boolean).join(', ')
@@ -873,6 +895,52 @@ function FBAShipmentForm() {
     )
   }
 
+  // ── TRANSPORT OPTIONS ────────────────────────────────────────────────────
+  if (stage === 'transport') {
+    const selOpt = transportOptions[selectedTransport]
+    return (
+      <div className="max-w-lg mx-auto space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-bold text-gray-900">Choose Shipping Method</h2>
+          <button onClick={() => setStage('placement')} className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
+            ← Back
+          </button>
+        </div>
+        {error && <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">{error}</div>}
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-100 bg-gray-50">
+            <p className="text-sm font-semibold text-gray-900">Available Shipping Options</p>
+          </div>
+          <div className="p-4 space-y-2">
+            {transportOptions.length === 0 && (
+              <p className="text-sm text-gray-400 text-center py-4">No shipping options available.</p>
+            )}
+            {transportOptions.map((opt, i) => (
+              <label key={i} className={`flex items-center gap-3 border-2 rounded-xl p-4 cursor-pointer transition-colors ${selectedTransport === i ? 'border-blue-600 bg-blue-50' : 'border-gray-200 hover:border-gray-300'}`}>
+                <input type="radio" name="transport" checked={selectedTransport === i} onChange={() => setSelectedTransport(i)} className="accent-blue-600" />
+                <div className="flex-1">
+                  <div className="flex justify-between items-center">
+                    <span className="font-semibold text-gray-900 text-sm">{opt.carrier || 'Amazon Partnered'}</span>
+                    <span className="text-sm font-bold text-blue-700">${opt.cost.toFixed(2)} {opt.currency}</span>
+                  </div>
+                  {opt.shipping_mode && <p className="text-xs text-gray-500 mt-0.5">{opt.shipping_mode}</p>}
+                </div>
+              </label>
+            ))}
+          </div>
+        </div>
+        <button
+          onClick={handleConfirmTransport}
+          disabled={loading || transportOptions.length === 0}
+          className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-40 transition-colors"
+        >
+          {loading && <SpinIcon className="w-4 h-4 animate-spin" />}
+          Confirm Shipment
+        </button>
+      </div>
+    )
+  }
+
   // ── PLACEMENT OPTIONS ─────────────────────────────────────────────────────
   if (stage === 'placement') {
     const plan = plans[selectedPlan] || {}
@@ -968,7 +1036,7 @@ function FBAShipmentForm() {
               className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-40 transition-colors"
             >
               {loading && <SpinIcon className="w-4 h-4 animate-spin" />}
-              Confirm &amp; Create Shipment
+              Get Shipping Rates →
             </button>
           </div>
         </div>
