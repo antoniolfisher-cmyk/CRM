@@ -236,10 +236,11 @@ async def _fetch_shipment_detail(base: str, token: str, plan_id: str, shipment_i
                 f"{base}{_V2}/inboundPlans/{plan_id}/shipments/{shipment_id}",
                 headers={"x-amz-access-token": token},
             )
+        print(f"[FBA shipment detail] GET {shipment_id} → {r.status_code}: {r.text[:300]}", flush=True)
         if r.status_code == 200:
             return r.json().get("shipment", {})
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[FBA shipment detail] exception: {e}", flush=True)
     return {}
 
 
@@ -282,21 +283,24 @@ async def _estimate_shipping(
                 }],
             })
 
-        from datetime import datetime as _dt
-        start_ts = _dt.utcnow().strftime("%Y-%m-%dT00:00:00Z")
+        from datetime import datetime as _dt, timedelta as _td
+        now = _dt.utcnow()
+        start_ts = now.strftime("%Y-%m-%dT00:00:00Z")
+        end_ts   = (now + _td(days=3)).strftime("%Y-%m-%dT00:00:00Z")
         body = {
             "placementOptionId": placement_id,
-            "readyToShipWindow": {"start": start_ts},
+            "readyToShipWindow": {"start": start_ts, "end": end_ts},
             "shipmentTransportationConfigurations": configs,
         }
+        print(f"[FBA transport] POST body: {body}", flush=True)
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(
                 f"{base}{_V2}/inboundPlans/{plan_id}/transportationOptions",
                 headers={"x-amz-access-token": token, "Content-Type": "application/json"},
                 json=body,
             )
+        print(f"[FBA transport] POST {r.status_code}: {r.text[:500]}", flush=True)
         if r.status_code not in (200, 202):
-            print(f"[FBA transport] POST {r.status_code}: {r.text[:200]}", flush=True)
             return 0.0
         op_id = r.json().get("operationId")
         if op_id:
