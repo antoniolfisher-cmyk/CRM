@@ -370,8 +370,10 @@ async def _estimate_shipping(
                 params={"placementOptionId": placement_id},
             )
         if r.status_code != 200:
+            print(f"[FBA transport GET] {r.status_code}: {r.text[:200]}", flush=True)
             return 0.0
         opts = r.json().get("transportationOptions", [])
+        print(f"[FBA transport GET] {len(opts)} options found", flush=True)
         if not opts:
             return 0.0
         # Sum across all shipments in this placement option (cheapest carrier per shipment)
