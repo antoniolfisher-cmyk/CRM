@@ -292,14 +292,13 @@ async def _estimate_shipping(
                 }],
             })
 
-        from datetime import datetime, timezone, timedelta
         import json as _json
-        ready_start = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        ready_end   = (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Minimal body — no optional fields so we can isolate the DateTime '' error
         body = {
             "placementOptionId": placement_id,
-            "shipmentTransportationConfigurations": configs,
-            "readyToShipWindow": {"start": ready_start, "end": ready_end},
+            "shipmentTransportationConfigurations": [
+                {"shipmentId": sid} for sid in shipment_ids
+            ],
         }
         print(f"[FBA transport] BODY={_json.dumps(body)}", flush=True)
         async with httpx.AsyncClient(timeout=30) as client:
