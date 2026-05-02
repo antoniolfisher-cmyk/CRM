@@ -522,9 +522,10 @@ async def create_plan(
     if not placement_opts:
         raise RuntimeError("Amazon returned no placement options")
 
-    # For each placement option, enrich in parallel:
-    #   a) individual shipment detail → FC code + destination address
-    #   b) transportation options (if boxes supplied) → shipping cost estimate
+    # For each placement option, fetch shipment detail in parallel (FC code + address).
+    # Shipping cost estimation via generateTransportationOptions requires the
+    # "Amazon Partnered Carrier" SP-API role; without it the call always fails so
+    # we skip it here and show "—" in the UI instead.
     async def _enrich(opt):
         placement_id = opt["placementOptionId"]
         shipment_ids = opt.get("shipmentIds") or []
@@ -537,11 +538,7 @@ async def create_plan(
             amount = float((f.get("value") or {}).get("amount", 0) or 0)
             fees_by_target[target] = fees_by_target.get(target, 0.0) + amount
 
-        # Run detail fetch + shipping estimate in parallel
-        detail, shipping_fee = await asyncio.gather(
-            _fetch_shipment_detail(base, token, plan_id, shipment_id),
-            _estimate_shipping(base, token, plan_id, placement_id, shipment_ids, boxes or [], from_address, items),
-        )
+        detail = await _fetch_shipment_detail(base, token, plan_id, shipment_id)
 
         dest      = detail.get("destination") or {}
         fc_code   = dest.get("warehouseId", "")
@@ -564,7 +561,7 @@ async def create_plan(
             "estimated_fees": {
                 "placement_fee": fees_by_target.get("placement services", 0.0),
                 "labeling_fee":  fees_by_target.get("labeling fee", 0.0),
-                "shipping_fee":  shipping_fee,
+                "shipping_fee":  None,
             },
             "expires_at":          opt.get("expiration"),
             "inbound_plan_id":     plan_id,

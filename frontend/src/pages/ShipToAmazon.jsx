@@ -901,8 +901,8 @@ function FBAShipmentForm() {
                 const fc        = p.destination_fc || `FC ${i+1}`
                 const labeling  = p.estimated_fees?.labeling_fee  || 0
                 const placement = p.estimated_fees?.placement_fee || 0
-                const shipping  = p.estimated_fees?.shipping_fee  || 0
-                const total     = labeling + placement + shipping
+                const shipping  = p.estimated_fees?.shipping_fee  ?? null
+                const total     = labeling + placement + (shipping || 0)
                 const dest      = p.ship_to_address || {}
                 const destStr   = [dest.address1, dest.city, dest.state, dest.postal_code].filter(Boolean).join(', ')
                 const numShips  = (p.shipment_ids?.length) || 1
@@ -923,8 +923,11 @@ function FBAShipmentForm() {
                       <div className="mt-2 space-y-1 text-xs text-gray-600">
                         <div className="flex justify-between"><span>Prep &amp; labeling fees:</span><span>${labeling.toFixed(2)}</span></div>
                         <div className="flex justify-between"><span>Placement fees:</span><span>${placement.toFixed(2)}</span></div>
-                        <div className="flex justify-between"><span>Estimated shipping:</span>
-                          <span className={shipping === 0 ? 'text-gray-400' : ''}>{shipping === 0 ? '—' : `$${shipping.toFixed(2)}`}</span>
+                        <div className="flex justify-between items-center"><span>Estimated shipping:</span>
+                          {shipping !== null
+                            ? <span>{`$${shipping.toFixed(2)}`}</span>
+                            : <span className="text-gray-400 flex items-center gap-1" title="Requires 'Amazon Partnered Carrier' role in your SP-API app (Seller Central → Developer Console → Edit App → Roles)">— <span className="text-blue-400 text-xs cursor-help">ⓘ</span></span>
+                          }
                         </div>
                       </div>
                       <div className="flex justify-between mt-2 pt-2 border-t border-gray-200 text-sm font-semibold">
