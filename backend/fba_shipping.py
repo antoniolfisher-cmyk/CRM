@@ -314,19 +314,15 @@ async def _estimate_shipping(
             if op_id:
                 await _poll_op(base, token, op_id, max_polls=15)
         elif r.status_code == 400:
-            # Amazon returns 400 with only "WARNING:" messages when it can't produce
-            # LTL options but can still produce SPD options. In that case, try GET.
+            # Amazon returns 400 with WARNING/ERROR messages but may still generate
+            # SPD (parcel) options even when LTL generation fails. Always fall through
+            # to GET so we surface any options Amazon did manage to produce.
             try:
                 body_json = r.json()
-                errs = body_json.get("errors", [])
-                hard = [e for e in errs if not (e.get("message") or "").startswith("WARNING:")]
-                if hard:
-                    print(f"[FBA transport] 400 full body: {r.text[:600]}", flush=True)
-                    return 0.0
+                print(f"[FBA transport] 400 errors (falling through to GET): {[e.get('message','')[:80] for e in body_json.get('errors',[])]}", flush=True)
                 op_id = body_json.get("operationId")
                 if op_id:
                     await _poll_op(base, token, op_id, max_polls=15)
-                # else: only warnings, fall through to GET
             except Exception as e2:
                 print(f"[FBA transport] 400 parse error: {e2}", flush=True)
                 return 0.0
