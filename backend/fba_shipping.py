@@ -238,7 +238,7 @@ async def _fetch_shipment_detail(base: str, token: str, plan_id: str, shipment_i
             )
         if r.status_code == 200:
             raw = r.json()
-            print(f"[FBA shipment] {shipment_id} top_keys={list(raw.keys())} raw={str(raw)[:300]}", flush=True)
+            # Response is either the shipment object directly or wrapped under "shipment"
             return raw.get("shipment", raw)
     except Exception:
         pass
