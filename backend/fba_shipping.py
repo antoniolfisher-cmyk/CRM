@@ -351,8 +351,6 @@ async def create_plan(
     if not placement_opts:
         raise RuntimeError("Amazon returned no placement options")
 
-    print(f"[FBA create_plan] raw placement_opts: {resp.json()}", flush=True)
-
     # Build result — one entry per placement option (frontend picks one).
     # v2024 placement options carry shipmentIds directly; no GET /shipments call needed.
     result = []
@@ -361,21 +359,21 @@ async def create_plan(
         shipment_ids  = opt.get("shipmentIds") or []
         shipment_id   = shipment_ids[0] if shipment_ids else ""
 
-        # Parse fees by target name (v2024: fees[].target / fees[].amount.amount)
+        # Parse fees by target name (v2024: fees[].target / fees[].value.amount)
         fees_by_target: dict[str, float] = {}
         for f in (opt.get("fees") or []):
             target = (f.get("target") or "").lower()
-            amount = float((f.get("amount") or {}).get("amount", 0) or 0)
+            amount = float((f.get("value") or {}).get("amount", 0) or 0)
             fees_by_target[target] = fees_by_target.get(target, 0.0) + amount
 
         result.append({
             "shipment_id":         shipment_id,
-            "destination_fc":      "",   # not available until placement confirmed; filled later
+            "destination_fc":      "",
             "ship_to_address":     {},
             "items":               [{"sku": i["sku"], "qty": i["qty"]} for i in items],
             "label_prep_type":     "SELLER_LABEL",
             "estimated_fees": {
-                "placement_fee": fees_by_target.get("placement fee", 0.0),
+                "placement_fee": fees_by_target.get("placement services", 0.0),
                 "labeling_fee":  fees_by_target.get("labeling fee", 0.0),
                 "shipping_fee":  0.0,
             },
