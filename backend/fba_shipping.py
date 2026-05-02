@@ -282,16 +282,14 @@ async def _estimate_shipping(
                 }],
             })
 
-        from datetime import datetime as _dt, timedelta as _td
-        now = _dt.utcnow()
-        # Amazon expects yyyy-MM-dd'T'HH:mm:ss'Z' (per their error messages)
-        start_ts = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-        end_ts   = (now + _td(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Omit readyToShipWindow — every format we try produces DateTime '' error;
+        # the field may be optional or may need to be set on individual shipments
         body = {
             "placementOptionId": placement_id,
-            "readyToShipWindow": {"start": start_ts, "end": end_ts},
             "shipmentTransportationConfigurations": configs,
         }
+        import json as _json
+        print(f"[FBA transport] body: {_json.dumps(body)}", flush=True)
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(
                 f"{base}{_V2}/inboundPlans/{plan_id}/transportationOptions",
