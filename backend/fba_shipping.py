@@ -282,14 +282,14 @@ async def _estimate_shipping(
                 }],
             })
 
-        # Omit readyToShipWindow — every format we try produces DateTime '' error;
-        # the field may be optional or may need to be set on individual shipments
+        from datetime import datetime, timezone, timedelta
+        ready_start = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        ready_end   = (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
         body = {
             "placementOptionId": placement_id,
             "shipmentTransportationConfigurations": configs,
+            "readyToShipWindow": {"start": ready_start, "end": ready_end},
         }
-        import json as _json
-        print(f"[FBA transport] body: {_json.dumps(body)}", flush=True)
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(
                 f"{base}{_V2}/inboundPlans/{plan_id}/transportationOptions",
@@ -386,7 +386,10 @@ async def create_plan(
         if it.get("prepCategory") and it["prepCategory"] != "NONE":
             entry["prepDetails"] = [{"prepCategory": it["prepCategory"]}]
         if it.get("expDate"):
-            entry["expiration"] = it["expDate"]
+            exp = it["expDate"]
+            if len(exp) <= 10:  # YYYY-MM-DD from HTML date input → needs full DateTime
+                exp = exp + "T00:00:00Z"
+            entry["expiration"] = exp
         return entry
 
     plan_body = {
