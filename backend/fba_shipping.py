@@ -387,9 +387,8 @@ async def create_plan(
             entry["prepDetails"] = [{"prepCategory": it["prepCategory"]}]
         if it.get("expDate"):
             exp = it["expDate"]
-            if len(exp) <= 10:  # YYYY-MM-DD from HTML date input → needs full DateTime
-                exp = exp + "T00:00:00Z"
-            entry["expiration"] = exp
+            # Amazon plan creation wants YYYY-MM-DD (date-only); strip any time component
+            entry["expiration"] = exp[:10]
         return entry
 
     plan_body = {
