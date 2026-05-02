@@ -243,6 +243,17 @@ async def _fetch_shipment_detail(base: str, token: str, plan_id: str, shipment_i
     return {}
 
 
+def _box_item(it: dict, quantity: int) -> dict:
+    """Build a box Item for transportationOptions — expiration must be full date-time."""
+    entry = {"msku": it["sku"], "quantity": quantity}
+    if it.get("expDate"):
+        exp = it["expDate"]
+        if len(exp) <= 10:  # YYYY-MM-DD → needs time component for transport API
+            exp = exp + "T00:00:00Z"
+        entry["expiration"] = exp
+    return entry
+
+
 async def _estimate_shipping(
     base: str, token: str, plan_id: str,
     placement_id: str, shipment_ids: list, boxes: list,
@@ -278,7 +289,7 @@ async def _estimate_shipping(
                     },
                     "weight": {"unit": "LB", "value": float(box_def.get("weight", 5))},
                     "quantity": num_boxes,
-                    "items": [{"msku": i["sku"], "quantity": qty_per_box} for i in items],
+                    "items": [_box_item(i, qty_per_box) for i in items],
                 }],
             })
 
