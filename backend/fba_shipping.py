@@ -292,6 +292,42 @@ async def _estimate_shipping(
                 }],
             })
 
+        # Set packing information for each shipment before generating transport options.
+        # Amazon needs box data registered to compute shipping rates.
+        for sid in shipment_ids:
+            packing_body = {
+                "packageGroupings": [{
+                    "boxes": [{
+                        "contentInformationSource": "BOX_CONTENT_PROVIDED",
+                        "dimensions": {
+                            "unitOfMeasurement": "IN",
+                            "length": float(box_def.get("length", 12)),
+                            "width":  float(box_def.get("width", 10)),
+                            "height": float(box_def.get("height", 8)),
+                        },
+                        "weight": {"unit": "LB", "value": float(box_def.get("weight", 5))},
+                        "quantity": num_boxes,
+                        "items": [_box_item(i, qty_per_box) for i in items],
+                    }],
+                    "shipmentId": sid,
+                }]
+            }
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    pr = await client.put(
+                        f"{base}{_V2}/inboundPlans/{plan_id}/shipments/{sid}/packingInformation",
+                        headers={"x-amz-access-token": token, "Content-Type": "application/json"},
+                        json=packing_body,
+                    )
+                if pr.status_code in (200, 202):
+                    op_id = pr.json().get("operationId")
+                    if op_id:
+                        await _poll_op(base, token, op_id, max_polls=10)
+                else:
+                    print(f"[FBA packingInfo] {sid} {pr.status_code}: {pr.text[:200]}", flush=True)
+            except Exception as pe:
+                print(f"[FBA packingInfo error] {pe}", flush=True)
+
         from datetime import datetime, timezone, timedelta
         ready_start = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
         ready_end   = (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
