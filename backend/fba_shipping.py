@@ -289,7 +289,6 @@ async def _estimate_shipping(
                     },
                     "weight": {"unit": "LB", "value": float(box_def.get("weight", 5))},
                     "quantity": num_boxes,
-                    "items": [_box_item(i, qty_per_box) for i in items],
                 }],
             })
 
