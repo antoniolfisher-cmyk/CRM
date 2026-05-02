@@ -259,8 +259,8 @@ export const api = {
   fbaSkuForAsin: (asin) => req('GET', `/fba/sku-for-asin?asin=${encodeURIComponent(asin)}`),
   fbaCreateSku: (asin) => req('POST', '/fba/create-sku', { asin }),
   fbaFees: (asin, price) => req('POST', '/fba/fees', { asin, price }),
-  fbaPlan: (items, from_address, label_prep = 'SELLER_LABEL') =>
-    req('POST', '/fba/plan', { items, from_address, label_prep }),
+  fbaPlan: (items, from_address, label_prep = 'SELLER_LABEL', boxes = []) =>
+    req('POST', '/fba/plan', { items, from_address, label_prep, boxes }),
   fbaCreateShipment: (data) => req('POST', '/fba/shipments', data),
   fbaListShipments: () => req('GET', '/fba/shipments'),
   fbaGetShipment: (id) => req('GET', `/fba/shipments/${id}`),

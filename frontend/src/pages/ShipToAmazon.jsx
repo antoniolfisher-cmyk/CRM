@@ -304,7 +304,7 @@ export default function ShipToAmazon() {
 // FBA SHIPMENT
 // ─────────────────────────────────────────────────────────────────────────────
 function FBAShipmentForm() {
-  // 'config' → 'pick' → 'placement' → 'done'
+  // 'config' → 'pick' → 'boxes' → 'placement' → 'done'
   const [stage, setStage] = useState('config')
 
   const [addrForm, setAddrForm]       = useState({ name:'', line1:'', line2:'', city:'', state:'FL', zip:'', country:'US', phone:'' })
@@ -335,6 +335,8 @@ function FBAShipmentForm() {
   const [buyCostInput, setBuyCostInput]         = useState(true)
   const [supplierInput, setSupplierInput]       = useState(false)
   const [datePurchInput, setDatePurchInput]     = useState(false)
+
+  const [boxes, setBoxes]             = useState([{ length: 22, width: 18, height: 18, weight: 40, count: 1 }])
 
   const [plans, setPlans]             = useState([])
   const [selectedPlan, setSelectedPlan] = useState(0)
@@ -456,7 +458,7 @@ function FBAShipmentForm() {
     }
   }
 
-  async function handleCreateShipment() {
+  function handleCreateShipment() {
     if (!shipFromFilled) { setError('Set your ship-from address first.'); return }
     if (!shipment.length) { setError('Add at least one product to your shipment.'); return }
     const stillLoading = shipment.filter(s => s.skuStatus === 'loading' || s.skuStatus === 'creating')
@@ -466,6 +468,10 @@ function FBAShipmentForm() {
       setError(`These products need a SKU before shipping: ${missingSku.map(s => s.product.product_name || s.product.asin).join(', ')}. Click "New SKU" next to each product.`)
       return
     }
+    setError(''); setStage('boxes')
+  }
+
+  async function handleProceedFromBoxes() {
     setError(''); setLoading(true)
     const items = shipment.map(s => ({
       sku: s.sku, asin: s.product.asin, qty: s.qty, condition: s.condition,
@@ -473,7 +479,7 @@ function FBAShipmentForm() {
       expDate: s.expDate,
     }))
     try {
-      const result = await api.fbaPlan(items, buildFrom(), labelPrep)
+      const result = await api.fbaPlan(items, buildFrom(), labelPrep, boxes)
       setPlans(Array.isArray(result) ? result : [result])
       setSelectedPlan(0); setStage('placement')
     } catch (e) { setError(e.message) }
@@ -514,6 +520,7 @@ function FBAShipmentForm() {
   function resetAll() {
     setStage('config'); setShipment([]); setPlans([]); setShipmentRecord(null)
     setLabelUrl(''); setError(''); setShipmentName(nowLabel())
+    setBoxes([{ length: 22, width: 18, height: 18, weight: 40, count: 1 }])
   }
 
   const addrLine    = [addrForm.line1 || addrForm.line2, addrForm.city, addrForm.state, addrForm.zip].filter(Boolean).join(', ')
@@ -755,6 +762,117 @@ function FBAShipmentForm() {
     )
   }
 
+  // ── BOX CONFIGURATION ────────────────────────────────────────────────────
+  if (stage === 'boxes') {
+    const box = boxes[0]
+    const numBoxes = box.count || 1
+    const totalUnitsForBox = shipment.reduce((s, i) => s + (i.qty || 1), 0)
+    const unitsPerBox = Math.ceil(totalUnitsForBox / numBoxes)
+    const inp2 = 'w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+    function setBox(field, val) {
+      setBoxes([{ ...box, [field]: val }])
+    }
+    return (
+      <div className="space-y-4">
+        {addrModal}
+        <button onClick={() => setStage('pick')} className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
+          ← Back to shipment
+        </button>
+        {error && <ErrorBanner msg={error} />}
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4 items-start">
+          {/* Box editor */}
+          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-100">
+              <p className="text-base font-semibold text-gray-900">Box Configuration</p>
+              <p className="text-xs text-gray-400 mt-0.5">
+                Enter your box dimensions so Amazon can calculate shipping rates for each placement option.
+              </p>
+            </div>
+            <div className="p-5 space-y-5">
+              {/* Number of boxes */}
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-2">Number of boxes</label>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setBox('count', Math.max(1, numBoxes - 1))}
+                    className="w-9 h-9 border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50 text-lg font-bold flex items-center justify-center">−</button>
+                  <input type="number" min="1" value={numBoxes}
+                    onChange={e => setBox('count', Math.max(1, parseInt(e.target.value) || 1))}
+                    className="w-16 text-center border border-gray-300 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  <button onClick={() => setBox('count', numBoxes + 1)}
+                    className="w-9 h-9 border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50 text-lg font-bold flex items-center justify-center">+</button>
+                  <span className="text-xs text-gray-400 ml-1">≈ {unitsPerBox} unit{unitsPerBox !== 1 ? 's' : ''} / box</span>
+                </div>
+              </div>
+              {/* Dimensions */}
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-2">Box dimensions (inches)</label>
+                <div className="grid grid-cols-3 gap-3">
+                  {[['length','L'],['width','W'],['height','H']].map(([f, label]) => (
+                    <div key={f}>
+                      <label className="block text-xs text-gray-400 mb-1">{label === 'L' ? 'Length' : label === 'W' ? 'Width' : 'Height'}</label>
+                      <div className="relative">
+                        <input type="number" min="1" step="0.5" value={box[f]}
+                          onChange={e => setBox(f, parseFloat(e.target.value) || 1)}
+                          className={inp2 + ' pr-7'} />
+                        <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-gray-400">in</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {/* Weight */}
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-2">Box weight (lbs)</label>
+                <div className="relative w-40">
+                  <input type="number" min="0.1" step="0.5" value={box.weight}
+                    onChange={e => setBox('weight', parseFloat(e.target.value) || 1)}
+                    className={inp2 + ' pr-7'} />
+                  <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-gray-400">lbs</span>
+                </div>
+              </div>
+              <p className="text-xs text-gray-400">
+                These dimensions are used to estimate shipping costs. You can change them per box after creating the shipment.
+              </p>
+            </div>
+          </div>
+
+          {/* Summary sidebar */}
+          <div className="space-y-3">
+            <div className="bg-white rounded-xl border border-gray-200 p-4">
+              <p className="text-sm font-semibold text-gray-900 mb-3 pb-2 border-b border-gray-100">Products in Shipment</p>
+              <div className="space-y-2">
+                {shipment.map(s => (
+                  <div key={s.product.asin} className="flex items-center gap-2 text-xs">
+                    {s.product.image_url
+                      ? <img src={s.product.image_url} alt="" className="w-8 h-8 object-contain rounded border border-gray-100 bg-gray-50 shrink-0" />
+                      : <div className="w-8 h-8 bg-gray-100 rounded shrink-0" />}
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-gray-900 truncate">{s.product.product_name || s.product.asin}</p>
+                      <p className="text-gray-400">× {s.qty} units</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 pt-3 border-t border-gray-100 text-xs text-gray-500 space-y-1">
+                <div className="flex justify-between"><span>Total units</span><strong className="text-gray-800">{totalUnitsForBox}</strong></div>
+                <div className="flex justify-between"><span>Boxes</span><strong className="text-gray-800">{numBoxes}</strong></div>
+                <div className="flex justify-between"><span>Per box</span><strong className="text-gray-800">{unitsPerBox} units · {box.weight} lbs · {box.length}×{box.width}×{box.height} in</strong></div>
+              </div>
+            </div>
+            <button
+              onClick={handleProceedFromBoxes}
+              disabled={loading}
+              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-40 transition-colors"
+            >
+              {loading && <SpinIcon className="w-4 h-4 animate-spin" />}
+              {loading ? 'Getting placement options…' : 'Get Placement Options →'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   // ── PLACEMENT OPTIONS ─────────────────────────────────────────────────────
   if (stage === 'placement') {
     const plan = plans[selectedPlan] || {}
@@ -763,8 +881,8 @@ function FBAShipmentForm() {
     return (
       <div className="space-y-4">
         {addrModal}
-        <button onClick={() => setStage('pick')} className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
-          ← Back to shipment
+        <button onClick={() => setStage('boxes')} className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
+          ← Back to box configuration
         </button>
         {error && <ErrorBanner msg={error} />}
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-4 items-start">
@@ -780,24 +898,34 @@ function FBAShipmentForm() {
                 <input type="date" className="border border-gray-300 rounded px-2 py-1 text-xs" value={readyDate} onChange={e => setReadyDate(e.target.value)} />
               </div>
               {plans.map((p, i) => {
-                const fc       = p.destination_fc || p.fulfillment_center_id || `FC ${i+1}`
-                const labeling = p.estimated_fees?.labeling_fee  || 0
-                const placement= p.estimated_fees?.placement_fee || 0
-                const shipping = p.estimated_fees?.shipping_fee  || 0
-                const total    = labeling + placement + shipping
+                const fc        = p.destination_fc || `FC ${i+1}`
+                const labeling  = p.estimated_fees?.labeling_fee  || 0
+                const placement = p.estimated_fees?.placement_fee || 0
+                const shipping  = p.estimated_fees?.shipping_fee  || 0
+                const total     = labeling + placement + shipping
+                const dest      = p.ship_to_address || {}
+                const destStr   = [dest.address1, dest.city, dest.state, dest.postal_code].filter(Boolean).join(', ')
+                const numShips  = (p.shipment_ids?.length) || 1
                 return (
                   <label key={i} className={`flex items-start gap-3 border-2 rounded-xl p-4 cursor-pointer transition-colors ${selectedPlan===i ? 'border-blue-600 bg-blue-50' : 'border-gray-200 hover:border-gray-300'}`}>
                     <input type="radio" name="plan" checked={selectedPlan===i} onChange={() => setSelectedPlan(i)} className="mt-0.5 accent-blue-600" />
                     <div className="flex-1">
                       <div className="flex items-center justify-between">
-                        <span className="font-semibold text-gray-900 text-sm">Shipment {i+1} — {fc}</span>
+                        <span className="font-semibold text-gray-900 text-sm">
+                          {numShips > 1 ? `${numShips} Shipments` : '1 Shipment'} — {fc}
+                        </span>
                         {p.expires_at && <span className="text-xs text-amber-600">Expires {new Date(p.expires_at).toLocaleDateString()}</span>}
                       </div>
-                      {shipToStr && <p className="text-xs text-gray-500 mt-0.5">Ship to: {shipToStr}</p>}
+                      {destStr
+                        ? <p className="text-xs text-gray-500 mt-0.5">Ship to: <span className="font-medium text-gray-700">{fc}</span> · {destStr}</p>
+                        : fc !== `FC ${i+1}` && <p className="text-xs text-gray-500 mt-0.5">Ship to: <span className="font-medium text-gray-700">{fc}</span></p>
+                      }
                       <div className="mt-2 space-y-1 text-xs text-gray-600">
                         <div className="flex justify-between"><span>Prep &amp; labeling fees:</span><span>${labeling.toFixed(2)}</span></div>
                         <div className="flex justify-between"><span>Placement fees:</span><span>${placement.toFixed(2)}</span></div>
-                        <div className="flex justify-between"><span>Estimated shipping:</span><span>${shipping.toFixed(2)}</span></div>
+                        <div className="flex justify-between"><span>Estimated shipping:</span>
+                          <span className={shipping === 0 ? 'text-gray-400' : ''}>{shipping === 0 ? '—' : `$${shipping.toFixed(2)}`}</span>
+                        </div>
                       </div>
                       <div className="flex justify-between mt-2 pt-2 border-t border-gray-200 text-sm font-semibold">
                         <span>Total fees:</span><span>${total.toFixed(2)} USD</span>

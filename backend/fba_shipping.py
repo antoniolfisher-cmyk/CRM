@@ -223,6 +223,110 @@ async def estimate_fees(asin: str, price: float, tenant_id: Optional[int] = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Helpers: individual shipment detail + shipping estimate
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _fetch_shipment_detail(base: str, token: str, plan_id: str, shipment_id: str) -> dict:
+    """GET individual shipment — returns {} on any error (403 is common)."""
+    if not shipment_id:
+        return {}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"{base}{_V2}/inboundPlans/{plan_id}/shipments/{shipment_id}",
+                headers={"x-amz-access-token": token},
+            )
+        if r.status_code == 200:
+            return r.json().get("shipment", {})
+    except Exception:
+        pass
+    return {}
+
+
+async def _estimate_shipping(
+    base: str, token: str, plan_id: str,
+    placement_id: str, shipment_ids: list, boxes: list,
+    from_address: dict, items: list,
+) -> float:
+    """
+    Generate transportation options for one placement option using supplied box
+    dimensions, poll until complete, then return the cheapest partner-carrier cost.
+    Returns 0.0 on any error so it never blocks the plan flow.
+    """
+    if not boxes or not shipment_ids:
+        return 0.0
+    try:
+        total_qty = sum(int(i.get("qty", 1)) for i in items)
+        num_boxes = max(1, int(boxes[0].get("count", 1)))
+        qty_per_box = max(1, round(total_qty / num_boxes))
+
+        box_def = boxes[0]
+        configs = []
+        for sid in shipment_ids:
+            configs.append({
+                "shipmentId": sid,
+                "contactInformation": {
+                    "name":        from_address.get("name", "Seller"),
+                    "phoneNumber": from_address.get("phone") or from_address.get("phoneNumber") or "555-000-0000",
+                },
+                "boxes": [{
+                    "dimensions": {
+                        "unitOfMeasurement": "IN",
+                        "length": float(box_def.get("length", 12)),
+                        "width":  float(box_def.get("width", 10)),
+                        "height": float(box_def.get("height", 8)),
+                    },
+                    "weight": {"unit": "LB", "value": float(box_def.get("weight", 5))},
+                    "quantity": num_boxes,
+                    "items": [{"msku": i["sku"], "quantity": qty_per_box} for i in items],
+                }],
+            })
+
+        from datetime import datetime as _dt
+        start_ts = _dt.utcnow().strftime("%Y-%m-%dT00:00:00Z")
+        body = {
+            "placementOptionId": placement_id,
+            "readyToShipWindow": {"start": start_ts},
+            "shipmentTransportationConfigurations": configs,
+        }
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                f"{base}{_V2}/inboundPlans/{plan_id}/transportationOptions",
+                headers={"x-amz-access-token": token, "Content-Type": "application/json"},
+                json=body,
+            )
+        if r.status_code not in (200, 202):
+            print(f"[FBA transport] POST {r.status_code}: {r.text[:200]}", flush=True)
+            return 0.0
+        op_id = r.json().get("operationId")
+        if op_id:
+            await _poll_op(base, token, op_id, max_polls=15)
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"{base}{_V2}/inboundPlans/{plan_id}/transportationOptions",
+                headers={"x-amz-access-token": token},
+                params={"placementOptionId": placement_id},
+            )
+        if r.status_code != 200:
+            return 0.0
+        opts = r.json().get("transportationOptions", [])
+        if not opts:
+            return 0.0
+        # Sum across all shipments in this placement option (cheapest carrier per shipment)
+        by_shipment: dict[str, float] = {}
+        for o in opts:
+            sid  = o.get("shipmentId", "")
+            cost = float((o.get("quote") or {}).get("cost", {}).get("amount", 0) or 0)
+            if sid not in by_shipment or cost < by_shipment[sid]:
+                by_shipment[sid] = cost
+        return sum(by_shipment.values())
+    except Exception as e:
+        print(f"[FBA transport estimate error] {e}", flush=True)
+        return 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 3. Create Inbound Plan (v2024-03-20)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -231,6 +335,7 @@ async def create_plan(
     from_address: dict,
     tenant_id: Optional[int] = None,
     label_prep: str = "SELLER_LABEL",
+    boxes: Optional[list[dict]] = None,
 ) -> list[dict]:
     """
     Full v2024-03-20 plan flow:
@@ -351,38 +456,57 @@ async def create_plan(
     if not placement_opts:
         raise RuntimeError("Amazon returned no placement options")
 
-    # Build result — one entry per placement option (frontend picks one).
-    # v2024 placement options carry shipmentIds directly; no GET /shipments call needed.
-    result = []
-    for opt in placement_opts:
-        placement_id  = opt["placementOptionId"]
-        shipment_ids  = opt.get("shipmentIds") or []
-        shipment_id   = shipment_ids[0] if shipment_ids else ""
+    # For each placement option, enrich in parallel:
+    #   a) individual shipment detail → FC code + destination address
+    #   b) transportation options (if boxes supplied) → shipping cost estimate
+    async def _enrich(opt):
+        placement_id = opt["placementOptionId"]
+        shipment_ids = opt.get("shipmentIds") or []
+        shipment_id  = shipment_ids[0] if shipment_ids else ""
 
-        # Parse fees by target name (v2024: fees[].target / fees[].value.amount)
+        # Fees from placement option
         fees_by_target: dict[str, float] = {}
         for f in (opt.get("fees") or []):
             target = (f.get("target") or "").lower()
             amount = float((f.get("value") or {}).get("amount", 0) or 0)
             fees_by_target[target] = fees_by_target.get(target, 0.0) + amount
 
-        result.append({
-            "shipment_id":         shipment_id,
-            "destination_fc":      "",
-            "ship_to_address":     {},
-            "items":               [{"sku": i["sku"], "qty": i["qty"]} for i in items],
-            "label_prep_type":     "SELLER_LABEL",
+        # Run detail fetch + shipping estimate in parallel
+        detail, shipping_fee = await asyncio.gather(
+            _fetch_shipment_detail(base, token, plan_id, shipment_id),
+            _estimate_shipping(base, token, plan_id, placement_id, shipment_ids, boxes or [], from_address, items),
+        )
+
+        dest      = detail.get("destination") or {}
+        fc_code   = dest.get("warehouseId", "")
+        dest_addr = dest.get("address") or {}
+
+        return {
+            "shipment_id":     shipment_id,
+            "destination_fc":  fc_code,
+            "ship_to_address": {
+                "name":        dest_addr.get("name", ""),
+                "address1":    dest_addr.get("addressLine1", ""),
+                "address2":    dest_addr.get("addressLine2", ""),
+                "city":        dest_addr.get("city", ""),
+                "state":       dest_addr.get("stateOrProvinceCode", ""),
+                "postal_code": dest_addr.get("postalCode", ""),
+                "country":     dest_addr.get("countryCode", "US"),
+            },
+            "items":           [{"sku": i["sku"], "qty": i["qty"]} for i in items],
+            "label_prep_type": "SELLER_LABEL",
             "estimated_fees": {
                 "placement_fee": fees_by_target.get("placement services", 0.0),
                 "labeling_fee":  fees_by_target.get("labeling fee", 0.0),
-                "shipping_fee":  0.0,
+                "shipping_fee":  shipping_fee,
             },
             "expires_at":          opt.get("expiration"),
             "inbound_plan_id":     plan_id,
             "placement_option_id": placement_id,
-        })
+        }
 
-    return result
+    result = await asyncio.gather(*[_enrich(opt) for opt in placement_opts])
+    return list(result)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

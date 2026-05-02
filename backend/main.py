@@ -7703,13 +7703,15 @@ async def fba_plan(body: dict = Body(...), current: dict = Depends(require_auth)
     items        = body.get("items") or []
     from_address = body.get("from_address") or {}
     label_prep   = body.get("label_prep", "SELLER_LABEL")
+    boxes        = body.get("boxes") or []
     if not items or not from_address:
         raise HTTPException(400, "items and from_address required")
     try:
         import fba_shipping
         return await fba_shipping.create_plan(items, from_address,
                                               tenant_id=current["tenant_id"],
-                                              label_prep=label_prep)
+                                              label_prep=label_prep,
+                                              boxes=boxes)
     except HTTPException:
         raise
     except Exception as e:
