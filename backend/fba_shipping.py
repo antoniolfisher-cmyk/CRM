@@ -236,11 +236,10 @@ async def _fetch_shipment_detail(base: str, token: str, plan_id: str, shipment_i
                 f"{base}{_V2}/inboundPlans/{plan_id}/shipments/{shipment_id}",
                 headers={"x-amz-access-token": token},
             )
-        print(f"[FBA shipment detail] GET {shipment_id} → {r.status_code}: {r.text[:300]}", flush=True)
         if r.status_code == 200:
             return r.json().get("shipment", {})
-    except Exception as e:
-        print(f"[FBA shipment detail] exception: {e}", flush=True)
+    except Exception:
+        pass
     return {}
 
 
@@ -285,32 +284,44 @@ async def _estimate_shipping(
 
         from datetime import datetime as _dt, timedelta as _td
         now = _dt.utcnow()
-        # Amazon v2024 uses date-only for readyToShipWindow (no time, no Z suffix)
-        start_date = now.strftime("%Y-%m-%d")
-        end_date   = (now + _td(days=3)).strftime("%Y-%m-%d")
+        # Amazon expects yyyy-MM-dd'T'HH:mm:ss'Z' (per their error messages)
+        start_ts = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        end_ts   = (now + _td(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
         body = {
             "placementOptionId": placement_id,
-            "readyToShipWindow": {"start": start_date, "end": end_date},
+            "readyToShipWindow": {"start": start_ts, "end": end_ts},
             "shipmentTransportationConfigurations": configs,
         }
-        print(f"[FBA transport] POST body keys: placementOptionId={placement_id} start={start_date} configs={len(configs)}", flush=True)
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(
                 f"{base}{_V2}/inboundPlans/{plan_id}/transportationOptions",
                 headers={"x-amz-access-token": token, "Content-Type": "application/json"},
                 json=body,
             )
-        if r.status_code not in (200, 202):
-            # Extract just the error messages for clean logging
+        if r.status_code in (200, 202):
+            op_id = r.json().get("operationId")
+            if op_id:
+                await _poll_op(base, token, op_id, max_polls=15)
+        elif r.status_code == 400:
+            # Amazon returns 400 with only "WARNING:" messages when it can't produce
+            # LTL options but can still produce SPD options. In that case, try GET.
             try:
-                errs = [e.get("message","") for e in r.json().get("errors",[])]
-            except Exception:
-                errs = [r.text[:300]]
-            print(f"[FBA transport] POST {r.status_code} errors: {errs}", flush=True)
+                body_json = r.json()
+                errs = body_json.get("errors", [])
+                hard = [e for e in errs if not (e.get("message") or "").startswith("WARNING:")]
+                if hard:
+                    print(f"[FBA transport] hard errors: {[e.get('message','') for e in hard]}", flush=True)
+                    return 0.0
+                op_id = body_json.get("operationId")
+                if op_id:
+                    await _poll_op(base, token, op_id, max_polls=15)
+                # else: only warnings, fall through to GET
+            except Exception as e2:
+                print(f"[FBA transport] 400 parse error: {e2}", flush=True)
+                return 0.0
+        else:
+            print(f"[FBA transport] POST {r.status_code}: {r.text[:300]}", flush=True)
             return 0.0
-        op_id = r.json().get("operationId")
-        if op_id:
-            await _poll_op(base, token, op_id, max_polls=15)
 
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.get(
