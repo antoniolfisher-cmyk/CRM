@@ -294,6 +294,7 @@ async def _estimate_shipping(
             })
 
         from datetime import datetime, timezone, timedelta
+        import json as _json
         ready_start = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         ready_end   = (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
         body = {
@@ -301,6 +302,7 @@ async def _estimate_shipping(
             "shipmentTransportationConfigurations": configs,
             "readyToShipWindow": {"start": ready_start, "end": ready_end},
         }
+        print(f"[FBA transport] BODY={_json.dumps(body)}", flush=True)
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(
                 f"{base}{_V2}/inboundPlans/{plan_id}/transportationOptions",
@@ -319,7 +321,7 @@ async def _estimate_shipping(
                 errs = body_json.get("errors", [])
                 hard = [e for e in errs if not (e.get("message") or "").startswith("WARNING:")]
                 if hard:
-                    print(f"[FBA transport] hard errors: {[e.get('message','') for e in hard]}", flush=True)
+                    print(f"[FBA transport] 400 full body: {r.text[:600]}", flush=True)
                     return 0.0
                 op_id = body_json.get("operationId")
                 if op_id:
