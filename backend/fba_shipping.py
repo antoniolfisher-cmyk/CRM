@@ -351,6 +351,8 @@ async def create_plan(
     if not placement_opts:
         raise RuntimeError("Amazon returned no placement options")
 
+    print(f"[FBA create_plan] raw placement_opts: {resp.json()}", flush=True)
+
     # Build result — one entry per placement option (frontend picks one).
     # v2024 placement options carry shipmentIds directly; no GET /shipments call needed.
     result = []
